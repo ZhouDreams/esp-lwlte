@@ -6,6 +6,8 @@
 */
 #pragma once
 
+#include "esp_err.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -19,6 +21,8 @@ typedef enum {
     LWLTE_NOT_INITIALIZED,
     LWLTE_ALREADY_INITIALIZED,
 } lwlte_err_t;
+
+esp_err_t lwlte_err_2_esp_err(lwlte_err_t err);
 
 #ifdef __cplusplus
 }
