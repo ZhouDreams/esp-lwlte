@@ -1,0 +1,18 @@
+menu "Air780EP Configurations"
+    
+    config AIR780EP_USE_UART
+    default y
+    help
+        If not, the UART related functions will be disabled.
+    
+    config AIR780EP_USE_SPI
+    default n
+    help
+        If not, the SPI related functions will be disabled.
+    
+    config AIR780EP_PRINT_UART_RESPONSE
+    default y
+    help
+        If not, the UART response will not be printed.
+
+endmenu

@@ -1,0 +1,7 @@
+# IDE files
+.vscode/
+# Build files
+build/
+# ESP-LWLTE useless files
+components/esp-lwlte/ignore/
+components/esp-lwlte/lib/

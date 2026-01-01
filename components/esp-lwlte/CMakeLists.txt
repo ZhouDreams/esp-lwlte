@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS
+        "src/lwlte.c"
+        "src/port/lwlte_ll_hal.c"
+        "src/port/lwlte_sys_thread.c"
+        "src/port/lwlte_sys_mutex.c"
+        "src/port/lwlte_sys_flags.c"
+        "src/port/lwlte_sys_queue.c"
+        "src/port/lwlte_sys_log.c"
+        "src/middleware/lwlte_core.c"
+        "src/middleware/lwlte_mqtt_client.c"
+        "src/middleware/lwlte_err.c"
+    INCLUDE_DIRS 
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src/port/include"
+        "src/middleware/include"
+    REQUIRES 
+        driver
+)
