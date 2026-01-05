@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define LWLTE_FLAGS_ALL_BITS 0xFFFFFF
+
 #ifdef __cplusplus
 extern "C" {
 #endif
