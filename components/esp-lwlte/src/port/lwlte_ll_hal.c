@@ -1,8 +1,8 @@
 /*
-    File: lwlte_ll_uart.c
+    File: lwlte_ll_hal.c
     Author: JovisDreams
     Date: 2025-12-28
-    Description: Low-level Layer UART driver source file
+    Description: Low-level Layer UART, GPIO and SPI driver source file
     Platform: ESP-IDF
 */
 
