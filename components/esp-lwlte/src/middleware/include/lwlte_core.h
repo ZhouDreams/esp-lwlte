@@ -58,6 +58,22 @@ lwlte_err_t lwlte_core_deinit_internal(void);
 
 lwlte_err_t lwlte_core_network_activate_internal(void);
 
+bool lwlte_core_get_module_ready_internal(void);
+
+bool lwlte_core_get_module_sim_card_ready_internal(void);
+
+bool lwlte_core_get_module_signal_good_internal(void);
+
+bool lwlte_core_get_module_ip_gprs_activated_internal(void);
+
+bool lwlte_core_get_module_pdn_activated_internal(void);
+
+bool lwlte_core_get_network_connected_internal(void);
+
+lwlte_err_t lwlte_core_wait_module_ready(lwlte_base_type_t timeout_ms);
+
+lwlte_err_t lwlte_core_wait_network_connected(lwlte_base_type_t timeout_ms);   
+
 #ifdef __cplusplus
 }
 #endif

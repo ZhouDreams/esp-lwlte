@@ -18,7 +18,6 @@
 #include <stdbool.h>
 #include <string.h>
 
-#define LWLTE_FLAGS_ALL_BITS 0xFFFFFF
 #define ADD_TO_LINE(line, line_length, c) { line[line_length] = c; line_length++; line[line_length] = '\0'; }
 #define RESET_LINE(line, line_length) { line_length = 0; line[0] = '\0'; }
 #define GET_CSQ(response, data_pointer, csq) { data_pointer = strstr(response, "+CSQ: ") + 6; csq = *(data_pointer + 1) == ','?(*data_pointer - '0') : (*data_pointer - '0')*10 + (*(data_pointer+1) - '0'); }
@@ -38,6 +37,8 @@ static struct {
         char *at_response;
         lwlte_sys_semaphore_t done;
         lwlte_sys_mutex_t lock;
+        bool response_ok;
+        bool response_error;
     } at_waiter;
     lwlte_tick_t init_start_time_ms;
 
@@ -59,7 +60,7 @@ lwlte_err_t lwlte_core_send_at_cmd_internal(const char* cmd,
         return LWLTE_NOT_INITIALIZED;
     }
     /* Check if the arguments are valid */
-    if (cmd == NULL || wait_str == NULL || error_str == NULL || response_buf == NULL || (response_buf_size == 0)) {
+    if (cmd == NULL || wait_str == NULL || error_str == NULL || (response_buf_size < 0)) {
         return LWLTE_INVALID_ARG;
     }
     /* Check if the wait_time_ticks is valid */
@@ -69,20 +70,40 @@ lwlte_err_t lwlte_core_send_at_cmd_internal(const char* cmd,
     /* Lock the at_waiter */
     lwlte_sys_mutex_lock(s_lwlte_core_context.at_waiter.lock);
     lwlte_sys_flags_set(s_lwlte_core_context.flags, LWLTE_FLAGS_AT_CMD_IS_SENDING);
+    s_lwlte_core_context.at_waiter.response_ok = false;
+    s_lwlte_core_context.at_waiter.response_error = false;
     /* Reset the at_response */
     s_lwlte_core_context.at_waiter.at_response[0] = '\0';
     strcpy(s_lwlte_core_context.at_waiter.at_error_string, error_str);
     strcpy(s_lwlte_core_context.at_waiter.at_wait_string, wait_str);
     /* Send the AT command */
     lwlte_ll_uart_write(cmd, strlen(cmd));
+    /* Find \n\r and replace \n with \0 , then log the command*/
+    char *cmd_copy = (char*)malloc(strlen(cmd) + 1);
+    strcpy(cmd_copy, cmd);
+    char *pos = strchr(cmd_copy, '\n');
+    if (pos != NULL) {
+        *pos = '\0';
+    }
+    LWLTE_LOGI(TAG, "TX:|%s", cmd_copy);
+    free((void*)cmd_copy);
     /* Wait for the response */
     lwlte_sys_semaphore_wait(s_lwlte_core_context.at_waiter.done, wait_time_ms);
-    /* Copy the response to the response_buf */
-    strcpy(response_buf, s_lwlte_core_context.at_waiter.at_response);
+    /* If the response_buf is not NULL, copy the response to the response_buf */
+    if (response_buf != NULL) {
+        strncpy(response_buf, s_lwlte_core_context.at_waiter.at_response, 
+            response_buf_size > strlen(s_lwlte_core_context.at_waiter.at_response) ? strlen(s_lwlte_core_context.at_waiter.at_response) : response_buf_size);
+    }
     /* Unlock the at_waiter */
     lwlte_sys_flags_clear(s_lwlte_core_context.flags, LWLTE_FLAGS_AT_CMD_IS_SENDING);
     lwlte_sys_mutex_unlock(s_lwlte_core_context.at_waiter.lock);
-    return LWLTE_OK;
+    if (s_lwlte_core_context.at_waiter.response_ok) {
+        return LWLTE_OK;
+    }
+    else if (s_lwlte_core_context.at_waiter.response_error) {
+        return LWLTE_ERROR;
+    }
+    return LWLTE_TIMEOUT;
 }
 
 lwlte_err_t lwlte_core_input(char* input, lwlte_base_type_t input_size)
@@ -107,9 +128,16 @@ lwlte_err_t lwlte_core_input(char* input, lwlte_base_type_t input_size)
 static void handle_one_line(const char* line, int line_length)
 {
     /* If the line contains "RDY" and the module is not ready, set the module ready flag */
-    if (strstr(line, "RDY") != NULL && (lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_READY) == 0)) {
-        lwlte_sys_flags_set(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_READY);
-        LWLTE_LOGI(TAG, "Module reset is done.");
+    if (strstr(line, "RDY") != NULL) {
+        if ((lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_READY) == 0))
+        {
+            lwlte_sys_flags_set(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_READY);
+            LWLTE_LOGI(TAG, "Module reset is done.");
+        }
+        else if ((lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_READY) == 1))
+        {
+            LWLTE_LOGE(TAG, "Multiple \"RDY\" responses received, you may check if the power supply of LTE module is stable.");
+        }
     }
     /* If the line contains "+CGEV: ME PDN ACT", it is a URC from the module that the PDN is activated */
     else if (strstr(line, "+CGEV: ME PDN ACT") != NULL && (lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_PDN_ACTIVATED) == 0)) {
@@ -124,7 +152,12 @@ static void handle_one_line(const char* line, int line_length)
     else if (lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_AT_CMD_IS_SENDING)) {
         strcat(s_lwlte_core_context.at_waiter.at_response, line);
         /* If the response contains the wait response or the error response, give the done semaphore */
-        if (strstr(s_lwlte_core_context.at_waiter.at_response, s_lwlte_core_context.at_waiter.at_wait_string) != NULL || strstr(s_lwlte_core_context.at_waiter.at_response, s_lwlte_core_context.at_waiter.at_error_string) != NULL) {
+        if (strstr(s_lwlte_core_context.at_waiter.at_response, s_lwlte_core_context.at_waiter.at_wait_string) != NULL) {
+            s_lwlte_core_context.at_waiter.response_ok = true;
+            lwlte_sys_semaphore_signal(s_lwlte_core_context.at_waiter.done);
+        }
+        else if (strstr(s_lwlte_core_context.at_waiter.at_response, s_lwlte_core_context.at_waiter.at_error_string) != NULL) {
+            s_lwlte_core_context.at_waiter.response_error = true;
             lwlte_sys_semaphore_signal(s_lwlte_core_context.at_waiter.done);
         }
     }
@@ -338,6 +371,7 @@ static void network_activate_task(void *pvParameters)
                 continue;
             }
         }
+        lwlte_sys_flags_set(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_NETWORK_CONNECTED);
         LWLTE_LOGI(TAG, "The LTE Module has connected to the network.");
         s_lwlte_core_context.network_activate_thread_handle = NULL;
         lwlte_sys_thread_delete(NULL);
@@ -364,4 +398,78 @@ lwlte_err_t lwlte_core_network_activate_internal(void)
     return LWLTE_OK;
 }
 
+bool lwlte_core_get_module_ready_internal(void)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return false;
+    }
+    return lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_READY);
+}
 
+bool lwlte_core_get_module_sim_card_ready_internal(void)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return false;
+    }
+    return lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_SIM_CARD_READY);
+}
+
+bool lwlte_core_get_module_signal_good_internal(void)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return false;
+    }
+    return lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_SIGNAL_GOOD);
+}
+
+bool lwlte_core_get_module_pdn_activated_internal(void)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return false;
+    }
+    return lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_PDN_ACTIVATED);
+}
+
+bool lwlte_core_get_module_ip_gprs_activated_internal(void)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return false;
+    }
+    return lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_IP_GPRS_ACTIVATED);
+}
+
+bool lwlte_core_get_network_connected_internal(void)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return false;
+    }
+    return lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_NETWORK_CONNECTED);
+}
+
+lwlte_err_t lwlte_core_wait_module_ready(lwlte_base_type_t timeout_ms)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return LWLTE_NOT_INITIALIZED;
+    }
+    lwlte_sys_flags_wait(s_lwlte_core_context.flags, 
+        LWLTE_FLAGS_MODULE_READY, true, 
+        false, timeout_ms);
+    if (lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_READY) == 0) {
+        return LWLTE_TIMEOUT;
+    }
+    return LWLTE_OK;
+}
+
+lwlte_err_t lwlte_core_wait_network_connected(lwlte_base_type_t timeout_ms)
+{
+    if (s_lwlte_core_context.flags == NULL) {
+        return LWLTE_NOT_INITIALIZED;
+    }
+    lwlte_sys_flags_wait(s_lwlte_core_context.flags, 
+        LWLTE_FLAGS_MODULE_NETWORK_CONNECTED, true, 
+        false, timeout_ms);
+    if (lwlte_sys_flags_get_bit(s_lwlte_core_context.flags, LWLTE_FLAGS_MODULE_NETWORK_CONNECTED) == 0) {
+        return LWLTE_TIMEOUT;
+    }
+    return LWLTE_OK;
+}
