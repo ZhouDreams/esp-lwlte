@@ -14,6 +14,7 @@
 #include "lwlte_sys_mutex.h"
 #include "lwlte_sys_thread.h"
 #include "lwlte_sys_log.h"
+#include "lwlte_sys_mem.h"
 #include "string.h"
 #include <stdbool.h>
 #include <string.h>
@@ -79,7 +80,7 @@ lwlte_err_t lwlte_core_send_at_cmd_internal(const char* cmd,
     /* Send the AT command */
     lwlte_ll_uart_write(cmd, strlen(cmd));
     /* Find \n\r and replace \n with \0 , then log the command*/
-    char *cmd_copy = (char*)malloc(strlen(cmd) + 1);
+    char *cmd_copy = lwlte_sys_mem_malloc(strlen(cmd) + 1);
     strcpy(cmd_copy, cmd);
     char *pos = strchr(cmd_copy, '\n');
     if (pos != NULL) {
@@ -167,7 +168,7 @@ static void core_worker_task(void *pvParameters)
 {
     LWLTE_LOGI(TAG, "core_worker_task starts.");
     /* Allocate the core_input_buf */
-    s_lwlte_core_context.core_input_buf = (char*)malloc(s_lwlte_core_context.config.uart_buf_size);
+    s_lwlte_core_context.core_input_buf = lwlte_sys_mem_malloc(s_lwlte_core_context.config.uart_buf_size);
     while (1) {
         /* Receive the input from the core_input_queue */
         lwlte_sys_queue_recv(s_lwlte_core_context.core_input_queue, 
@@ -237,11 +238,11 @@ lwlte_err_t lwlte_core_init_internal(const lwlte_config_t* config)
     /* Initialize the at_waiter */
     s_lwlte_core_context.at_waiter.done = lwlte_sys_semaphore_create();
     s_lwlte_core_context.at_waiter.lock = lwlte_sys_mutex_create();
-    s_lwlte_core_context.at_waiter.at_response = (char*)malloc(s_lwlte_core_context.config.uart_buf_size);
+    s_lwlte_core_context.at_waiter.at_response = lwlte_sys_mem_malloc(s_lwlte_core_context.config.uart_buf_size);
     s_lwlte_core_context.at_waiter.at_response[0] = '\0';
-    s_lwlte_core_context.at_waiter.at_error_string = (char*)malloc(s_lwlte_core_context.config.uart_buf_size);
+    s_lwlte_core_context.at_waiter.at_error_string = lwlte_sys_mem_malloc(s_lwlte_core_context.config.uart_buf_size);
     s_lwlte_core_context.at_waiter.at_error_string[0] = '\0';
-    s_lwlte_core_context.at_waiter.at_wait_string = (char*)malloc(s_lwlte_core_context.config.uart_buf_size);
+    s_lwlte_core_context.at_waiter.at_wait_string = lwlte_sys_mem_malloc(s_lwlte_core_context.config.uart_buf_size);
     s_lwlte_core_context.at_waiter.at_wait_string[0] = '\0';
     /* Initialize the UART */
     lwlte_ll_uart_config_t uart_config = {

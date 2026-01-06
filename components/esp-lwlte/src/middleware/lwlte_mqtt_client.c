@@ -14,6 +14,7 @@
 #include "lwlte_sys_mutex.h"
 #include "lwlte_sys_thread.h"
 #include "lwlte_sys_flags.h"
+#include "lwlte_sys_mem.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -32,7 +33,7 @@ static char* lwlte_string_dup(const char* str)
     if (str == NULL) {
         return NULL;
     }
-    char* new_str = (char*)malloc(strlen(str) + 1);
+    char* new_str = lwlte_sys_mem_malloc(strlen(str) + 1);
     strcpy(new_str, str);
     return new_str;
 }
