@@ -15,7 +15,7 @@ esp-lwlte 是一个专为 ESP-IDF 平台自主研发的组件库，封装与 LTE
 | 构建与调试 | [docs/agents/build-and-debug.md](docs/agents/build-and-debug.md) |
 | 代码规范与模板 | [docs/agents/coding-style.md](docs/agents/coding-style.md) |
 | C 语言 OOP 设计规范 | [docs/agents/oop-design.md](docs/agents/oop-design.md) |
-| 错误处理机制 | [docs/err.md](docs/err.md) |
+| 错误处理机制 | [docs/agents/err.md](docs/agents/err.md) |
 | AT 命令参考 | [docs/references/sys_at_cmd.md](docs/references/sys_at_cmd.md) |
 
 ## 文件使用指南

@@ -246,7 +246,3 @@ typedef struct {
 - **@note**: 中文
 - **@param/@return**: 中文
 - **行尾注释**: `/**< 中文； English */` 格式
-
-## 错误处理
-
-本项目直接使用 ESP-IDF 内置的 `esp_err_t` 和 `esp_check.h` 错误检查宏。完整规范见 [docs/err.md](../err.md)。

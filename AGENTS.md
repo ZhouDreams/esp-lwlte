@@ -15,7 +15,7 @@ esp-lwlte is a self-developed ESP-IDF component library that encapsulates AT com
 | Build & Debug | [docs/agents/build-and-debug.md](docs/agents/build-and-debug.md) |
 | Coding Style & Templates | [docs/agents/coding-style.md](docs/agents/coding-style.md) |
 | C OOP Design Guidelines | [docs/agents/oop-design.md](docs/agents/oop-design.md) |
-| Error Handling | [docs/err.md](docs/err.md) |
+| Error Handling | [docs/agents/err.md](docs/agents/err.md) |
 | AT Command Reference | [docs/references/sys_at_cmd.md](docs/references/sys_at_cmd.md) |
 
 ## File Usage Guide
