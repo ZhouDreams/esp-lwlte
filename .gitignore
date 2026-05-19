@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# IDE files
+.vscode/
+
+# Build files
+build/
+
+# Worktrees
+.worktrees/
+
+# Cache files
+.cache/
+
+# Reference (read-only archived project)
+reference/
+
+# Doxygen output
+docs/html/
+html/
