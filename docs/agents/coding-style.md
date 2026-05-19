@@ -106,10 +106,10 @@ extern "C" {
  * @details Initialize network connection
  * @param[in] config 配置参数； Configuration parameters
  * @return
- *         - LWLTE_OK: 成功； Success
- *         - LWLTE_ERROR: 失败； Failure
+ *         - ESP_OK: 成功； Success
+ *         - ESP_FAIL: 失败； Failure
  */
-static lwlte_err_t init_network(const config_t *config);
+static esp_err_t init_network(const config_t *config);
 
 /**
  * @brief 处理数据接收
@@ -128,7 +128,7 @@ static void handle_rx_data(const uint8_t *data, size_t len);
  *   STATIC FUNCTIONS
  **********************/
 
-static lwlte_err_t init_network(const config_t *config)
+static esp_err_t init_network(const config_t *config)
 {
     /* 实现代码 - 无需重复注释 */
     ...
@@ -153,8 +153,8 @@ static void handle_rx_data(const uint8_t *data, size_t len)
  * @param[in]
  * @param[out]
  * @return
- *         - LWLTE_OK:
- *         - LWLTE_NOT_INITIALIZED:
+ *         - ESP_OK:
+ *         - ESP_ERR_INVALID_STATE:
  *         - // and so on
  */
 ```
@@ -181,10 +181,10 @@ static void handle_rx_data(const uint8_t *data, size_t len)
  * @details Enum brief description in English
  */
 typedef enum {
-    LWLTE_STATE_IDLE = 0,      /**< 空闲状态； Idle state */
-    LWLTE_STATE_CONNECTING,    /**< 连接中； Connecting */
-    LWLTE_STATE_CONNECTED,     /**< 已连接； Connected */
-} lwlte_state_t;
+    LWLTE_XXX_STATE_IDLE = 0,      /**< 空闲状态； Idle state */
+    LWLTE_XXX_STATE_CONNECTING,    /**< 连接中； Connecting */
+    LWLTE_XXX_STATE_CONNECTED,     /**< 已连接； Connected */
+} lwlte_xxx_state_t;
 ```
 
 ### 结构体注释格式
@@ -213,8 +213,8 @@ typedef struct {
  * @param[in] param1 参数说明
  * @param[out] param2 输出参数说明
  * @return
- *         - LWLTE_OK: 成功
- *         - LWLTE_INVALID_ARG: 参数无效
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
  */
 ```
 
@@ -224,17 +224,17 @@ typedef struct {
 
 ```c
 /** 标志位定义； Flags definition */
-#define LWLTE_FLAG_ENABLED    LWLTE_BIT0   /**< 已启用； Enabled */
-#define LWLTE_FLAG_CONNECTED  LWLTE_BIT1   /**< 已连接； Connected */
+#define LWLTE_XXX_FLAG_ENABLED    BIT(0)   /**< 已启用； Enabled */
+#define LWLTE_XXX_FLAG_CONNECTED  BIT(1)   /**< 已连接； Connected */
 
 /**
  * @brief 检查是否已初始化
  * @details Check if initialized
  */
-#define LWLTE_CHECK_INIT() \
+#define LWLTE_XXX_CHECK_INIT(me) \
     do { \
-        if (!s_ctx.initialized) { \
-            return LWLTE_NOT_INITIALIZED; \
+        if (!(me)->initialized) { \
+            return ESP_ERR_INVALID_STATE; \
         } \
     } while(0)
 ```
@@ -247,53 +247,6 @@ typedef struct {
 - **@param/@return**: 中文
 - **行尾注释**: `/**< 中文； English */` 格式
 
-## 错误处理规范
+## 错误处理
 
-本项目采用类似 ESP-IDF 的错误处理机制，所有 API 返回 `lwlte_err_t` 枚举类型。
-
-### 错误检查宏使用规则
-
-| 场景 | 宏 | 说明 |
-|------|-----|------|
-| 有资源需清理 | `LWLTE_GOTO_ON_FALSE` / `LWLTE_GOTO_ON_ERROR` | 跳转到 cleanup 标签 |
-| 无资源需清理 | `LWLTE_RETURN_ON_FALSE` / `LWLTE_RETURN_ON_ERROR` | 直接返回 |
-| 失败可忽略 | `LWLTE_LOG_ON_ERROR` | 仅记录日志，不中断流程 |
-| 必须成功（致命错误） | `LWLTE_ERROR_CHECK` | **abort() 终止程序** |
-
-### goto cleanup 模式
-
-当函数中需要创建多个资源时，使用 goto cleanup 模式：
-
-```c
-lwlte_err_t some_init(void)
-{
-    lwlte_err_t err = LWLTE_OK;
-
-    s_ctx.queue = lwlte_sys_queue_create(...);
-    LWLTE_GOTO_ON_FALSE(s_ctx.queue, LWLTE_NO_MEM, cleanup, TAG, "Failed to create queue");
-
-    s_ctx.sem = lwlte_sys_semaphore_create();
-    LWLTE_GOTO_ON_FALSE(s_ctx.sem, LWLTE_NO_MEM, cleanup, TAG, "Failed to create semaphore");
-
-    LWLTE_ERROR_CHECK(lwlte_ll_uart_init(...));
-
-    return LWLTE_OK;
-
-cleanup:
-    if (s_ctx.sem) lwlte_sys_semaphore_delete(s_ctx.sem);
-    if (s_ctx.queue) lwlte_sys_queue_delete(s_ctx.queue);
-    memset(&s_ctx, 0, sizeof(s_ctx));
-    return err;
-}
-```
-
-### 不需要宏的情况
-
-| 情况 | 原因 | 示例 |
-|------|------|------|
-| 直接 `return func_call();` | 交给上层检查 | `return lwlte_core_fsm_post_event(event);` |
-| 条件判断后处理 | 已有特定逻辑 | `if (lwlte_sys_queue_recv(...) == LWLTE_OK) { ... }` |
-
-### 详细文档
-
-参见 [docs/err.md](../err.md) 获取完整的错误处理机制文档。
+本项目直接使用 ESP-IDF 内置的 `esp_err_t` 和 `esp_check.h` 错误检查宏。完整规范见 [docs/err.md](../err.md)。
