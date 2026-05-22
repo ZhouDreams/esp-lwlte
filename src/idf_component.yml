@@ -1,0 +1,15 @@
+version: "0.1.0"
+description: "ESP-IDF component library for LTE module AT command communication"
+url: "https://github.com/ZhouDreams/esp-lwlte"
+repository: "https://github.com/ZhouDreams/esp-lwlte.git"
+license: "MIT"
+
+dependencies:
+  idf:
+    version: "6.0"
+
+tags:
+  - lte
+  - at_command
+  - modem
+  - cellular
