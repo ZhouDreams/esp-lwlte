@@ -1,6 +1,6 @@
 # C 语言 OOP 设计规范
 
-本规范基于[《赵明嵌入式 C 语言面向对象教程》](https://zhaochengbo.github.io/zhaoming-embedded/)的核心思想编写，规定了 esp-lwlte 项目中用 C 实现面向对象设计的编码规则与代码模板。核心三要素：**封装、继承、多态**。
+本规范基于[《兆铭嵌入式 C 语言面向对象教程》](https://zhaochengbo.github.io/zhaoming-embedded/)的核心思想编写，规定了 esp-lwlte 项目中用 C 实现面向对象设计的编码规则与代码模板。核心三要素：**封装、继承、多态**。
 
 ---
 

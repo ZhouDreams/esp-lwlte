@@ -1,6 +1,8 @@
 # 架构概览
 
-esp-lwlte 采用严格的**五层分层架构**，层间通过 ops 表 + 回调注册实现单向依赖与数据上行。
+esp-lwlte 采用**四层分层架构**，层间通过 ops 表 + 回调注册实现单向依赖与数据上行。
+
+本组件直接构建在 ESP-IDF 之上，所有层都可以直接使用 ESP-IDF / FreeRTOS API（`xTaskCreate`、`xQueueCreate`、`vTaskDelay`、`uart_write_bytes` 等），不做平台抽象封装。这与 Espressif 官方组件（esp-mqtt、button、esp-sr 等）的设计哲学一致。
 
 ---
 
@@ -32,16 +34,11 @@ esp-lwlte 采用严格的**五层分层架构**，层间通过 ops 表 + 回调�
      │        └─────────────────────────────────────┘     │
      ▼                                                    │
 ┌──────────┐  ┌─────────────────────────────────────┐     │
-│  AT 引擎  │  │  通用 AT 协议引擎                      │     │
+│  AT 引擎  │  │  通用 AT 协议引擎 + UART 硬件操作       │     │
 │    AT    │  │  发命令、收响应、行解析、超时重试          │     │
-│  Engine  │  │  URC 模式匹配与回调分发                   │     │
-└────┬─────┘  │  不关心具体指令含义                        │     │
-     │        └─────────────────────────────────────┘     │
-     ▼                                                    │
-┌──────────┐  ┌─────────────────────────────────────┐     │
-│  移植层  │  │  封装 ESP-IDF 平台 API                 │     │
-│   Port   │  │  UART、线程、互斥锁、队列、定时器、GPIO   │     │
-└──────────┘  │  不涉及 AT 协议或模块逻辑                │     │
+│  Engine  │  │  UART 中断/轮询接收、TX 写入              │     │
+└──────────┘  │  URC 模式匹配与回调分发                   │     │
+              │  不关心具体指令含义                        │     │
               └─────────────────────────────────────┘     │
                                                           │
                      回调方向（向上）                        │
@@ -53,38 +50,54 @@ esp-lwlte 采用严格的**五层分层架构**，层间通过 ops 表 + 回调�
 
 ---
 
-## 2. 调用规则
+## 2. 设计哲学：直接建在 ESP-IDF 上
 
-### 2.1 核心规则
+### 2.1 不做的事
 
-| 类别 | 规则 | 示例 |
-|------|------|------|
-| **函数调用** | 只能调紧邻的下一层 | Core 不能调 `port_uart_write()` |
-| **类型/句柄引用** | 可以持有 port 层的类型 | Core 可以持有 `mutex_t`（通过初始化链传下来的） |
-| **配置数据** | 自上而下单向传递 | App config → Core → Modem → AT Engine → Port |
-| **事件/URC** | 自下而上通过回调冒泡 | Port 字节流 → AT Engine URC → Modem 事件 → Core 状态 → App 通知 |
+- **不封装 FreeRTOS API**：没有 `lwlte_thread_create()`，直接用 `xTaskCreate()`
+- **不封装 UART API**：没有 `lwlte_uart_write()`，直接用 `uart_write_bytes()`
+- **不封装互斥锁/队列**：没有 `lwlte_mutex_create()`，直接用 `xSemaphoreCreateMutex()`
+- **不抽象平台层**：没有 `port_ops` 表，没有"换 RTOS 只需换 port 实现"的幻想
 
-### 2.2 为什么禁止跨层调用
+### 2.2 这样做是对的，因为
 
-允许 Core 直接调 port，很快 port 层会变成所有人的工具库，层间边界形同虚设。port 提供的基础类型（mutex、queue、thread）确实是全局需要的——解决方案是让它们通过 **初始化链往下传**，调用者只持有产物，不直接调 port 的创建函数。
+Espressif 官方组件（esp-mqtt、button、esp-sr、LCD 驱动）无一例外直接在 `.c` 文件里 `#include "freertos/task.h"` 然后裸调 `xTaskCreate`、`vTaskDelay`。它们认为"组件就是跑在 ESP-IDF 上的，没必要抽象"。
 
-**一句话口诀：可以持有 port 的产物，不能调用 port 的函数。**
-
-### 2.3 每层的能力边界
-
-| 层 | 可以调用的层 | 可以持有的类型 | 可以知道的符号 |
-|----|------------|-------------|-------------|
-| App | Core public API | Core 句柄、App 自身定义的类型 | `lwlte_core.h`、`lwlte_mqtt.h` 等公共头文件 |
-| Core | Modem ops 统一接口 | Port 产物（mutex/queue/thread）、Core 自身定义的类型 | modem_ops 表、port 类型前向声明 |
-| Modem | AT Engine API | AT Engine 句柄、Modem 自身定义的类型 | AT Engine 公共头文件 |
-| AT Engine | Port ops 统一接口 | Port 产物（UART 句柄、mutex、timer）、AT Engine 自身类型 | Port ops 表 |
-| Port | ESP-IDF API | FreeRTOS / UART / GPIO 等原生类型 | ESP-IDF 头文件 |
+esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只有一个，目标 RTOS 只有一个。
 
 ---
 
-## 3. 数据流：AT 指令下行与 URC 上行
+## 3. 调用规则
 
-### 3.1 AT 指令下行（调用链）
+### 3.1 核心规则
+
+| 类别 | 规则 | 示例 |
+|------|------|------|
+| **函数调用** | 只能调紧邻的下一层 | Core 不能调 `uart_write_bytes()` |
+| **ESP-IDF 引用** | 任何层都可以直接 `#include` ESP-IDF/FreeRTOS 头文件 | AT Engine 直接 include `driver/uart.h`、`freertos/task.h` |
+| **配置数据** | 自上而下单向传递 | App config → Core → Modem → AT Engine |
+| **事件/URC** | 自下而上通过回调冒泡 | AT Engine URC → Modem 事件 → Core 状态 → App 通知 |
+
+### 3.2 跨层调用仍然禁止
+
+虽然所有层都可以使用 ESP-IDF API，但**层间函数调用仍然只能向下调紧邻的下一层**。Core 不能直接调 AT Engine 的函数，必须通过 Modem Adapter 间接调用。
+
+不封装 FreeRTOS API 不等于可以跨层调业务接口。
+
+### 3.3 每层的能力边界
+
+| 层 | 可以调用的层 | 可以使用的 ESP-IDF API | 可以知道的符号 |
+|----|------------|----------------------|-------------|
+| App | Core public API | 不限（但实践中只用于业务逻辑无关的初始化） | `lwlte_core.h`、`lwlte_mqtt.h` 等公共头文件 |
+| Core | Modem ops 统一接口 | 不限（FreeRTOS task/queue/timer、esp_event 等） | modem_ops 表、Core 自身定义的类型 |
+| Modem | AT Engine API | 不限（driver/gpio.h 用于模块复位/电源控制等） | AT Engine 公共头文件、Modem 自身定义的类型 |
+| AT Engine | 无下层（最底层） | 不限（driver/uart.h、FreeRTOS task/queue 等，直接操作硬件） | AT Engine 自身类型 |
+
+---
+
+## 4. 数据流：AT 指令下行与 URC 上行
+
+### 4.1 AT 指令下行（调用链）
 
 ```
 App:  不需要知道 AT 指令存在
@@ -92,27 +105,21 @@ App:  不需要知道 AT 指令存在
 Core:  modem->ops->set_apn(modem, "cmnet")
          │  通过 modem_ops 表调用（不知道下面是哪个模块）
          ▼
-Modem: at_engine->send_cmd(at, "AT+CGDCONT=1,\"IP\",\"cmnet\"")
+Modem: at_engine_send_cmd(at, "AT+CGDCONT=1,\"IP\",\"cmnet\"", 3000)
          │  将语义操作翻译为具体 AT 指令字符串
          ▼
-AT Eng: port->ops->uart_write(port, buf, len)
+AT Eng: uart_write_bytes(uart_num, buf, len)    ← 直接调 ESP-IDF UART API
          │  加上 \r\n，处理超时重试
          ▼
-Port:  uart_write_bytes(uart_num, buf, len)
-         │  直接调 ESP-IDF UART API
-         ▼
-       硬件 TX 引脚
+        硬件 TX 引脚
 ```
 
-### 3.2 URC 上行（回调链）
+### 4.2 URC 上行（回调链）
 
 ```
         硬件 RX 引脚
          │
-Port:  uart_read_bytes() → 原始字节流
-         │  回调：data_handler(uint8_t *data, size_t len)
-         ▼
-AT Eng: 行拼接 → 匹配 URC 前缀 → 分发给已注册的 handler
+AT Eng: uart_read_bytes() → 行拼接 → 匹配 URC 前缀 → 分发给已注册的 handler
          │  "AT Engine 只做模式匹配，不知道 URC 的模块含义"
          │  持有：urc_handler_t *handlers[]  (按前缀字符串注册)
          │  回调：urc_handler(prefix, line)
@@ -128,7 +135,7 @@ Core:   处理事件 → 更新网络状态机 → 通知 App
 App:    业务响应（重连、告警、降级等）
 ```
 
-### 3.3 回调注册时序
+### 4.3 回调注册时序
 
 回调在初始化阶段由上层向下层注册，保证运行时调用方向始终是单向的：
 
@@ -152,37 +159,42 @@ int core_init(core_t *me, modem_t *modem) {
 
 ---
 
-## 4. 各层职责详述
+## 5. 各层职责详述
 
-### 4.1 Port 层（移植层）
+### 5.1 AT Engine 层（AT 引擎层）
 
-| 维度 | 说明 |
-|------|------|
-| **职责** | 封装 ESP-IDF 平台 API，向上层提供统一的操作接口 |
-| **知道什么** | UART 引脚、波特率、FreeRTOS API、GPIO 复位、定时器 |
-| **不知道什么** | AT 协议、LTE 模块型号、网络状态、业务逻辑 |
-| **对外接口** | `struct port_ops { uart_write, uart_read, mutex_create, thread_create, ... }` |
-| **OOP 角色** | 平台抽象接口 — 换 RTOS 时只换这一层的 ops 实现 |
-
-Port 层是唯一 `#include "freertos/FreeRTOS.h"`、`#include "driver/uart.h"` 的地方。任何 ESP-IDF 头文件不应出现在 Port 层以上的文件中。
-
-### 4.2 AT Engine 层（AT 引擎层）
+AT Engine 是四层架构的最底层，直接操作 UART 硬件。
 
 | 维度 | 说明 |
 |------|------|
-| **职责** | 通用 AT 协议引擎：发命令、收响应、行解析、超时重试、URC 检测与分发 |
-| **知道什么** | AT 协议格式（`AT+XXX\r\n`、`\r\nOK\r\n`、`\r\nERROR\r\n`）、超时机制、URC 前缀识别 |
+| **职责** | 通用 AT 协议引擎 + UART 硬件操作：发命令、收响应、行解析、超时重试、URC 检测与分发 |
+| **知道什么** | AT 协议格式（`AT+XXX\r\n`、`\r\nOK\r\n`、`\r\nERROR\r\n`）、超时机制、URC 前缀识别、UART 引脚与波特率 |
 | **不知道什么** | 具体 AT 指令的含义、模块型号、网络状态 |
-| **对外接口** | `at_send_cmd(at, cmd, timeout)` → `at_response_t`；`at_register_urc(at, prefix, handler)` |
-| **OOP 角色** | 协议栈 — 所有 AT 模块共用的基础设施 |
+| **对外接口** | `at_engine_send_cmd(at, cmd, timeout)` → `at_response_t`；`at_engine_register_urc(at, prefix, handler)` |
+| **内部实现** | 创建 UART RX 接收线程（`xTaskCreate`），直接调用 `uart_write_bytes` / `uart_read_bytes`，用 `xQueue` 传递接收数据 |
+| **OOP 角色** | 协议栈 + 硬件驱动 — 所有 AT 模块共用的基础设施 |
 
-AT Engine 是一个"聪明的邮差"：会按地址送信、收信、识别加急件（URC），但从不拆信看内容。
+AT Engine 是一个"聪明的邮差"：会按地址送信、收信、识别加急件（URC），但从不拆信看内容。同时它也负责维护邮路（UART 硬件）本身。
 
-### 4.3 Modem Adapter 层（模块适配层）
+AT Engine 的配置直接包含 UART 硬件参数：
+
+```c
+typedef struct {
+    uart_port_t uart_num;        // UART 端口号（如 UART_NUM_1）
+    int tx_pin;                  // TX GPIO
+    int rx_pin;                  // RX GPIO
+    int baud_rate;               // 波特率（如 115200）
+    int rx_buf_size;             // 接收缓冲区大小
+    int rx_task_stack;           // 接收任务栈大小
+    int rx_task_priority;        // 接收任务优先级
+} at_engine_config_t;
+```
+
+### 5.2 Modem Adapter 层（模块适配层）
 
 这一层由两部分组成：**接口定义（基类）** + **模块实现（子类）**。
 
-#### 4.3.1 Modem Interface（模块抽象接口）
+#### 5.2.1 Modem Interface（模块抽象接口）
 
 | 维度 | 说明 |
 |------|------|
@@ -191,14 +203,16 @@ AT Engine 是一个"聪明的邮差"：会按地址送信、收信、识别加�
 | **不知道什么** | 每个操作的具体 AT 指令格式 |
 | **对外接口** | `struct modem_ops { .init, .get_signal, .get_imei, .connect, .set_apn, ... }` |
 
-#### 4.3.2 Modem Impl（具体模块实现）
+#### 5.2.2 Modem Impl（具体模块实现）
 
 | 维度 | 说明 |
 |------|------|
 | **职责** | 实现 `modem_ops` 表中每个方法，将语义操作翻译为具体 AT 指令 |
-| **知道什么** | 该模块的初始化序列、AT 指令格式、URC 字符串的语义含义 |
+| **知道什么** | 该模块的初始化序列、AT 指令格式、URC 字符串的语义含义、模块硬件控制（GPIO 复位、电源） |
 | **不知道什么** | 网络状态机逻辑、上层协议、应用业务 |
 | **OOP 角色** | 子类 — 继承 modem_interface，实现虚函数 |
+
+Modem Impl 可以直接使用 `driver/gpio.h` 控制模块的 RESET/PWRKEY 引脚。
 
 **Modem 层的核心价值**：不同 LTE 模块最大的差异就是 AT 指令格式和 URC 格式。把差异封装在 modem_impl 中，通过统一的 modem_ops 暴露给 Core，上层零感知。
 
@@ -206,18 +220,18 @@ AT Engine 是一个"聪明的邮差"：会按地址送信、收信、识别加�
 /* 不同模块实现同一个接口的不同行为 */
 /* Air780EP: */
 static esp_err_t air780ep_get_signal(modem_t *me, int *rssi, int *ber) {
-    at_response_t *resp = me->at->ops->send_cmd(me->at, "AT+CSQ", 3000);
+    at_response_t *resp = at_engine_send_cmd(me->at, "AT+CSQ", 3000);
     /* 解析 +CSQ: <rssi>,<ber> */
 }
 
 /* SIM800: 同一个方法，不同 AT 指令 */
 static esp_err_t sim800_get_signal(modem_t *me, int *rssi, int *ber) {
-    at_response_t *resp = me->at->ops->send_cmd(me->at, "AT+CSQ", 5000);  /* 超时不同 */
+    at_response_t *resp = at_engine_send_cmd(me->at, "AT+CSQ", 5000);  /* 超时不同 */
     /* 解析格式可能不同 */
 }
 ```
 
-### 4.4 Core Service 层（核心服务层）
+### 5.3 Core Service 层（核心服务层）
 
 | 维度 | 说明 |
 |------|------|
@@ -227,129 +241,135 @@ static esp_err_t sim800_get_signal(modem_t *me, int *rssi, int *ber) {
 | **对外接口** | `lwlte_core_create()`、`lwlte_core_start()`、`lwlte_mqtt_publish()`、事件回调注册 |
 | **OOP 角色** | 业务逻辑 — 调用 modem 接口，不关心实现 |
 
-### 4.5 App 层（应用层）
+Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保活定时器，直接调 `xTaskCreate` 等 API。
+
+### 5.4 App 层（应用层）
 
 | 维度 | 说明 |
 |------|------|
 | **职责** | 用户业务逻辑 |
 | **知道什么** | Core Service 提供的公共 API |
 | **不知道什么** | 硬件、模块、AT 指令、协议细节 |
-| **规则** | 代码中不出现任何 ESP-IDF 头文件、AT 指令字符串、模块型号 |
+| **规则** | 代码中不出现 AT 指令字符串、模块型号 |
 
 ---
 
-## 5. 初始化与装配
+## 6. 初始化与装配
 
-### 5.1 初始化链
+### 6.1 初始化链
 
 初始化从底向上，回调从顶向下注册：
 
 ```
 Board Init
     │
-    ├─ 1. lwlte_port_espidf_create()          → 创建 Port 实例
-    │       └─ 注入 espidf_ops（static const）
+    ├─ 1. at_engine_create(&uart_config)        → 创建 AT Engine
+    │       └─ 内部创建 UART RX 线程，初始化 UART 硬件
     │
-    ├─ 2. lwlte_at_engine_create(port)        → 创建 AT Engine
-    │       └─ 传入 port 句柄，AT Engine 通过 port->ops 操作硬件
-    │
-    ├─ 3. lwlte_modem_air780ep_create(at)     → 创建 Modem 实例
-    │       ├─ 传入 at 句柄，Modem 通过 at->ops 发 AT 指令
+    ├─ 2. modem_air780ep_create(at)             → 创建 Modem 实例
+    │       ├─ 传入 at 句柄，Modem 通过 at_engine_send_cmd() 发 AT 指令
     │       └─ modem 内部注册 URC handler 到 at engine
     │
-    ├─ 4. lwlte_core_create(config, modem)    → 创建 Core 实例
+    ├─ 3. lwlte_core_create(&config, modem)     → 创建 Core 实例
     │       ├─ 传入 modem 句柄，Core 通过 modem->ops 操作模块
     │       └─ core 内部注册事件回调到 modem
     │
-    └─ 5. app_init(core)                      → App 持有 Core 句柄
+    └─ 4. app_init(core)                        → App 持有 Core 句柄
             └─ app 注册业务事件回调到 core
 ```
 
-### 5.2 Board Init 模式
+### 6.2 Board Init 模式
 
 Board Init 是唯一认识所有具体类型的文件，负责装配整个依赖树：
 
 ```c
-/* lwlte_board_init.c — 唯一认识硬件的文件 */
+/* lwlte_board_init.c — 唯一认识硬件和模块型号的文件 */
 
 lwlte_core_t *g_core;   /* 全局句柄（仅此一个） */
 
 int lwlte_board_init(void)
 {
-    /* 1. 底：创建平台实现 */
-    lwlte_port_t *port = lwlte_port_espidf_create();
-    if (!port) return -1;
+    /* 1. 底：创建 AT Engine（直接传入 UART 硬件配置） */
+    at_engine_config_t at_cfg = {
+        .uart_num         = UART_NUM_1,
+        .tx_pin           = GPIO_NUM_17,
+        .rx_pin           = GPIO_NUM_16,
+        .baud_rate        = 115200,
+        .rx_buf_size      = 2048,
+        .rx_task_stack    = 4096,
+        .rx_task_priority = 10,
+    };
+    at_engine_t *at = at_engine_create(&at_cfg);
+    if (!at) return -1;
 
-    /* 2. AT 引擎 */
-    lwlte_at_engine_t *at = lwlte_at_engine_create(port);
-    if (!at) goto err_port;
-
-    /* 3. 模块适配（换模块只需换这一行） */
-    lwlte_modem_t *modem = lwlte_modem_air780ep_create(at);
+    /* 2. 模块适配（换模块只需换这一行） */
+    modem_t *modem = modem_air780ep_create(at);
     if (!modem) goto err_at;
 
-    /* 4. 核心服务 */
+    /* 3. 核心服务 */
     lwlte_core_config_t config = {
-        .apn     = CONFIG_LWLTE_APN,
+        .apn       = CONFIG_LWLTE_APN,
         .auto_conn = true,
         .keepalive = 60,
     };
     g_core = lwlte_core_create(&config, modem);
     if (!g_core) goto err_modem;
 
-    /* 5. 注册 App 事件回调 */
+    /* 4. 注册 App 事件回调 */
     lwlte_core_register_event(g_core, LWLTE_EVENT_ALL, app_event_handler, NULL);
     return 0;
 
 err_modem:
-    lwlte_modem_destroy(modem);
+    modem_destroy(modem);
 err_at:
-    lwlte_at_engine_destroy(at);
-err_port:
-    lwlte_port_destroy(port);
+    at_engine_destroy(at);
     return -1;
 }
 ```
 
-**换模块时只改第 3 步的一行代码。** 换平台时只改第 1 步。其余代码零改动。
+**换模块时只改第 2 步的一行代码。** 其余代码零改动。
 
 ---
 
-## 6. OOP 模式在架构中的落地
+## 7. OOP 模式在架构中的落地
 
 | OOP 概念 | 架构落点 | 具体表现 |
 |----------|---------|---------|
-| **封装** | 全部五层 | 每层对外只暴露句柄 + 操作函数，内部结构体不公开 |
+| **封装** | 全部四层 | 每层对外只暴露句柄 + 操作函数，内部结构体不公开 |
 | **继承** | Modem 层 | modem_interface（基类）→ modem_air780ep（子类），struct 嵌套 + container_of |
-| **多态** | Modem 层 + Port 层 | modem_ops 表 → 不同模块同一接口不同行为；port_ops 表 → 不同平台 |
+| **多态** | Modem 层 | modem_ops 表 → 不同模块同一接口不同行为 |
 | **抽象类** | Modem Interface | 定义 ops 表但不实现，子类必须填充 |
 | **vptr 注入** | 各层 init 函数 | `me->ops = ops` 在 init 时完成，`static const` 存于 `.rodata` |
 | **板级装配** | Board Init | 唯一认识所有具体类型的文件，组装依赖树 |
-| **零硬件引用** | App 层 + Core 层 | 不 include 任何 ESP-IDF 或模块私有头文件 |
+| **零硬件引用** | App 层 + Core 层 | 不 include 模块私有头文件 |
 
 ---
 
-## 7. 与旧架构的关键区别
+## 8. 与旧架构的关键区别
 
 | 旧架构 | 新架构 |
 |--------|--------|
-| 三层（中间件 + Port + App） | 五层（Port → AT Engine → Modem → Core → App） |
-| Port 层混杂了 AT 命令生成 | AT 协议引擎独立成层 |
+| 五层（Port → AT Engine → Modem → Core → App） | 四层（AT Engine → Modem → Core → App） |
+| Port 层封装 ESP-IDF API（lwlte_thread_create 等 wrapper） | 所有层直接使用 ESP-IDF/FreeRTOS API |
+| UART 操作在 Port 层，通过 ops 表间接调用 | UART 直接内置在 AT Engine，直接调 driver/uart.h |
+| port_ops 多态用于"换 RTOS" | 无 port_ops，不抽象平台 |
+| `port->ops->uart_write(port, buf, len)` | `uart_write_bytes(uart_num, buf, len)` |
+| Port 层同时处理 UART + 线程 + 互斥锁 + GPIO | AT Engine 处理 UART，Modem 处理 GPIO（模块复位），各层各自直接调 IDF API |
+| 三层（中间件 + Port + App） | 四层（AT Engine → Modem → Core → App） |
 | 模块差异散落在各处 | 模块差异集中在 Modem Adapter 层，通过 ops 表统一 |
-| 直接调用 `lwlte_sys_xxx()` | 通过 `platform->ops->xxx()` 间接调用 |
 | 全局单例 `s_ctx` | create 返回句柄，支持多实例 |
 | URC 处理嵌入在 FSM 中 | URC 沿回调链逐层翻译上传 |
 | core 同时认识 AT 和平台 | core 只认识 modem_ops，不跨层 |
 
 ---
 
-## 8. 待细化问题
+## 9. 待细化问题
 
 以下问题值得在进入编码前进一步讨论：
 
 1. **FSM 放置**：网络状态机放在 Core 层是一整块，还是拆分为 Core（高层状态）+ Modem Impl（AT 级状态）两层 FSM？两者如何同步？
 
-2. **线程模型**：哪些层拥有自己的线程？AT Engine 需要一个接收线程？Core 需要一个 FSM 线程？线程数是否有硬约束？
+2. **线程模型**：哪些层拥有自己的线程？AT Engine 有一个 UART RX 线程？Core 有一个 FSM 线程？线程数是否有硬约束？
 
 3. **错误传播**：AT Engine 返回 `TIMEOUT` 和 Modem 返回 `NO_RESPONSE` 和 Core 返回 `NETWORK_ERROR` 之间的错误码映射规则是什么？
 
@@ -361,4 +381,4 @@ err_port:
 
 7. **测试策略**：每层通过注入 mock ops 表做单元测试，但跨层集成测试（如 Modem + AT Engine 联调）要测到什么粒度？
 
-8. **并发模型**：Port 层提供的队列/互斥锁是否假设为线程安全？AT Engine 接收线程和 Core FSM 线程之间的数据竞争谁来负责？
+8. **并发模型**：AT Engine 接收线程和 Core FSM 线程之间的数据竞争由各自内部处理？是否需要一个明确的线程安全约定？

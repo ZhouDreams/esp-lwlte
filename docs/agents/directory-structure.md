@@ -14,12 +14,11 @@ esp-lwlte/
 
 ### src/ — 组件源码
 
-esp-lwlte 组件的全部源代码。内部按架构分层组织：
+esp-lwlte 组件的全部源代码。内部按四层架构组织：
 
 ```
 src/
-├── port/          # 移植层（ESP-IDF 平台封装）
-├── at_engine/     # AT 引擎层（通用 AT 协议引擎）
+├── at_engine/     # AT 引擎层（通用 AT 协议引擎 + UART 硬件操作）
 ├── modem/         # 模块适配层（接口定义 + 具体模块实现）
 ├── core/          # 核心服务层（网络状态机、PDP 管理、MQTT/HTTP）
 └── include/       # 公共头文件（对外 API）
