@@ -14,14 +14,20 @@ esp_err_t lwlte_mqtt_publish(lwlte_mqtt_t *me, const lwlte_mqtt_req_t *req);
 esp_err_t lwlte_net_get_signal(lwlte_net_t *me, int *rssi);
 ```
 
-### 1.2 ops 表方法统一返回 `esp_err_t`
+### 1.2 Modem 公共包装 API 和内部 ops 方法统一返回 `esp_err_t`
 
 ```c
+/* include/modem.h：Core 调用公共 modem_* 包装 API */
+esp_err_t modem_init(modem_t *me);
+esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
+esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn);
+
+/* Modem 层内部：wrapper 实现再分发到具体模块 ops */
 struct modem_ops {
     esp_err_t (*init)(modem_t *me);
-    esp_err_t (*get_signal)(modem_t *me, int *rssi, int *ber);
-    esp_err_t (*set_apn)(modem_t *me, const char *apn);
-    esp_err_t (*connect)(modem_t *me);
+    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
+    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
+    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
 };
 ```
 
@@ -70,20 +76,19 @@ ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE, 0, 0, NULL, 0));
 ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 ```
 
-**规则**：只能在 Board Init 或 Port 层初始化中使用。Core 层及以上禁止调用 `ESP_ERROR_CHECK`——应用层不应有 `abort()` 调用。
+**规则**：只能在 Board Init 这类最外层硬件装配入口中使用。Core 层及以上禁止调用 `ESP_ERROR_CHECK`——应用层不应有 `abort()` 调用。
 
 ### 2.3 `ESP_RETURN_ON_ERROR` / `ESP_RETURN_ON_FALSE` — 错误返回
 
 用于无需清理资源的场景：
 
 ```c
-esp_err_t lwlte_core_send_cmd(lwlte_core_t *me, const char *cmd)
+esp_err_t lwlte_core_set_apn(lwlte_core_t *me, const char *apn)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
-    ESP_RETURN_ON_FALSE(cmd, ESP_ERR_INVALID_ARG, TAG, "cmd is NULL");
+    ESP_RETURN_ON_FALSE(me && me->modem && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
-    esp_err_t ret = me->modem->ops->send_cmd(me->modem, cmd, 3000);
-    ESP_RETURN_ON_ERROR(ret, TAG, "send_cmd failed: %s", cmd);
+    esp_err_t ret = modem_set_apn(me->modem, 1, apn);
+    ESP_RETURN_ON_ERROR(ret, TAG, "set APN failed");
 
     return ESP_OK;
 }
@@ -95,7 +100,7 @@ esp_err_t lwlte_core_send_cmd(lwlte_core_t *me, const char *cmd)
 
 ```c
 esp_err_t lwlte_core_create(const lwlte_core_config_t *config,
-                             lwlte_modem_t *modem,
+                             modem_t *modem,
                              lwlte_core_t **out_core)
 {
     ESP_RETURN_ON_FALSE(config && modem && out_core, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -108,8 +113,8 @@ esp_err_t lwlte_core_create(const lwlte_core_config_t *config,
     me->fsm_queue = xQueueCreate(CONFIG_LWLTE_FSM_QUEUE_SIZE, sizeof(sig_item_t));
     ESP_GOTO_ON_FALSE(me->fsm_queue, ESP_ERR_NO_MEM, err, TAG, "xQueueCreate fsm_queue failed");
 
-    ret = lwlte_core_register_urc(me);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URC failed");
+    ret = modem_register_event_callback(modem, core_modem_event_handler, me);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "register modem event callback failed");
 
     *out_core = me;
     return ESP_OK;
@@ -128,16 +133,18 @@ err:
 ```c
 esp_err_t lwlte_net_get_signal(lwlte_net_t *me, int *rssi)
 {
-    ESP_RETURN_ON_FALSE(me && rssi, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->modem && rssi, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     void *buf = malloc(128);
     ESP_RETURN_ON_FALSE(buf, ESP_ERR_NO_MEM, TAG, "malloc failed");
 
+    modem_signal_t signal = {0};
     ESP_RETURN_ON_ERROR_CLEANUP(
-        me->modem->ops->get_signal(me->modem, rssi, NULL),
+        modem_get_signal(me->modem, &signal),
         free(buf)
     );
 
+    *rssi = signal.rssi;
     free(buf);
     return ESP_OK;
 }
@@ -183,7 +190,7 @@ ESP_LOG_ON_ERROR(lwlte_core_post_event(me, LWLTE_EVENT_STARTED), TAG, "post even
 | 无资源需清理 | `ESP_RETURN_ON_ERROR` / `ESP_RETURN_ON_FALSE` | 直接返回 |
 | 清理简单（1-2行） | `ESP_RETURN_ON_ERROR_CLEANUP` | 无需 goto 标签 |
 | 失败可忽略 | `ESP_LOG_ON_ERROR` | 仅记录警告日志 |
-| 致命错误 | `ESP_ERROR_CHECK` | abort() — 仅 Port/Boad Init |
+| 致命错误 | `ESP_ERROR_CHECK` | abort() — 仅 Board Init |
 | 直接 `return func()` | 不用宏 | 上层来检查返回值 |
 
 ### 不应用宏的情况
@@ -191,7 +198,7 @@ ESP_LOG_ON_ERROR(lwlte_core_post_event(me, LWLTE_EVENT_STARTED), TAG, "post even
 | 情况 | 做法 | 示例 |
 |------|------|------|
 | 需要根据错误码分支处理 | 手动 `if` | `if (ret == ESP_ERR_TIMEOUT) { ... }` |
-| 将错误码传播给调用者 | 直接 `return func()` | `return modem->ops->send_cmd(...)` |
+| 将错误码传播给调用者 | 直接 `return func()` | `return modem_set_apn(modem, 1, apn)` |
 
 ---
 
@@ -209,10 +216,9 @@ ESP_LOG_ON_ERROR(lwlte_core_post_event(me, LWLTE_EVENT_STARTED), TAG, "post even
 
 ```c
 esp_err_t lwlte_xxx_create(const lwlte_xxx_config_t *config,
-                            lwlte_platform_t *platform,
                             lwlte_xxx_t **out)
 {
-    ESP_RETURN_ON_FALSE(config && platform && out, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(config && out, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = ESP_OK;
 
@@ -245,25 +251,26 @@ err:
 
 ---
 
-## 6. ops 表调用中的错误处理
+## 6. `modem_*` 包装 API 与 ops 表调用中的错误处理
 
-ops 表方法全部返回 `esp_err_t`。调用时遵循统一接口守卫模式（详见 `oop-design.md` 第 4 章）：
+Core 层只调用 `modem_*` 包装 API，内部多态机制不向 Core 暴露。
+`modem_ops` 仅在 Modem 层 wrapper 实现内部使用。二者都返回 `esp_err_t`，调用时遵循统一接口守卫模式（详见 `oop-design.md` 第 4 章）：
 
-### 6.1 必填方法 — 直接调用并传播
+### 6.1 Core 调用 `modem_*` 包装 API — 直接传播
 
 ```c
-/* 必填方法：上层直接通过 ops 调用，错误向上传播 */
+/* Core 层通过 modem_* 包装 API 调用，错误向上传播 */
 esp_err_t lwlte_core_set_apn(lwlte_core_t *me, const char *apn)
 {
-    ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-    return me->modem->ops->set_apn(me->modem, apn);
+    ESP_RETURN_ON_FALSE(me && me->modem && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    return modem_set_apn(me->modem, 1, apn);
 }
 ```
 
-### 6.2 选填方法 — NULL 检查后提供默认行为
+### 6.2 Modem wrapper 选填方法 — NULL 检查后提供默认行为
 
 ```c
-esp_err_t lwlte_modem_sleep(modem_t *me)
+esp_err_t modem_sleep(modem_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->ops, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -299,5 +306,5 @@ esp_err_t lwlte_transport_send(transport_t *me, const uint8_t *data, size_t len)
 | 自定义错误检查宏（`LWLTE_RETURN_ON_*` 等） | 使用 `esp_check.h` 的 `ESP_RETURN_ON_*` / `ESP_GOTO_ON_*` |
 | `ESP_GOTO_ON_*` 用 `ret` 之外的变量名 | 宏内部固定写 `ret`，否则编译不过 |
 | goto 标签不用 `err` | 统一用 `err`，全项目一致 |
-| Core 层及以上调用 `ESP_ERROR_CHECK` | 致命 abort 只允许在 Port / Board Init |
+| Core 层及以上调用 `ESP_ERROR_CHECK` | 致命 abort 只允许在 Board Init |
 | 返回 `int` 表示错误 | 统一返回 `esp_err_t` |

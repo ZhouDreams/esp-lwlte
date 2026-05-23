@@ -7,7 +7,7 @@
 | 可见性 | 落入哪个头文件 | 谁能看到 | 命名前缀 |
 |--------|-------------|---------|---------|
 | **用户 API** | `include/lwlte_*.h` | App 开发者 | `lwlte_` |
-| **层间 API** | `include/at_engine.h`、`include/modem.h` | 紧邻上层 + Board Init | `at_engine_`、`modem_` |
+| **层间 API** | `include/at_engine.h`、`include/modem.h`、`include/modem_air780ep.h` | `at_engine.h`、`modem.h`：紧邻上层 + Board Init；`modem_air780ep.h`：仅 Board Init | `at_engine_`、`modem_`、`modem_air780ep_` |
 | **内部** | `.c` 或 `_priv.h` | 当前模块自身 | 无限制 |
 
 **核心区别**：用户 API 是给 App 开发者用的，层间 API 是层与层之间、以及 Board Init 装配时用的。AT Engine 没有任何用户 API——它被 Modem 层完全封装，最终用户看不到它的存在。
@@ -187,8 +187,9 @@ typedef struct at_urc_handler {
 /* Modem Adapter 定义 URC handler */
 static void cgev_handler(const char *prefix, const char *line, void *user_ctx) {
     modem_t *me = (modem_t *)user_ctx;
-    // "+CGEV: ME PDN DEACT 1" → 翻译为 MODEM_EVENT_PDP_DEACT
-    // 通过 modem 的内部事件回调通知 Core 层
+    // "+CGEV: ME PDN DEACT 1" → MODEM_EVENT_PDP_DEACTIVATED
+    // 生成 modem_event_t 并投递到 me->event_queue；
+    // Core 之后由 Modem event_task 通知。
 }
 
 /* 注册时 handler 生命周期由调用方管理（通常是 static 或动态分配） */
@@ -278,7 +279,442 @@ typedef struct {
 
 ## 2. Modem Adapter（模块适配层）
 
-> 待详细设计。该层包含 `modem_interface`（抽象基类）和 `modem_air780ep`（具体子类实现）。
+Modem Adapter 是四层架构的第二层，负责把 Core 的语义操作翻译为具体模块的 AT 指令，并把模块 URC 翻译为 Core 可理解的事件。该层包含通用 Modem 基类、内部 ops 多态表、语义值对象，以及 Air780EP 具体子类。
+
+Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT Engine，不写 AT 指令字符串，也不 include 具体模块头文件。`modem_ops_t` 是 Modem 层内部多态机制，包装 API 内部再调用 `me->ops->method(me, ...)`。
+
+### 2.1 类总览
+
+| 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
+|----|--------|---------|---------|------|
+| `modem_t` | 层间 API (opaque) + 内部基类 | Core + Board Init + Modem 实现 | 抽象基类/句柄 | Core 持有的 Modem 句柄，内部保存 ops、AT Engine、事件队列等公共资源 |
+| `modem_ops_t` | 内部 | Modem 通用包装函数 + 具体子类 | 虚函数表 | 不暴露给 Core，子类用 `static const` ops 表实现多态 |
+| `modem_state_t` | 层间 API | Core + Modem 层 | 状态枚举 | Modem 层本地生命周期和低层连接状态 |
+| `modem_reg_status_t` | 层间 API | Core + Modem 层 | 状态枚举 | 蜂窝网络注册状态，来自 `+CEREG` / `+CGREG` / `+CREG` |
+| `modem_sim_status_t` | 层间 API | Core + Modem 层 | 状态枚举 | SIM/PIN 状态，来自 `AT+CPIN?` / `+CPIN:` |
+| `modem_info_t` | 层间 API | Core + Modem 层 | 值对象 | 模块和 SIM 卡静态信息 |
+| `modem_signal_t` | 层间 API | Core + Modem 层 | 值对象 | 信号质量查询结果 |
+| `modem_pdp_context_t` | 层间 API | Core + Modem 层 | 值对象 | PDP 上下文配置与激活结果 |
+| `modem_event_id_t` | 层间 API | Core + Modem 层 | 事件枚举 | URC 翻译后的事件类型 |
+| `modem_event_t` | 层间 API | Core + Modem 层 | 值对象 | Modem event task 上报给 Core 的事件 |
+| `modem_event_callback_t` | 层间 API | Core + Modem 层 | 回调接口 | Core 注册，Modem event task 调用 |
+| `modem_air780ep_config_t` | 层间 API | Board Init | 配置结构体 | Air780EP GPIO、事件任务、默认超时等参数 |
+| `modem_air780ep_t` | 内部 | Air780EP 实现自身 | 子类 | 继承 `modem_t`，实现 Air780EP AT 指令和 URC 翻译 |
+| `air780ep_cmd_ctx_t` | 内部 | Air780EP 实现自身 | 工作上下文 | 单次 AT 命令解析的临时数据 |
+
+### 2.2 `modem_t` — 通用 Modem 句柄和基类
+
+**所属层**：Modem Adapter
+**可见性**：层间 API opaque + 内部结构体；`include/modem.h` 只暴露前置声明，`struct modem` 定义在 `src/modem/modem_priv.h` 或 `.c` 中
+**OOP 角色**：抽象基类 + 顶层句柄
+
+**公开类型**：
+
+```c
+typedef struct modem modem_t;
+```
+
+**声明顺序说明**：实际 `include/modem.h` 中应先完成 `modem_t` 前置声明，再定义状态枚举、值对象、事件对象和回调类型，最后声明以下函数原型。本节为了说明 `modem_t` 的使用方式，先集中列出公开方法。
+
+**公开方法**（`include/modem.h`）：
+
+```c
+esp_err_t modem_destroy(modem_t *me);
+esp_err_t modem_init(modem_t *me);
+esp_err_t modem_reset(modem_t *me);
+
+esp_err_t modem_register_event_callback(modem_t *me,
+                                         modem_event_callback_t callback,
+                                         void *user_ctx);
+
+esp_err_t modem_get_state(modem_t *me, modem_state_t *state);
+esp_err_t modem_get_info(modem_t *me, modem_info_t *info);
+esp_err_t modem_get_sim_status(modem_t *me, modem_sim_status_t *status);
+esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
+esp_err_t modem_get_registration(modem_t *me, modem_reg_status_t *status);
+
+esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn);
+esp_err_t modem_activate_pdp(modem_t *me, uint8_t cid);
+esp_err_t modem_deactivate_pdp(modem_t *me, uint8_t cid);
+esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
+                                 modem_pdp_context_t *pdp);
+```
+
+**内部结构**（定义在 `src/modem/modem_priv.h` 或 `.c`）：
+
+```c
+struct modem {
+    const modem_ops_t      *ops;                   // vptr，指向具体模块 ops 表
+    at_engine_t            *at;                    // 下层 AT Engine 句柄
+    SemaphoreHandle_t       lock;                  // 保护 state/callback/destroying
+    QueueHandle_t           event_queue;           // URC 翻译后的事件队列
+    TaskHandle_t            event_task;            // 调用 Core 回调的事件任务
+    SemaphoreHandle_t       event_task_done_sema;  // event task 退出同步
+    modem_event_callback_t  event_cb;              // Core 注册的事件回调
+    void                   *event_user_ctx;        // Core 事件回调上下文
+    modem_state_t           state;                 // Modem 层本地状态
+    bool                    destroying;            // destroy 已开始，拒绝新调用
+    bool                    event_task_stop_requested;
+    const char             *name;                  // 模块名称，如 "air780ep"
+};
+```
+
+**关键设计决策**：
+- `modem_t` 对 Core opaque，Core 不直接访问 `ops` 或内部字段。
+- 通用包装 API 统一做参数检查、状态检查和必填方法检查。
+- `event_queue + event_task` 属于基类资源，所有具体模块共用同一套上行事件解耦机制。
+- `at` 句柄由 Board Init 创建并传入具体模块工厂；Modem 不拥有 AT Engine 生命周期，只在 destroy 前注销自己注册的 URC handler。
+
+### 2.3 `modem_ops_t` — Modem 虚函数表
+
+**所属层**：Modem Adapter
+**可见性**：内部；只给 Modem 通用实现和具体子类使用，不放入 `include/modem.h`
+**OOP 角色**：虚函数表
+
+```c
+typedef struct modem_ops {
+    esp_err_t (*destroy)(modem_t *me);
+    esp_err_t (*init)(modem_t *me);
+    esp_err_t (*reset)(modem_t *me);
+    esp_err_t (*get_info)(modem_t *me, modem_info_t *info);
+    esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);
+    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
+    esp_err_t (*get_registration)(modem_t *me, modem_reg_status_t *status);
+    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
+    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
+    esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);
+    esp_err_t (*get_pdp_context)(modem_t *me, uint8_t cid,
+                                  modem_pdp_context_t *pdp);
+} modem_ops_t;
+```
+
+**调用模式**：
+
+```c
+esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
+{
+    ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->get_signal,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "get_signal not supported");
+
+    return me->ops->get_signal(me, signal);
+}
+```
+
+**关键设计决策**：
+- ops 表由具体子类以 `static const modem_ops_t` 定义，放在只读段。
+- Core 不直接看到 `modem_ops_t`，只通过 `modem_*` 包装 API 间接使用多态。
+- 第一版将表中方法按严格接口处理；具体模块确实不支持时，子类方法返回 `ESP_ERR_NOT_SUPPORTED`。
+
+#### ops 功能与 Air780EP AT 指令映射
+
+`modem_ops_t` 按 Core 需要的语义能力划分，不按 AT 指令逐条暴露。Air780EP 第一版实现可优先使用下表命令；未进入表格的 AT 指令只作为初始化细节、诊断能力或后续扩展保留。
+
+| ops 方法 | 语义边界 | Air780EP 第一版命令 |
+|----------|----------|---------------------|
+| `init` | 建立 AT 口基础工作环境，注册 URC，不激活 PDP | `ATE0`、`AT+CMEE=1`、`AT+CGEREP=1`，注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT` |
+| `reset` | 模块软件复位，复位后由 Core 决定是否重新 `init` | 优先 `AT+RESET`；需要切换功能模式时才考虑 `AT+CFUN=1,1` |
+| `get_info` | 读取模块/SIM 静态标识，Core 不解析原始 AT 行 | `AT+CGSN`、`AT+CIMI`、`AT+ICCID`、`AT+CGMM`、`AT+CGMR`；`ATI`/`AT+VER` 可作为固件信息补充 |
+| `get_sim_status` | 查询 SIM/PIN 可用性 | `AT+CPIN?` |
+| `get_signal` | 查询当前基础信号质量 | `AT+CSQ`；`AT+CESQ` 只作为后续 LTE 扩展指标来源 |
+| `get_registration` | 查询蜂窝网络注册状态 | Air780EP 优先 `AT+CEREG?`，必要时用 `AT+CGREG?` 补充分组域状态，用 `AT+CREG?` 作为通用注册状态兜底 |
+| `set_apn` | 配置 PDP context 的 APN | `AT+CGDCONT=<cid>,"IP","<apn>"`；APN 用户名/密码后续再通过单独能力扩展，不塞进当前 API |
+| `activate_pdp` | 确认 SIM/注册/附着后激活数据面并获得 IP | 先检查 `AT+CPIN?`、`AT+CEREG?`/`AT+CGREG?`、`AT+CGATT?`；Air780EP TCPIP 路径使用 `AT+CSTT`、`AT+CIICR`、`AT+CIFSR` |
+| `deactivate_pdp` | 关闭数据面并清理 Air780EP TCPIP 场景 | 优先 `AT+CIPSHUT`；标准 PDP 路径需要时可使用 `AT+CGACT=0,<cid>` |
+| `get_pdp_context` | 返回 APN、激活状态和 IP 地址快照 | 组合缓存值、`AT+CGDCONT?`、`AT+CGACT?`、`AT+CGPADDR=<cid>`；TCPIP 路径下也可使用最近一次 `AT+CIFSR` 结果 |
+
+`AT+IPR`、`AT+IFC`、`AT&W` 属于板级串口/持久化配置，不进入 Modem ops。`AT+COPS?`、`AT^SYSINFO`、`AT+CIPPING` 属于诊断或联网自检，第一版可作为 Air780EP 内部 helper，不先扩大 Core 可见 API。`AT+CSCLK`、`AT+POWERMODE`、`AT+CFGRI` 等低功耗指令需要 Core 低功耗策略后再设计独立 ops。
+
+**特殊响应约束**：`AT+CIFSR` 成功时返回纯 IP 地址且不以 `OK` 结束，`AT+CIPSHUT` 成功终止行为 `SHUT OK`，都不是当前 `at_engine_send_cmd()` 的普通 `OK/ERROR` 响应模型。Air780EP 实现必须先提供内部专用 helper 或扩展 AT Engine 的成功终止判定，不能把这两条命令当作普通 `OK` 命令解析。
+
+### 2.4 `modem_state_t` — Modem 本地状态
+
+**所属层**：Modem Adapter
+**可见性**：层间 API
+**OOP 角色**：状态枚举
+
+```c
+typedef enum {
+    MODEM_STATE_CREATED = 0,       // 已创建，尚未初始化
+    MODEM_STATE_INITIALIZING,      // 正在执行模块初始化序列
+    MODEM_STATE_READY,             // 初始化完成，可以接受 Core 调用
+    MODEM_STATE_REGISTERING,       // 正在等待网络注册
+    MODEM_STATE_REGISTERED,        // 已注册到蜂窝网络
+    MODEM_STATE_PDP_ACTIVE,        // PDP 已激活
+    MODEM_STATE_ERROR,             // 低层错误，需要 Core 决策恢复策略
+    MODEM_STATE_DESTROYING,        // 正在销毁
+} modem_state_t;
+```
+
+**边界说明**：`modem_state_t` 只表示 Modem 层观察到的低层状态，不替代 Core 的网络状态机。重连策略、退避策略和业务状态迁移仍属于 Core。
+
+### 2.5 `modem_reg_status_t` — 网络注册状态
+
+**所属层**：Modem Adapter
+**可见性**：层间 API
+**OOP 角色**：状态枚举
+
+```c
+typedef enum {
+    MODEM_REG_NOT_REGISTERED = 0,  // 未注册，且未搜索
+    MODEM_REG_REGISTERED_HOME,     // 已注册，归属网络
+    MODEM_REG_SEARCHING,           // 正在搜索网络
+    MODEM_REG_DENIED,              // 注册被拒绝
+    MODEM_REG_UNKNOWN,             // 状态未知
+    MODEM_REG_REGISTERED_ROAMING,  // 已注册，漫游网络
+} modem_reg_status_t;
+```
+
+### 2.6 `modem_sim_status_t` — SIM 状态
+
+**所属层**：Modem Adapter
+**可见性**：层间 API
+**OOP 角色**：状态枚举
+
+```c
+typedef enum {
+    MODEM_SIM_UNKNOWN = 0,       // 状态未知或尚未查询
+    MODEM_SIM_READY,             // SIM 可用，AT+CPIN? 返回 READY
+    MODEM_SIM_PIN_REQUIRED,      // 需要 PIN
+    MODEM_SIM_PUK_REQUIRED,      // 需要 PUK
+    MODEM_SIM_NOT_INSERTED,      // 未检测到 SIM 或 SIM 被移除
+    MODEM_SIM_ERROR,             // 其他 SIM 错误状态
+} modem_sim_status_t;
+```
+
+**关键设计决策**：SIM 状态是运行时状态，不放入 `modem_info_t`。`modem_info_t` 只保存 IMEI、IMSI、ICCID、型号和固件版本等静态信息；`+CPIN:` URC 或 `AT+CPIN?` 查询结果应更新 `modem_sim_status_t` 并通过 `MODEM_EVENT_SIM_CHANGED` 上报。
+
+### 2.7 `modem_info_t` — 模块和 SIM 信息
+
+**所属层**：Modem Adapter
+**可见性**：层间 API
+**OOP 角色**：值对象
+
+```c
+#define MODEM_IMEI_MAX_LEN      16
+#define MODEM_IMSI_MAX_LEN      16
+#define MODEM_ICCID_MAX_LEN     24
+#define MODEM_MODEL_MAX_LEN     32
+#define MODEM_FW_REV_MAX_LEN    64
+
+typedef struct {
+    char imei[MODEM_IMEI_MAX_LEN];        // 模块 IMEI，15 位数字 + NUL
+    char imsi[MODEM_IMSI_MAX_LEN];        // SIM IMSI，15 位数字 + NUL
+    char iccid[MODEM_ICCID_MAX_LEN];      // SIM ICCID
+    char model[MODEM_MODEL_MAX_LEN];      // 模块型号
+    char fw_revision[MODEM_FW_REV_MAX_LEN]; // 固件版本
+} modem_info_t;
+```
+
+**来源示例**：Air780EP 可通过 `AT+CGSN`、`AT+CIMI`、`AT+ICCID`、`AT+CGMM`、`AT+CGMR` 等命令填充该对象；`ATI` / `AT+VER` 可作为固件信息补充。Core 不解析这些 AT 响应行。
+
+### 2.8 `modem_signal_t` — 信号质量
+
+**所属层**：Modem Adapter
+**可见性**：层间 API
+**OOP 角色**：值对象
+
+```c
+typedef struct {
+    int  rssi;             // CSQ 原始 RSSI，0..31，99 表示未知
+    int  ber;              // CSQ 原始 BER，0..7，99 表示未知
+    int  rssi_dbm;         // RSSI 换算后的 dBm
+    bool rssi_dbm_valid;   // rssi_dbm 是否有效
+} modem_signal_t;
+```
+
+**关键设计决策**：第一版只要求支持 `AT+CSQ` 对应的 RSSI/BER。RSRP、RSRQ、SINR 等 LTE 扩展指标后续需要时再增加字段或新值对象。
+
+### 2.9 `modem_pdp_context_t` — PDP 上下文
+
+**所属层**：Modem Adapter
+**可见性**：层间 API
+**OOP 角色**：值对象
+
+```c
+#define MODEM_APN_MAX_LEN       64
+#define MODEM_PDP_TYPE_MAX_LEN  8
+#define MODEM_IP_ADDR_MAX_LEN   48
+
+typedef struct {
+    uint8_t cid;                              // PDP context id
+    char    apn[MODEM_APN_MAX_LEN];          // APN
+    char    pdp_type[MODEM_PDP_TYPE_MAX_LEN]; // "IP" / "IPV6" / "IPV4V6"
+    bool    active;                           // PDP 是否已激活
+    char    ip_addr[MODEM_IP_ADDR_MAX_LEN];   // 模块分配到的 IP 地址
+} modem_pdp_context_t;
+```
+
+### 2.10 `modem_event_t` — Modem 上行事件
+
+**所属层**：Modem Adapter
+**可见性**：层间 API
+**OOP 角色**：值对象 + 回调参数
+
+```c
+typedef enum {
+    MODEM_EVENT_READY = 0,          // 模块初始化完成
+    MODEM_EVENT_SIM_CHANGED,        // SIM/PIN 状态变化
+    MODEM_EVENT_REG_CHANGED,        // 网络注册状态变化
+    MODEM_EVENT_PDP_ACTIVATED,      // PDP 激活
+    MODEM_EVENT_PDP_DEACTIVATED,    // PDP 去激活
+    MODEM_EVENT_SIGNAL_CHANGED,     // 信号质量变化
+    MODEM_EVENT_ERROR,              // 模块侧错误事件
+} modem_event_id_t;
+
+typedef struct {
+    modem_event_id_t id;
+    union {
+        modem_sim_status_t   sim_status;
+        modem_reg_status_t   reg_status;
+        modem_pdp_context_t  pdp;
+        modem_signal_t       signal;
+        int                  error_code;
+    } data;
+} modem_event_t;
+
+typedef void (*modem_event_callback_t)(modem_t *modem,
+                                       const modem_event_t *event,
+                                       void *user_ctx);
+```
+
+**硬约束**：Air780EP 的 AT Engine URC handler 不得直接调用 `modem_event_callback_t`。URC handler 只能把 `modem_event_t` 投递到 `modem_t.event_queue`，由 `modem_t.event_task` 调用 Core 注册的回调。
+
+### 2.11 `modem_air780ep_config_t` — Air780EP 配置
+
+**所属层**：Modem Adapter
+**可见性**：层间 API，放入 `include/modem_air780ep.h`，只给 Board Init 使用
+**OOP 角色**：配置结构体
+
+```c
+typedef struct {
+    gpio_num_t pwrkey_pin;              // PWRKEY GPIO，未使用时为 GPIO_NUM_NC
+    gpio_num_t reset_pin;               // RESET GPIO，未使用时为 GPIO_NUM_NC
+    gpio_num_t status_pin;              // STATUS GPIO，未使用时为 GPIO_NUM_NC
+    uint32_t   power_on_pulse_ms;       // PWRKEY 上电脉冲宽度
+    uint32_t   reset_pulse_ms;          // RESET 脉冲宽度
+    uint32_t   boot_wait_ms;            // 上电后等待模块启动时间
+    uint32_t   default_cmd_timeout_ms;  // Air780EP 命令默认超时
+    int        event_queue_size;        // Modem 事件队列长度
+    int        event_task_stack;        // Modem event task 栈大小
+    int        event_task_priority;     // Modem event task 优先级
+} modem_air780ep_config_t;
+
+modem_t *modem_air780ep_create(at_engine_t *at,
+                               const modem_air780ep_config_t *config);
+```
+
+**关键设计决策**：
+- `modem_air780ep_create()` 是具体模块工厂，只应出现在 Board Init 装配代码中。
+- Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_t *`。
+- GPIO 控制属于 Modem 层职责，Air780EP 实现可以直接使用 ESP-IDF `driver/gpio.h`。
+
+### 2.12 `modem_air780ep_t` — Air780EP 子类
+
+**所属层**：Modem Adapter
+**可见性**：内部，定义在 `src/modem/modem_air780ep.c`
+**OOP 角色**：具体子类
+
+```c
+#define AIR780EP_MAX_PDP_CONTEXTS  4
+
+typedef struct {
+    modem_t                  base;          // 必须是第一个字段，实现向上转型
+    modem_air780ep_config_t  config;        // 配置快照
+    at_urc_handler_t         rdy_handler;   // RDY URC handler
+    at_urc_handler_t         cpin_handler;  // +CPIN: URC handler
+    at_urc_handler_t         creg_handler;  // +CREG: URC handler
+    at_urc_handler_t         cereg_handler; // +CEREG: URC handler
+    at_urc_handler_t         cgreg_handler; // +CGREG: URC handler
+    at_urc_handler_t         cgev_handler;  // +CGEV: URC handler
+    at_urc_handler_t         pdp_deact_handler;       // +PDP DEACT URC handler
+    at_urc_handler_t         pdp_colon_deact_handler; // +PDP:DEACT URC handler
+    modem_info_t             cached_info;   // 已查询到的模块/SIM 信息
+    modem_sim_status_t       last_sim_status; // 最近一次 SIM 状态
+    modem_reg_status_t       last_reg_status; // 最近一次网络注册状态
+    modem_signal_t           last_signal;   // 最近一次信号质量
+    modem_pdp_context_t      pdp[AIR780EP_MAX_PDP_CONTEXTS];
+    bool                     urc_registered;
+    bool                     initialized;
+} modem_air780ep_t;
+```
+
+**关键设计决策**：
+- `base` 必须位于结构体第一个字段，子类返回给上层时使用 `&self->base`。
+- 从 `modem_t *` 反推 `modem_air780ep_t *` 时使用 `container_of(me, modem_air780ep_t, base)`，禁止裸强转。
+- URC handler 节点生命周期由 Air780EP 对象拥有，`init` 时注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT`，`destroy` 时注销。
+- `+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:` 既可能是查询响应，也可能是空闲期 URC；Air780EP handler 只处理 AT Engine 分发出来的空闲期 URC，命令响应由对应 ops 方法解析。
+
+### 2.13 `air780ep_cmd_ctx_t` — Air780EP 命令上下文
+
+**所属层**：Modem Adapter
+**可见性**：内部，仅 Air780EP 实现使用
+**OOP 角色**：临时工作上下文
+
+```c
+#define AIR780EP_MAX_RESPONSE_LINES  8
+#define AIR780EP_PARSE_BUF_SIZE      96
+
+typedef struct {
+    const char    *cmd;                                // 当前 AT 命令字符串
+    uint32_t       timeout_ms;                         // 本次命令超时
+    char          *lines[AIR780EP_MAX_RESPONSE_LINES]; // at_response_t lines 存储
+    at_response_t  response;                           // AT Engine 响应对象
+    char           parse_buf[AIR780EP_PARSE_BUF_SIZE]; // 解析辅助缓冲
+} air780ep_cmd_ctx_t;
+```
+
+**使用模式**：Air780EP 每个普通 `OK/ERROR` 命令在栈上创建 `air780ep_cmd_ctx_t`，初始化 `response.max_lines/lines`，调用 `at_engine_send_cmd()`，再解析 `response.lines`。该上下文不跨命令保存，不暴露给 Core。`AT+CIFSR`、`AT+CIPSHUT` 这类非标准成功终止命令不直接套用该普通路径。
+
+### 2.14 Modem 线程模型
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Modem Adapter 线程模型                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Core 线程 / Core FSM task                                  │
+│  ┌────────────────┐                                         │
+│  │ modem_* API    │──→ 参数/状态检查                         │
+│  └───────┬────────┘    ──→ me->ops->method(me, ...)          │
+│          │          ──→ Air780EP 生成 AT 命令                 │
+│          │          ──→ at_engine_send_cmd() 阻塞等待响应     │
+│          │          ──→ 解析 at_response_t 为 modem_* 值对象  │
+│          │                                                  │
+│  AT Engine RX task                                          │
+│  ┌────────────────┐                                         │
+│  │ URC callback   │──→ Air780EP URC handler                  │
+│  └───────┬────────┘    ──→ 解析 RDY/+CPIN/+CREG/+CEREG       │
+│          │              /+CGREG/+CGEV/+PDP DEACT             │
+│          │          ──→ 生成 modem_event_t                  │
+│          │          ──→ xQueueSend(event_queue, ..., 0)      │
+│          │              不得直接调用 Core 回调                │
+│          │                                                  │
+│  Modem event task                                           │
+│  ┌────────────────┐                                         │
+│  │ event loop     │──→ xQueueReceive(event_queue)            │
+│  └───────┬────────┘    ──→ 调用 modem_event_callback_t       │
+│          │              Core 回调不在 AT RX task 中执行       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**硬约束**：Modem URC handler 禁止直接调用 Core。它只能投递事件到 `event_queue`，由 `event_task` 执行 Core 回调。这样静态依赖和运行时执行上下文都保持逐层隔离，避免 Core 逻辑阻塞 AT Engine RX task 或在 AT Engine 内部锁未释放时反向进入下层。
+
+**错误处理规则**：
+- Modem 层公开 API 和 ops 方法统一返回 `esp_err_t`。
+- Modem 层不新增自定义错误码，统一使用 ESP-IDF 标准错误码。
+- 参数错误返回 `ESP_ERR_INVALID_ARG`。
+- 状态错误返回 `ESP_ERR_INVALID_STATE`。
+- 不支持的能力返回 `ESP_ERR_NOT_SUPPORTED`。
+- `at_engine_send_cmd()` 超时传播 `ESP_ERR_TIMEOUT`。
+- AT Engine 返回 `ESP_OK` 但 `response.status` 为 `AT_RESP_ERROR`、`AT_RESP_CME_ERROR` 或 `AT_RESP_CMS_ERROR` 时，Air780EP 适配层映射为标准 ESP-IDF 错误码，并记录原始错误码。
+- 响应行格式无法解析时返回 `ESP_ERR_INVALID_RESPONSE`。
+
+**与 AT Engine 的边界**：
+- Modem 层可以调用 `at_engine_send_cmd()` 和 `at_engine_register_urc()`，因为 AT Engine 是紧邻下层。
+- Core 不能调用 AT Engine API。
+- AT Engine 不知道 Air780EP 语义，只做 URC 前缀匹配和原始行分发。
 
 ---
 
