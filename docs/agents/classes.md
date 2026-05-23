@@ -81,22 +81,31 @@ esp_err_t    at_engine_unregister_urc(at_engine_t *me, const char *prefix);
 
 ```c
 struct at_engine {
-    const at_engine_config_t  config;          // 配置快照
-    uart_port_t               uart_num;        // UART 端口号
-    TaskHandle_t              rx_task;         // UART 接收任务句柄
-    QueueHandle_t             rx_line_queue;   // 接收行队列（行缓冲 → 命令处理）
-    SemaphoreHandle_t         cmd_mutex;       // 命令互斥锁（同时只允许一个命令）
-    SemaphoreHandle_t         cmd_done_sema;   // 命令完成信号量
-    at_state_t                state;           // 当前状态
-    at_cmd_ctx_t             *cmd_ctx;         // 当前命令上下文（有命令时非空）
-
-    /* URC 处理器链表 */
-    at_urc_handler_t         *urc_handlers;    // 链表头
-    int                       urc_handler_count;
-
-    /* 行缓冲 */
-    char                     *line_buf;        // 行组装缓冲区
-    int                       line_buf_pos;    // 当前行已接收字节数
+    at_engine_config_t   config;              // 配置快照
+    uart_port_t          uart_num;            // UART 端口号
+    QueueHandle_t        uart_queue;          // ESP-IDF UART 事件队列
+    TaskHandle_t         rx_task;             // UART 接收任务句柄
+    SemaphoreHandle_t    rx_task_done_sema;   // RX task 退出同步信号量
+    SemaphoreHandle_t    cmd_mutex;           // 命令互斥锁（同时只允许一个命令）
+    SemaphoreHandle_t    cmd_done_sema;       // 命令完成信号量
+    SemaphoreHandle_t    lock;                // 内部状态/URC 链表保护锁
+    at_state_t           state;               // 当前状态
+    bool                 destroying;          // destroy 已开始，拒绝新调用
+    int                  active_callers;      // 已进入 send_cmd 的调用方数量
+    at_cmd_ctx_t         cmd_ctx_storage;     // 当前命令上下文存储
+    at_cmd_ctx_t        *cmd_ctx;             // 当前命令上下文（有命令时非空）
+    at_urc_handler_t    *urc_handlers;        // URC 链表头
+    int                  urc_handler_count;
+    char                *line_buf;            // 行组装缓冲区
+    char                *line_work_buf;       // 完整行处理缓冲区
+    int                  line_buf_pos;        // 当前行已接收字节数
+    bool                 line_overflow;       // 当前行过长，丢弃直到 LF
+    uint32_t             rx_epoch;            // RX flush 代际，丢弃超时前本地残留字节
+    char                *response_pool;       // 响应文本池
+    int                  response_pool_lines;
+    int                  response_line_size;
+    bool                 uart_driver_installed;
+    volatile bool        rx_task_stop_requested;
 };
 ```
 
@@ -104,7 +113,9 @@ struct at_engine {
 - `cmd_mutex` 用 `xSemaphoreCreateMutex()` 创建，保证多线程调用 `send_cmd` 的串行化
 - `cmd_done_sema` 用 `xSemaphoreCreateBinary()` 创建，用于阻塞等待命令响应完成
 - URC 处理器用单向链表存储，前缀匹配时顺序遍历（handler 数量少，线性查找足够）
-- `rx_task` 由 `xTaskCreate()` 在 `at_engine_create()` 中创建，在 `at_engine_destroy()` 中删除
+- `rx_task` 由 `xTaskCreate()` 在 `at_engine_create()` 中创建，在 `at_engine_destroy()` 中通过停止标志 + `rx_task_done_sema` 协作退出，不强制删除正在运行的任务
+- `destroying + active_callers` 用于阻止 destroy 与已进入 `send_cmd` 的调用方并发释放资源；调用方仍必须保证 `destroy` 不与新的同句柄 API 调用并发启动
+- `rx_epoch` 在命令超时或 UART overflow flush 时递增，RX task 会丢弃旧 epoch 中已读但尚未处理的本地字节/完整行
 
 ### 1.4 `at_response_t` — 命令响应
 
@@ -148,9 +159,9 @@ if (err == ESP_OK && resp.status == AT_RESP_OK) {
 ```
 
 **关键设计决策**：
-- `lines` 数组由**调用方分配**，AT Engine 只填入指针（指向内部静态 buffer 或动态分配的字符串）
-- 命令响应数据在 `send_cmd` 返回后保证有效，直到下次 `send_cmd` 调用（内部缓冲区复用）
-- `max_lines` 防止溢出，实际行数超出时截断
+- `lines` 数组由**调用方分配**，AT Engine 只填入指向实例内 `response_pool` 的字符串指针
+- 调用方不得释放或修改 `lines[i]` 指向的字符串；数据在同一 AT Engine 实例下次 `send_cmd` 前有效
+- 实际保存行数按 `min(response->max_lines, config.max_response_lines)` 截断，防止溢出
 
 ### 1.5 `at_urc_handler_t` — URC 处理器
 
@@ -189,6 +200,11 @@ static at_urc_handler_t cgev_handler_node = {
 at_engine_register_urc(at, "+CGEV:", &cgev_handler_node);
 ```
 
+**关键约束**：
+- `handler` 节点和 `prefix` 字符串由调用方拥有，注册期间必须保持有效，同一节点不可重复注册
+- URC 回调在 AT Engine RX task 中同步执行；为保护 handler 生命周期，回调执行期间持有内部锁，因此回调必须短小非阻塞，且不得在同一 AT Engine 实例上调用 `send_cmd/register/unregister` 等会获取内部锁的 API
+- 第一版实现中，命令等待期间收到的非最终响应行优先归入当前命令响应，不同时分发为 URC；无当前命令时才按 URC 前缀分发，以避免查询响应与同前缀 URC 混淆
+
 ### 1.6 `at_state_t` — 内部状态枚举
 
 **所属层**：AT Engine  
@@ -215,7 +231,6 @@ typedef enum {
 typedef struct {
     const char     *cmd;                 // 命令字符串（调用方传入，不拷贝）
     uint32_t        timeout_ms;          // 超时时间（毫秒）
-    TickType_t      timeout_ticks;       // 超时时刻（FreeRTOS tick）
     at_response_t  *response;            // 指向调用方的 response 对象
     int             echo_consumed;       // 是否已消费命令回显行
     int             data_line_index;     // 当前填充到 response->lines 的索引
@@ -246,13 +261,18 @@ typedef struct {
 │                  ──→ 是响应行？ → 写入 cmd_ctx → 收到最终结果 │
 │                      → 发 cmd_done_sema 信号量                │
 │                                                             │
-│  超时处理（在 rx_task 中检查）                                │
-│                  ──→ 每次循环检查 cmd_ctx->timeout_ticks     │
-│                  ──→ 超时 → 发 cmd_done_sema → 调用方返回    │
-│                      AT_RESP_TIMEOUT                         │
+│  超时处理（在调用方线程中完成）                                │
+│                  ──→ send_cmd 使用 xSemaphoreTake 等待       │
+│                      cmd_done_sema                           │
+│                  ──→ 超时 → 设置 AT_RESP_TIMEOUT             │
+│                      → 清除 cmd_ctx → flush UART 输入/队列    │
+│                      → rx_epoch++ → 释放 cmd_mutex           │
+│                      → 返回 ESP_ERR_TIMEOUT                  │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**实现差异说明**：最初设计写为 RX task 轮询 `timeout_ticks`，实际实现改为调用方线程在 `xSemaphoreTake()` 上等待超时。这样超时归属更清晰，RX task 不需要周期性扫描命令上下文；超时返回前会刷新 UART 输入、重置事件队列和行缓冲，并递增 `rx_epoch` 丢弃旧本地 RX 数据，降低迟到响应污染下一条命令的风险。
 
 ---
 
