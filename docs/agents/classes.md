@@ -25,6 +25,8 @@ AT Engine 是四层架构的最底层，负责 AT 协议解析和 UART 硬件操
 | `at_engine_config_t` | 层间 API | Board Init | 配置结构体 | UART 硬件参数 + 任务参数 |
 | `at_engine_t` | 层间 API (opaque) | Modem 层 + Board Init | 句柄 | AT Engine 实例句柄 |
 | `at_response_t` | 层间 API | Modem 层 | 值对象 | 一次 AT 命令的响应结果 |
+| `at_cmd_options_t` | 层间 API | Modem 层 | 值对象 | 单次命令的超时、成功终止匹配和 OK 处理选项 |
+| `at_cmd_success_match_t` | 层间 API | Modem 层 | 值对象 | 自定义成功响应匹配规则 |
 | `at_urc_handler_t` | 层间 API | Modem 层 | 回调注册项 | URC 前缀 + 回调 + 用户上下文 |
 | `at_state_t` | 内部 | AT Engine 自身 | 状态枚举 | 命令处理状态机 |
 | `at_cmd_ctx_t` | 内部 | AT Engine 自身 | 工作上下文 | 一次命令执行期间的临时数据 |
@@ -67,9 +69,14 @@ typedef struct {
 at_engine_t *at_engine_create(const at_engine_config_t *config);
 esp_err_t    at_engine_destroy(at_engine_t *me);
 
-/* 发送 AT 命令（阻塞调用，直到响应完成或超时） */
+/* 发送普通 AT 命令（阻塞调用，直到 OK/ERROR/CME/CMS 或超时） */
 esp_err_t    at_engine_send_cmd(at_engine_t *me, const char *cmd,
                                 at_response_t *response, uint32_t timeout_ms);
+
+/* 使用单次命令选项发送 AT 命令，支持自定义成功终止响应 */
+esp_err_t    at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
+                                             at_response_t *response,
+                                             const at_cmd_options_t *options);
 
 /* URC 回调注册 / 注销 */
 esp_err_t    at_engine_register_urc(at_engine_t *me, const char *prefix,
@@ -125,7 +132,7 @@ struct at_engine {
 
 ```c
 typedef enum {
-    AT_RESP_OK = 0,        // 成功（收到 OK）
+    AT_RESP_OK = 0,        // 成功终止响应； Successful final response
     AT_RESP_ERROR,         // 通用错误（收到 ERROR）
     AT_RESP_CME_ERROR,     // +CME ERROR: <code>
     AT_RESP_CMS_ERROR,     // +CMS ERROR: <code>
@@ -163,7 +170,42 @@ if (err == ESP_OK && resp.status == AT_RESP_OK) {
 - 调用方不得释放或修改 `lines[i]` 指向的字符串；数据在同一 AT Engine 实例下次 `send_cmd` 前有效
 - 实际保存行数按 `min(response->max_lines, config.max_response_lines)` 截断，防止溢出
 
-### 1.5 `at_urc_handler_t` — URC 处理器
+### 1.5 `at_cmd_options_t` — 单次命令选项
+
+**所属层**：AT Engine
+**可见性**：层间 API — Modem 层在调用特殊 AT 命令时构造后传给 AT Engine
+**OOP 角色**：值对象 — 描述单次命令的成功终止策略
+
+```c
+typedef enum {
+    AT_CMD_SUCCESS_MATCH_EXACT = 0,   // 完整匹配
+    AT_CMD_SUCCESS_MATCH_PREFIX,      // 前缀匹配
+    AT_CMD_SUCCESS_MATCH_ANY_LINE,    // 任意非错误响应行
+} at_cmd_success_match_type_t;
+
+typedef struct {
+    at_cmd_success_match_type_t  type;   // 匹配类型
+    const char                  *value;  // 匹配文本，ANY_LINE 时忽略
+} at_cmd_success_match_t;
+
+typedef struct {
+    uint32_t                      timeout_ms;          // 超时时间，0 表示使用默认值
+    uint32_t                      flags;               // AT_CMD_FLAG_* 标志
+    const at_cmd_success_match_t *success_matches;     // 自定义成功匹配规则数组
+    int                           success_match_count; // 自定义成功匹配规则数量
+} at_cmd_options_t;
+```
+
+`at_engine_send_cmd()` 继续覆盖普通 `OK/ERROR` 命令。`at_engine_send_cmd_with_options()` 用于特殊命令，例如 `AT+CIPSHUT` 的 `SHUT OK`、`AT+CIFSR` 的纯 IP 行、以及先返回中间 `OK` 再返回 `CONNACK OK` / `CONNECT OK` 的连接类命令。
+
+关键规则：
+- `ERROR`、`+CME ERROR:`、`+CMS ERROR:` 永远作为失败终止响应。
+- 默认 `OK` 仍作为成功终止响应。
+- `AT_CMD_FLAG_NO_STANDARD_OK_FINAL` 可把 `OK` 降级为中间响应。
+- `AT_CMD_FLAG_SKIP_INTERMEDIATE_OK` 可丢弃这个中间 `OK`，不写入 `response.lines`。
+- 自定义成功终止行会先写入 `response.lines`，再以 `AT_RESP_OK` 完成命令。
+
+### 1.6 `at_urc_handler_t` — URC 处理器
 
 **所属层**：AT Engine  
 **可见性**：层间 API — Modem 层定义 handler 实例，调用 `at_engine_register_urc()` 注册  
@@ -206,7 +248,7 @@ at_engine_register_urc(at, "+CGEV:", &cgev_handler_node);
 - URC 回调在 AT Engine RX task 中同步执行；为保护 handler 生命周期，回调执行期间持有内部锁，因此回调必须短小非阻塞，且不得在同一 AT Engine 实例上调用 `send_cmd/register/unregister` 等会获取内部锁的 API
 - 第一版实现中，命令等待期间收到的非最终响应行优先归入当前命令响应，不同时分发为 URC；无当前命令时才按 URC 前缀分发，以避免查询响应与同前缀 URC 混淆
 
-### 1.6 `at_state_t` — 内部状态枚举
+### 1.7 `at_state_t` — 内部状态枚举
 
 **所属层**：AT Engine  
 **可见性**：内部 — 仅 `at_engine.c` 中使用，对层间 API 不可见  
@@ -222,7 +264,7 @@ typedef enum {
 } at_state_t;
 ```
 
-### 1.7 `at_cmd_ctx_t` — 命令上下文（内部）
+### 1.8 `at_cmd_ctx_t` — 命令上下文（内部）
 
 **所属层**：AT Engine  
 **可见性**：内部 — 仅 `at_engine.c` 中使用，随命令生命周期创建和销毁  
@@ -233,13 +275,14 @@ typedef struct {
     const char     *cmd;                 // 命令字符串（调用方传入，不拷贝）
     uint32_t        timeout_ms;          // 超时时间（毫秒）
     at_response_t  *response;            // 指向调用方的 response 对象
+    at_cmd_options_t options;            // 单次命令选项快照
     int             echo_consumed;       // 是否已消费命令回显行
     int             data_line_index;     // 当前填充到 response->lines 的索引
-    bool            result_received;     // 已收到最终结果（OK/ERROR/CME ERROR 等）
+    bool            result_received;     // 已收到最终结果
 } at_cmd_ctx_t;
 ```
 
-### 1.8 AT Engine 线程模型
+### 1.9 AT Engine 线程模型
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -425,7 +468,7 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
 
 `AT+IPR`、`AT+IFC`、`AT&W` 属于板级串口/持久化配置，不进入 Modem ops。`AT+COPS?`、`AT^SYSINFO`、`AT+CIPPING` 属于诊断或联网自检，第一版可作为 Air780EP 内部 helper，不先扩大 Core 可见 API。`AT+CSCLK`、`AT+POWERMODE`、`AT+CFGRI` 等低功耗指令需要 Core 低功耗策略后再设计独立 ops。
 
-**特殊响应约束**：`AT+CIFSR` 成功时返回纯 IP 地址且不以 `OK` 结束，`AT+CIPSHUT` 成功终止行为 `SHUT OK`，都不是当前 `at_engine_send_cmd()` 的普通 `OK/ERROR` 响应模型。Air780EP 实现必须先提供内部专用 helper 或扩展 AT Engine 的成功终止判定，不能把这两条命令当作普通 `OK` 命令解析。
+**特殊响应约束**：`AT+CIFSR` 成功时返回纯 IP 地址且不以 `OK` 结束，`AT+CIPSHUT` 成功终止行为 `SHUT OK`，`MCONNECT` 类命令可能先返回中间 `OK` 再返回 `CONNACK OK` 或 `CONNECT OK`。这些命令应使用 `at_engine_send_cmd_with_options()` 配置自定义成功终止规则，而不是把模块私有响应硬编码进 AT Engine。
 
 ### 2.4 `modem_state_t` — Modem 本地状态
 
@@ -664,7 +707,7 @@ typedef struct {
 } air780ep_cmd_ctx_t;
 ```
 
-**使用模式**：Air780EP 每个普通 `OK/ERROR` 命令在栈上创建 `air780ep_cmd_ctx_t`，初始化 `response.max_lines/lines`，调用 `at_engine_send_cmd()`，再解析 `response.lines`。该上下文不跨命令保存，不暴露给 Core。`AT+CIFSR`、`AT+CIPSHUT` 这类非标准成功终止命令不直接套用该普通路径。
+**使用模式**：Air780EP 普通 `OK/ERROR` 命令可继续使用 `at_engine_send_cmd()`。特殊成功终止命令在栈上创建 `air780ep_cmd_ctx_t` 和 `at_cmd_options_t`，调用 `at_engine_send_cmd_with_options()`，再解析 `response.lines`。该上下文不跨命令保存，不暴露给 Core。
 
 ### 2.14 Modem 线程模型
 
@@ -712,7 +755,7 @@ typedef struct {
 - 响应行格式无法解析时返回 `ESP_ERR_INVALID_RESPONSE`。
 
 **与 AT Engine 的边界**：
-- Modem 层可以调用 `at_engine_send_cmd()` 和 `at_engine_register_urc()`，因为 AT Engine 是紧邻下层。
+- Modem 层可以调用 `at_engine_send_cmd()`、`at_engine_send_cmd_with_options()` 和 `at_engine_register_urc()`，因为 AT Engine 是紧邻下层。
 - Core 不能调用 AT Engine API。
 - AT Engine 不知道 Air780EP 语义，只做 URC 前缀匹配和原始行分发。
 

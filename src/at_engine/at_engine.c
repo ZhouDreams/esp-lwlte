@@ -55,6 +55,7 @@ typedef struct {
     const char *cmd;
     uint32_t timeout_ms;
     at_response_t *response;
+    at_cmd_options_t options;
     int echo_consumed;
     int data_line_index;
     bool result_received;
@@ -107,9 +108,14 @@ static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint
 static void process_rx_char(at_engine_t *me, char c, uint32_t epoch);
 static void handle_line(at_engine_t *me, const char *line, uint32_t epoch);
 static bool is_echo_line(const at_cmd_ctx_t *ctx, const char *line);
-static bool parse_final_result(at_response_t *response, const char *line);
+static esp_err_t validate_options(const at_cmd_options_t *options);
+static bool parse_error_result(at_response_t *response, const char *line);
+static bool match_custom_success(const at_cmd_ctx_t *ctx, const char *line);
+static bool match_success_rule(const at_cmd_success_match_t *rule, const char *line);
+static bool is_intermediate_ok(const at_cmd_ctx_t *ctx, const char *line);
 static int parse_error_code(const char *line);
 static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line);
+static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line);
 static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int error_code);
 static bool dispatch_urc(at_engine_t *me, const char *line, uint32_t epoch);
 static bool starts_with(const char *str, const char *prefix);
@@ -214,16 +220,35 @@ esp_err_t at_engine_destroy(at_engine_t *me)
 esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
                              at_response_t *response, uint32_t timeout_ms)
 {
-    ESP_RETURN_ON_FALSE(me && cmd && response, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    const at_cmd_options_t options = {
+        .timeout_ms = timeout_ms,
+        .flags = 0,
+        .success_matches = NULL,
+        .success_match_count = 0,
+    };
+
+    return at_engine_send_cmd_with_options(me, cmd, response, &options);
+}
+
+esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
+                                          at_response_t *response,
+                                          const at_cmd_options_t *options)
+{
+    ESP_RETURN_ON_FALSE(me && cmd && response && options,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(response->lines && response->max_lines > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid response lines");
 
-    esp_err_t ret = begin_send_call(me);
+    esp_err_t ret = validate_options(options);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid command options");
+
+    ret = begin_send_call(me);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    uint32_t wait_ms = timeout_ms ? timeout_ms : (uint32_t)me->config.cmd_default_timeout_ms;
+    uint32_t wait_ms = options->timeout_ms ? options->timeout_ms :
+                       (uint32_t)me->config.cmd_default_timeout_ms;
     if (wait_ms == 0) {
         end_send_call(me);
         return ESP_ERR_INVALID_ARG;
@@ -245,6 +270,7 @@ esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
         .cmd = cmd,
         .timeout_ms = wait_ms,
         .response = response,
+        .options = *options,
         .echo_consumed = 0,
         .data_line_index = 0,
         .result_received = false,
@@ -352,6 +378,29 @@ esp_err_t at_engine_unregister_urc(at_engine_t *me, const char *prefix)
 /**********************
  *   STATIC FUNCTIONS
  **********************/
+
+static esp_err_t validate_options(const at_cmd_options_t *options)
+{
+    ESP_RETURN_ON_FALSE(options, ESP_ERR_INVALID_ARG, TAG, "options is NULL");
+    ESP_RETURN_ON_FALSE(options->success_match_count >= 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid success_match_count");
+    ESP_RETURN_ON_FALSE(options->success_match_count == 0 || options->success_matches,
+                        ESP_ERR_INVALID_ARG, TAG, "success_matches is NULL");
+
+    for (int i = 0; i < options->success_match_count; i++) {
+        const at_cmd_success_match_t *rule = &options->success_matches[i];
+        if (rule->type == AT_CMD_SUCCESS_MATCH_EXACT ||
+            rule->type == AT_CMD_SUCCESS_MATCH_PREFIX) {
+            ESP_RETURN_ON_FALSE(rule->value && rule->value[0] != '\0',
+                                ESP_ERR_INVALID_ARG, TAG, "empty success match value");
+        } else {
+            ESP_RETURN_ON_FALSE(rule->type == AT_CMD_SUCCESS_MATCH_ANY_LINE,
+                                ESP_ERR_INVALID_ARG, TAG, "invalid success match type");
+        }
+    }
+
+    return ESP_OK;
+}
 
 static esp_err_t begin_send_call(at_engine_t *me)
 {
@@ -500,8 +549,30 @@ static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
             return;
         }
 
-        if (parse_final_result(ctx->response, line)) {
+        if (parse_error_result(ctx->response, line)) {
             finish_cmd_locked(me, ctx->response->status, ctx->response->error_code);
+            xSemaphoreGive(me->lock);
+            return;
+        }
+
+        if (strcmp(line, "OK") == 0) {
+            if (!is_intermediate_ok(ctx, line)) {
+                finish_cmd_locked(me, AT_RESP_OK, 0);
+                xSemaphoreGive(me->lock);
+                return;
+            }
+            if ((ctx->options.flags & AT_CMD_FLAG_SKIP_INTERMEDIATE_OK) != 0) {
+                xSemaphoreGive(me->lock);
+                return;
+            }
+            append_response_line_locked(me, ctx, line);
+            xSemaphoreGive(me->lock);
+            return;
+        }
+
+        if (match_custom_success(ctx, line)) {
+            append_final_response_line_locked(me, ctx, line);
+            finish_cmd_locked(me, AT_RESP_OK, 0);
             xSemaphoreGive(me->lock);
             return;
         }
@@ -529,13 +600,8 @@ static bool is_echo_line(const at_cmd_ctx_t *ctx, const char *line)
     return strlen(line) == cmd_len && strncmp(line, ctx->cmd, cmd_len) == 0;
 }
 
-static bool parse_final_result(at_response_t *response, const char *line)
+static bool parse_error_result(at_response_t *response, const char *line)
 {
-    if (strcmp(line, "OK") == 0) {
-        response->status = AT_RESP_OK;
-        response->error_code = 0;
-        return true;
-    }
     if (strcmp(line, "ERROR") == 0) {
         response->status = AT_RESP_ERROR;
         response->error_code = 0;
@@ -552,6 +618,47 @@ static bool parse_final_result(at_response_t *response, const char *line)
         return true;
     }
     return false;
+}
+
+static bool is_intermediate_ok(const at_cmd_ctx_t *ctx, const char *line)
+{
+    if (!ctx || strcmp(line, "OK") != 0) {
+        return false;
+    }
+    return (ctx->options.flags & AT_CMD_FLAG_NO_STANDARD_OK_FINAL) != 0;
+}
+
+static bool match_custom_success(const at_cmd_ctx_t *ctx, const char *line)
+{
+    if (!ctx || !line) {
+        return false;
+    }
+
+    for (int i = 0; i < ctx->options.success_match_count; i++) {
+        if (match_success_rule(&ctx->options.success_matches[i], line)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool match_success_rule(const at_cmd_success_match_t *rule, const char *line)
+{
+    if (!rule || !line) {
+        return false;
+    }
+
+    switch (rule->type) {
+    case AT_CMD_SUCCESS_MATCH_EXACT:
+        return strcmp(line, rule->value) == 0;
+    case AT_CMD_SUCCESS_MATCH_PREFIX:
+        return starts_with(line, rule->value);
+    case AT_CMD_SUCCESS_MATCH_ANY_LINE:
+        return true;
+    default:
+        return false;
+    }
 }
 
 static int parse_error_code(const char *line)
@@ -578,6 +685,26 @@ static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, cons
     ctx->response->lines[ctx->data_line_index] = dst;
     ctx->data_line_index++;
     ctx->response->line_count = ctx->data_line_index;
+}
+
+static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line)
+{
+    int limit = ctx->response->max_lines;
+    if (limit > me->response_pool_lines) {
+        limit = me->response_pool_lines;
+    }
+    if (limit <= 0) {
+        return;
+    }
+    if (ctx->data_line_index < limit) {
+        append_response_line_locked(me, ctx, line);
+        return;
+    }
+
+    char *dst = me->response_pool + ((size_t)(limit - 1) * (size_t)me->response_line_size);
+    strlcpy(dst, line, (size_t)me->response_line_size);
+    ctx->response->lines[limit - 1] = dst;
+    ctx->response->line_count = limit;
 }
 
 static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int error_code)

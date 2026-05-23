@@ -22,6 +22,20 @@ extern "C" {
  *      DEFINES
  *********************/
 
+/**
+ * @brief 不把标准 OK 作为最终成功响应
+ * @details Do not treat standard OK as a final success response
+ * @note 标准 OK 将作为中间响应处理。
+ */
+#define AT_CMD_FLAG_NO_STANDARD_OK_FINAL        (1U << 0)
+
+/**
+ * @brief 跳过中间 OK 响应行
+ * @details Skip intermediate OK response line
+ * @note 仅当标准 OK 为中间响应时生效，并阻止该 OK 存入 response.lines。
+ */
+#define AT_CMD_FLAG_SKIP_INTERMEDIATE_OK        (1U << 1)
+
 /**********************
  *      TYPEDEFS
  **********************/
@@ -54,7 +68,7 @@ typedef struct at_engine at_engine_t;
  * @details AT response status
  */
 typedef enum {
-    AT_RESP_OK = 0,                     /**< 收到 OK； OK received */
+    AT_RESP_OK = 0,                     /**< 成功终止响应； Successful final response */
     AT_RESP_ERROR,                      /**< 收到 ERROR； ERROR received */
     AT_RESP_CME_ERROR,                  /**< 收到 +CME ERROR； +CME ERROR received */
     AT_RESP_CMS_ERROR,                  /**< 收到 +CMS ERROR； +CMS ERROR received */
@@ -67,7 +81,7 @@ typedef enum {
  * @details AT command response
  * @note 调用方负责分配 lines 指针数组，且 max_lines 必须大于 0。
  * @note AT 引擎将 lines[i] 指向引擎拥有的字符串，调用方不得释放或修改。
- * @note lines[i] 指向的字符串在同一引擎实例下一次调用 at_engine_send_cmd() 前有效。
+ * @note lines[i] 指向的字符串在同一引擎实例下一次发送命令前有效。
  */
 typedef struct {
     at_response_status_t status;         /**< 响应状态； Response status */
@@ -78,11 +92,48 @@ typedef struct {
 } at_response_t;
 
 /**
+ * @brief AT 命令成功匹配类型
+ * @details AT command success match type
+ */
+typedef enum {
+    AT_CMD_SUCCESS_MATCH_EXACT = 0,      /**< 完整匹配； Exact match */
+    AT_CMD_SUCCESS_MATCH_PREFIX,         /**< 前缀匹配； Prefix match */
+    AT_CMD_SUCCESS_MATCH_ANY_LINE,       /**< 任意非错误响应行； Any non-error response line */
+} at_cmd_success_match_type_t;
+
+/**
+ * @brief AT 命令成功匹配规则
+ * @details AT command success match rule
+ * @note AT_CMD_SUCCESS_MATCH_EXACT 和 AT_CMD_SUCCESS_MATCH_PREFIX 的 value 必须非 NULL 且非空。
+ * @note AT_CMD_SUCCESS_MATCH_ANY_LINE 忽略 value。
+ */
+typedef struct {
+    at_cmd_success_match_type_t type;     /**< 匹配类型； Match type */
+    const char *value;                    /**< 匹配文本，ANY_LINE 时忽略； Match text, ignored for ANY_LINE */
+} at_cmd_success_match_t;
+
+/**
+ * @brief AT 命令选项
+ * @details AT command options
+ * @note at_engine_send_cmd_with_options() 的 options 参数必须非 NULL。
+ * @note success_match_count == 0 合法，表示不使用自定义成功匹配规则。
+ * @note success_matches 仅在 success_match_count == 0 时可为 NULL。
+ * @note success_matches 指向的数组在 at_engine_send_cmd_with_options() 返回前必须保持有效。
+ */
+typedef struct {
+    uint32_t timeout_ms;                                  /**< 超时时间，0 表示使用默认值； Timeout, 0 uses default */
+    uint32_t flags;                                       /**< AT_CMD_FLAG_* 标志； AT_CMD_FLAG_* flags */
+    const at_cmd_success_match_t *success_matches;        /**< 自定义成功匹配规则数组； Custom success match rules */
+    int success_match_count;                              /**< 自定义成功匹配规则数量； Custom success match count */
+} at_cmd_options_t;
+
+/**
  * @brief URC 回调函数
  * @details URC callback function
  * @note 回调在 AT 引擎 RX 任务中同步执行，必须短小且非阻塞。
  * @note 回调不得在同一引擎实例上调用会获取引擎锁的 AT Engine API，包括
- *       at_engine_send_cmd()、at_engine_register_urc() 和 at_engine_unregister_urc()。
+ *       at_engine_send_cmd()、at_engine_send_cmd_with_options()、
+ *       at_engine_register_urc() 和 at_engine_unregister_urc()。
  * @param[in] prefix 匹配到的 URC 前缀
  * @param[in] line 完整 URC 行
  * @param[in] user_ctx 用户上下文
@@ -138,7 +189,7 @@ esp_err_t at_engine_destroy(at_engine_t *me);
  * @param[in] timeout_ms 超时时间，0 表示使用默认值
  * @note response->lines 由调用方分配，response->max_lines 必须大于 0。
  * @note AT 引擎填充 response->lines[i] 为引擎拥有的字符串指针，调用方不得释放或修改。
- * @note response->lines[i] 指向的字符串在同一引擎实例下一次调用 at_engine_send_cmd() 前有效。
+ * @note response->lines[i] 指向的字符串在同一引擎实例下一次发送命令前有效。
  * @return
  *         - ESP_OK: 命令流程完成，AT 业务结果见 response->status
  *         - ESP_ERR_INVALID_ARG: 参数无效
@@ -149,6 +200,30 @@ esp_err_t at_engine_destroy(at_engine_t *me);
  */
 esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
                              at_response_t *response, uint32_t timeout_ms);
+
+/**
+ * @brief 使用选项发送 AT 命令
+ * @details Send AT command with options
+ * @param[in] me AT 引擎句柄
+ * @param[in] cmd AT 命令，不要求包含 CRLF
+ * @param[out] response 响应对象
+ * @param[in] options 单次命令选项
+ * @note response->lines 由调用方分配，response->max_lines 必须大于 0。
+ * @note AT 引擎填充 response->lines[i] 为引擎拥有的字符串指针，调用方不得释放或修改。
+ * @note response->lines[i] 指向的字符串在同一引擎实例下一次发送命令前有效。
+ * @note options 必须非 NULL。
+ * @note options->success_matches 指向的数组在函数返回前必须保持有效。
+ * @return
+ *         - ESP_OK: 命令流程完成，AT 业务结果见 response->status
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_TIMEOUT: 等待响应超时
+ *         - ESP_FAIL: UART 写入失败
+ */
+esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
+                                          at_response_t *response,
+                                          const at_cmd_options_t *options);
 
 /**
  * @brief 注册 URC 处理器
