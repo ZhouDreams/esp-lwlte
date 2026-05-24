@@ -1706,7 +1706,6 @@ static esp_err_t air780ep_init(modem_t *me)
     const char *cmds[] = {
         "ATE0",
         "AT+CMEE=1",
-        "AT+CGEREP=1",
         "AT+CEREG=2",
         "AT+CGREG=2",
         "AT+CREG=2",

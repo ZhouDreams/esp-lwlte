@@ -92,7 +92,7 @@
 | PDP 鉴权 | `AT+CGAUTH=<cid>,<auth_prot>,<userid>,<password>` | `OK` | `auth_prot=0` none；`1` PAP；`2` CHAP | 9s | 专网卡 APN 鉴权内部配置；需要时再扩展公开 API | 仅在 APN 需要用户名密码时使用 |
 | PDP 激活/去激活 | `AT+CGACT=<state>,<cid>`，`AT+CGACT?` | `+CGACT: <cid>,<state>` + `OK` | `state=0` 未激活；`1` 激活 | 108s | `modem_activate_pdp()` / `modem_deactivate_pdp()` 标准 PDP 路径或诊断 | 本项目第一阶段可优先使用 `CSTT/CIICR/CIFSR` TCPIP 流程 |
 | 查询 PDP 地址 | `AT+CGPADDR=<cid>` | `+CGPADDR: <cid>,<PDP_ipv4_addr>[,<PDP_ipv6_addr>]` + `OK` | IPv4/IPv6 地址字符串 | 9s | `modem_get_pdp_context()` 组合/缓存 `AT+CGDCONT?`、`AT+CGACT?` 和 `AT+CGPADDR` 的结果 | 第一版实现只校验并缓存 IPv4 地址；IPv6 地址后续扩展。`AT+CGPADDR` 只提供地址，不能单独还原 APN/激活状态；PDP 未建立时无法查询地址 |
-| GPRS 事件 URC 开关 | `AT+CGEREP=<mode>[,<bfr>]`，`AT+CGEREP?` | `+CGEREP: <mode>,<bfr>` + `OK` | `mode=0` 缓冲不转发；`mode=1` 空闲时转发，在线数据状态丢弃 | 9s | 初始化时启用 `AT+CGEREP=1` | 用于接收 `+CGEV` PDN 事件 |
+| ~~GPRS 事件 URC 开关~~ | ~~`AT+CGEREP=<mode>[,<bfr>]`，`AT+CGEREP?`~~ | ~~`+CGEREP: <mode>,<bfr>` + `OK`~~ | ~~`mode=0` 缓冲不转发；`mode=1` 空闲时转发，在线数据状态丢弃~~ | ~~9s~~ | ~~初始化时启用 `AT+CGEREP=1`~~ | ~~Air780EP 模块不支持此指令，始终返回 ERROR，已从初始化流程中移除。`+CGEV` PDN 事件 URC 默认启用，无需额外配置。~~ |
 | TCPIP 设置 APN | `AT+CSTT` 或 `AT+CSTT=<apn>[,<username>,<password>]` | `OK` | APN 为空时模块按自动获取 APN 设置 | 60s | `modem_activate_pdp()` 的 Air780EP TCPIP 激活步骤 | 仅在 `IP INITIAL` 状态设置有效，成功后进入 `IP START`；该 TCPIP 路径为全局移动场景，本实现仅支持 `cid=1` 激活，`cid=2..4` 返回 `ESP_ERR_NOT_SUPPORTED` |
 | 激活移动场景 | `AT+CIICR` | `OK` 或 `ERROR` | 激活 GPRS/PDP 场景 | 90s | `modem_activate_pdp()` 的 Air780EP TCPIP 激活步骤 | 只在 `IP START` 状态有效，成功后进入 `IP GPRSACT`；该命令不携带 CID，本实现仅支持 `cid=1` |
 | 查询本地 IP | `AT+CIFSR` | `<IP address>` 或 `ERROR` | 本地 IP 字符串 | 9s | `modem_activate_pdp()` 成功后填充 `modem_pdp_context_t.ip_addr` | 仅在场景已激活后可用；返回纯 IP 成功行，不是 `OK` 终止的常规响应，也不是 `+CIFSR:` 前缀；`AT+CIFSR` 使用 `at_engine_send_cmd_with_options()` 和 `AT_CMD_SUCCESS_MATCH_ANY_LINE` 处理纯 IP 成功行；该命令不携带 CID，本实现仅用于 `cid=1`。 |
@@ -151,7 +151,7 @@
 
 1. `ATE0`
 2. `AT+CMEE=1`
-3. `AT+CGEREP=1`，启用 `+CGEV` 分组域事件
+3. ~~`AT+CGEREP=1`，启用 `+CGEV` 分组域事件~~（Air780EP 不支持，始终返回 ERROR，已移除；`+CGEV` URC 默认启用）
 4. `AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2`，启用注册状态 URC
 5. `AT+CPIN?`，要求 `+CPIN: READY`
 6. `AT+CSQ`，解析 `+CSQ: <rssi>,<ber>` 并按 Core 阈值判断信号可用性
