@@ -55,8 +55,10 @@ struct modem {
     QueueHandle_t event_queue;
     TaskHandle_t event_task;
     SemaphoreHandle_t event_task_done_sema;
+    SemaphoreHandle_t event_cb_done_sema;
     modem_event_callback_t event_cb;
     void *event_user_ctx;
+    int event_cb_active;
     modem_state_t state;
     bool destroying;
     bool event_task_stop_requested;

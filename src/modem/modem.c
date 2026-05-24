@@ -99,6 +99,8 @@ esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
     me->event_queue = NULL;
     me->event_task = NULL;
     me->event_task_done_sema = NULL;
+    me->event_cb_done_sema = NULL;
+    me->event_cb_active = 0;
     me->event_task_stop_requested = false;
 
     if (event_queue_size <= 0) {
@@ -118,6 +120,7 @@ esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
     me->destroying = false;
     me->event_cb = NULL;
     me->event_user_ctx = NULL;
+    me->event_cb_active = 0;
 
     me->lock = xSemaphoreCreateMutex();
     ESP_GOTO_ON_FALSE(me->lock, ESP_ERR_NO_MEM, err, TAG, "create lock failed");
@@ -129,6 +132,10 @@ esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
     me->event_task_done_sema = xSemaphoreCreateBinary();
     ESP_GOTO_ON_FALSE(me->event_task_done_sema, ESP_ERR_NO_MEM, err, TAG,
                       "create event_task_done_sema failed");
+
+    me->event_cb_done_sema = xSemaphoreCreateBinary();
+    ESP_GOTO_ON_FALSE(me->event_cb_done_sema, ESP_ERR_NO_MEM, err, TAG,
+                      "create event_cb_done_sema failed");
 
     BaseType_t task_ret = xTaskCreate(event_task, "modem_evt", event_task_stack,
                                       me, event_task_priority, &me->event_task);
@@ -164,6 +171,10 @@ void modem_base_deinit(modem_t *me)
         vSemaphoreDelete(me->event_task_done_sema);
         me->event_task_done_sema = NULL;
     }
+    if (me->event_cb_done_sema) {
+        vSemaphoreDelete(me->event_cb_done_sema);
+        me->event_cb_done_sema = NULL;
+    }
     if (me->lock) {
         vSemaphoreDelete(me->lock);
         me->lock = NULL;
@@ -174,6 +185,7 @@ void modem_base_deinit(modem_t *me)
     me->event_task = NULL;
     me->event_cb = NULL;
     me->event_user_ctx = NULL;
+    me->event_cb_active = 0;
     me->name = NULL;
 }
 
@@ -201,10 +213,18 @@ esp_err_t modem_base_stop_event_task(modem_t *me)
 
 esp_err_t modem_post_event(modem_t *me, const modem_event_t *event)
 {
-    ESP_RETURN_ON_FALSE(me && event && me->event_queue,
+    ESP_RETURN_ON_FALSE(me && event && me->lock && me->event_queue,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
-    if (xQueueSend(me->event_queue, event, 0) != pdTRUE) {
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->state == MODEM_STATE_DESTROYING) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    BaseType_t send_ret = xQueueSend(me->event_queue, event, 0);
+    xSemaphoreGive(me->lock);
+
+    if (send_ret != pdTRUE) {
         ESP_LOGW(TAG, "event queue full, drop event %d", event->id);
         return ESP_ERR_TIMEOUT;
     }
@@ -219,6 +239,10 @@ esp_err_t modem_set_state(modem_t *me, modem_state_t state)
                         ESP_ERR_INVALID_ARG, TAG, "invalid state");
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying && state != MODEM_STATE_DESTROYING) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     me->state = state;
     xSemaphoreGive(me->lock);
 
@@ -258,6 +282,13 @@ esp_err_t modem_destroy(modem_t *me)
         esp_err_t destroy_ret = me->ops->destroy(me);
         if (destroy_ret != ESP_OK) {
             ESP_LOGW(TAG, "destroy modem failed: %s", esp_err_to_name(destroy_ret));
+            xSemaphoreTake(me->lock, portMAX_DELAY);
+            me->destroying = false;
+            me->state = (state >= MODEM_STATE_CREATED && state <= MODEM_STATE_ERROR) ?
+                        state : MODEM_STATE_ERROR;
+            me->event_task_stop_requested = false;
+            xSemaphoreGive(me->lock);
+            /* Event task is already stopped; retry can still run subclass destroy/base deinit. */
             return destroy_ret;
         }
     }
@@ -298,13 +329,38 @@ esp_err_t modem_register_event_callback(modem_t *me,
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying) {
+    if (!callback && me->event_task && xTaskGetCurrentTaskHandle() == me->event_task) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
+    if (callback && me->destroying) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
     me->event_cb = callback;
     me->event_user_ctx = callback ? user_ctx : NULL;
+
+    if (callback) {
+        xSemaphoreGive(me->lock);
+        return ESP_OK;
+    }
+
+    int active = me->event_cb_active;
+    SemaphoreHandle_t done_sema = me->event_cb_done_sema;
     xSemaphoreGive(me->lock);
+
+    while (active > 0) {
+        if (!done_sema) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        xSemaphoreTake(done_sema, portMAX_DELAY);
+
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        active = me->event_cb_active;
+        done_sema = me->event_cb_done_sema;
+        xSemaphoreGive(me->lock);
+    }
 
     return ESP_OK;
 }
@@ -431,14 +487,36 @@ static void event_task(void *arg)
                           pdMS_TO_TICKS(MODEM_EVENT_TASK_WAIT_MS)) != pdTRUE) {
             continue;
         }
+        if (event_task_should_stop(me)) {
+            break;
+        }
 
         xSemaphoreTake(me->lock, portMAX_DELAY);
+        if (me->destroying || me->state == MODEM_STATE_DESTROYING) {
+            xSemaphoreGive(me->lock);
+            break;
+        }
         modem_event_callback_t cb = me->event_cb;
         void *user_ctx = me->event_user_ctx;
+        if (cb) {
+            me->event_cb_active++;
+        }
         xSemaphoreGive(me->lock);
 
         if (cb) {
             cb(me, &event, user_ctx);
+
+            xSemaphoreTake(me->lock, portMAX_DELAY);
+            if (me->event_cb_active > 0) {
+                me->event_cb_active--;
+            }
+            bool cb_done = me->event_cb_active == 0;
+            SemaphoreHandle_t done_sema = me->event_cb_done_sema;
+            xSemaphoreGive(me->lock);
+
+            if (cb_done && done_sema) {
+                xSemaphoreGive(done_sema);
+            }
         }
     }
 
@@ -449,7 +527,8 @@ static void event_task(void *arg)
 static bool event_task_should_stop(modem_t *me)
 {
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    bool should_stop = me->event_task_stop_requested;
+    bool should_stop = me->event_task_stop_requested || me->destroying ||
+                       me->state == MODEM_STATE_DESTROYING;
     xSemaphoreGive(me->lock);
 
     return should_stop;
