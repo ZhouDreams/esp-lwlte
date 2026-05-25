@@ -9,15 +9,15 @@
 ### 1.1 所有公共 API 返回 `esp_err_t`
 
 ```c
-esp_err_t lwlte_core_start(lwlte_core_t *me);
-esp_err_t lwlte_mqtt_publish(lwlte_mqtt_t *me, const lwlte_mqtt_req_t *req);
-esp_err_t lwlte_net_get_signal(lwlte_net_t *me, int *rssi);
+esp_err_t lwlte_connect(lwlte_t *me);
+esp_err_t lwlte_disconnect(lwlte_t *me);
+esp_err_t lwlte_destroy(lwlte_t *me);
 ```
 
 ### 1.2 Modem 公共包装 API 和内部 ops 方法统一返回 `esp_err_t`
 
 ```c
-/* include/modem.h：Core 调用公共 modem_* 包装 API */
+/* src/modem/modem.h：Core 调用层间 modem_* 包装 API */
 esp_err_t modem_init(modem_t *me);
 esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
 esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn);
@@ -83,12 +83,14 @@ ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_
 用于无需清理资源的场景：
 
 ```c
-esp_err_t lwlte_core_set_apn(lwlte_core_t *me, const char *apn)
+esp_err_t core_connect(core_t *me)
 {
-    ESP_RETURN_ON_FALSE(me && me->modem && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_NET_ACTIVATE),
+                        ESP_ERR_INVALID_STATE, TAG, "connect not allowed");
 
-    esp_err_t ret = modem_set_apn(me->modem, 1, apn);
-    ESP_RETURN_ON_ERROR(ret, TAG, "set APN failed");
+    esp_err_t ret = send_simple_signal(me, CORE_SIG_NET_ACTIVATE);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send connect signal failed");
 
     return ESP_OK;
 }
@@ -99,16 +101,11 @@ esp_err_t lwlte_core_set_apn(lwlte_core_t *me, const char *apn)
 用于有资源需释放的场景。**硬性要求**：使用这些宏的函数必须在开头定义 `esp_err_t ret = ESP_OK;`，标签统一用 `err`。
 
 ```c
-esp_err_t lwlte_core_create(const lwlte_core_config_t *config,
-                             modem_t *modem,
-                             lwlte_core_t **out_core)
+esp_err_t core_init_resources(core_t *me, modem_t *modem)
 {
-    ESP_RETURN_ON_FALSE(config && modem && out_core, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && modem, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = ESP_OK;
-
-    lwlte_core_t *me = calloc(1, sizeof(lwlte_core_t));
-    ESP_GOTO_ON_FALSE(me, ESP_ERR_NO_MEM, err, TAG, "calloc core failed");
 
     me->fsm_queue = xQueueCreate(CONFIG_LWLTE_FSM_QUEUE_SIZE, sizeof(sig_item_t));
     ESP_GOTO_ON_FALSE(me->fsm_queue, ESP_ERR_NO_MEM, err, TAG, "xQueueCreate fsm_queue failed");
@@ -116,12 +113,11 @@ esp_err_t lwlte_core_create(const lwlte_core_config_t *config,
     ret = modem_register_event_callback(modem, core_modem_event_handler, me);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "register modem event callback failed");
 
-    *out_core = me;
     return ESP_OK;
 
 err:
     if (me->fsm_queue) vQueueDelete(me->fsm_queue);
-    free(me);
+    me->fsm_queue = NULL;
     return ret;
 }
 ```
@@ -131,16 +127,16 @@ err:
 当清理动作简单（1-2 行），不值得单独写 goto 标签时使用：
 
 ```c
-esp_err_t lwlte_net_get_signal(lwlte_net_t *me, int *rssi)
+esp_err_t modem_sample_signal(modem_t *me, int *rssi)
 {
-    ESP_RETURN_ON_FALSE(me && me->modem && rssi, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && rssi, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     void *buf = malloc(128);
     ESP_RETURN_ON_FALSE(buf, ESP_ERR_NO_MEM, TAG, "malloc failed");
 
     modem_signal_t signal = {0};
     ESP_RETURN_ON_ERROR_CLEANUP(
-        modem_get_signal(me->modem, &signal),
+        modem_get_signal(me, &signal),
         free(buf)
     );
 
@@ -177,7 +173,7 @@ ESP-IDF 没有内置"仅记录日志"的宏，项目自定义如下：
 ESP_LOG_ON_ERROR(uart_driver_delete(UART_NUM), TAG, "uart deinit failed");
 
 /* 事件发送失败可忽略 */
-ESP_LOG_ON_ERROR(lwlte_core_post_event(me, LWLTE_EVENT_STARTED), TAG, "post event failed");
+ESP_LOG_ON_ERROR(core_post_event(me, CORE_EVENT_STARTED, NULL), TAG, "post event failed");
 ```
 
 ---
@@ -215,16 +211,15 @@ ESP_LOG_ON_ERROR(lwlte_core_post_event(me, LWLTE_EVENT_STARTED), TAG, "post even
 ### 5.2 完整模板
 
 ```c
-esp_err_t lwlte_xxx_create(const lwlte_xxx_config_t *config,
-                            lwlte_xxx_t **out)
+esp_err_t service_create(const service_config_t *config, service_t **out)
 {
     ESP_RETURN_ON_FALSE(config && out, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = ESP_OK;
 
     /* 1. 分配自身 */
-    lwlte_xxx_t *me = calloc(1, sizeof(lwlte_xxx_t));
-    ESP_GOTO_ON_FALSE(me, ESP_ERR_NO_MEM, err, TAG, "calloc xxx failed");
+    service_t *me = calloc(1, sizeof(service_t));
+    ESP_GOTO_ON_FALSE(me, ESP_ERR_NO_MEM, err, TAG, "calloc service failed");
 
     /* 2. 创建资源 A */
     me->resource_a = create_resource_a();
@@ -260,10 +255,10 @@ Core 层只调用 `modem_*` 包装 API，内部多态机制不向 Core 暴露。
 
 ```c
 /* Core 层通过 modem_* 包装 API 调用，错误向上传播 */
-esp_err_t lwlte_core_set_apn(lwlte_core_t *me, const char *apn)
+esp_err_t core_refresh_signal(core_t *me, modem_signal_t *signal)
 {
-    ESP_RETURN_ON_FALSE(me && me->modem && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-    return modem_set_apn(me->modem, 1, apn);
+    ESP_RETURN_ON_FALSE(me && me->modem && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    return modem_get_signal(me->modem, signal);
 }
 ```
 
@@ -302,7 +297,7 @@ esp_err_t lwlte_transport_send(transport_t *me, const uint8_t *data, size_t len)
 
 | 禁止项 | 替代方案 |
 |--------|---------|
-| 自定义 `LWLTE_ERR_*` 错误码体系 | 使用 ESP-IDF 内置 `esp_err_t` 和标准错误码 |
+| 自定义项目错误码体系 | 使用 ESP-IDF 内置 `esp_err_t` 和标准错误码 |
 | 自定义错误检查宏（`LWLTE_RETURN_ON_*` 等） | 使用 `esp_check.h` 的 `ESP_RETURN_ON_*` / `ESP_GOTO_ON_*` |
 | `ESP_GOTO_ON_*` 用 `ret` 之外的变量名 | 宏内部固定写 `ret`，否则编译不过 |
 | goto 标签不用 `err` | 统一用 `err`，全项目一致 |

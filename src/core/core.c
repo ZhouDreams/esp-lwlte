@@ -39,7 +39,7 @@
  *         - true: 配置有效
  *         - false: 配置无效
  */
-static bool config_valid(const lwlte_core_config_t *config, modem_t *modem);
+static bool config_valid(const core_config_t *config, modem_t *modem);
 
 /**
  * @brief 归一化 Core 配置默认值
@@ -51,8 +51,8 @@ static bool config_valid(const lwlte_core_config_t *config, modem_t *modem);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_NO_MEM: 内存不足
  */
-static esp_err_t normalize_config(const lwlte_core_config_t *config,
-                                  lwlte_core_config_t *normalized);
+static esp_err_t normalize_config(const core_config_t *config,
+                                  core_config_t *normalized);
 
 /**
  * @brief 创建 Core 自有事件循环
@@ -63,7 +63,7 @@ static esp_err_t normalize_config(const lwlte_core_config_t *config,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: ESP Event 错误码
  */
-static esp_err_t create_event_loop(lwlte_core_t *me);
+static esp_err_t create_event_loop(core_t *me);
 
 /**
  * @brief 销毁 Core 自有事件循环
@@ -74,7 +74,7 @@ static esp_err_t create_event_loop(lwlte_core_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: ESP Event 错误码
  */
-static esp_err_t destroy_event_loop(lwlte_core_t *me);
+static esp_err_t destroy_event_loop(core_t *me);
 
 /**
  * @brief 发送简单 FSM 信号
@@ -86,7 +86,7 @@ static esp_err_t destroy_event_loop(lwlte_core_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_TIMEOUT: FSM 队列已满
  */
-static esp_err_t send_simple_signal(lwlte_core_t *me,
+static esp_err_t send_simple_signal(core_t *me,
                                     core_fsm_sig_type_t sig_type);
 
 /**
@@ -98,7 +98,7 @@ static esp_err_t send_simple_signal(lwlte_core_t *me,
  *         - true: 允许操作
  *         - false: 不允许操作
  */
-static bool api_state_allows(lwlte_core_t *me, core_fsm_sig_type_t sig_type);
+static bool api_state_allows(core_t *me, core_fsm_sig_type_t sig_type);
 
 /**
  * @brief Modem 事件回调
@@ -130,7 +130,7 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 当前任务正在执行回调或内部状态无效
  */
-static esp_err_t wait_event_callbacks_idle(lwlte_core_t *me);
+static esp_err_t wait_event_callbacks_idle(core_t *me);
 
 /**
  * @brief 清理 Core 内部资源
@@ -141,12 +141,12 @@ static esp_err_t wait_event_callbacks_idle(lwlte_core_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: ESP Event 错误码
  */
-static esp_err_t cleanup_core(lwlte_core_t *me);
+static esp_err_t cleanup_core(core_t *me);
 
 /**********************
  *  STATIC VARIABLES
  **********************/
-ESP_EVENT_DEFINE_BASE(LWLTE_CORE_EVENT);
+ESP_EVENT_DEFINE_BASE(CORE_EVENT);
 
 /**********************
  *      MACROS
@@ -155,8 +155,7 @@ ESP_EVENT_DEFINE_BASE(LWLTE_CORE_EVENT);
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-lwlte_core_t *lwlte_core_create(const lwlte_core_config_t *config,
-                                 modem_t *modem)
+core_t *core_create(const core_config_t *config, modem_t *modem)
 {
     esp_err_t ret = ESP_OK;
     esp_err_t cleanup_ret = ESP_OK;
@@ -166,7 +165,7 @@ lwlte_core_t *lwlte_core_create(const lwlte_core_config_t *config,
         return NULL;
     }
 
-    lwlte_core_t *me = calloc(1, sizeof(lwlte_core_t));
+    core_t *me = calloc(1, sizeof(core_t));
     if (!me) {
         ESP_LOGE(TAG, "calloc core failed");
         return NULL;
@@ -179,7 +178,7 @@ lwlte_core_t *lwlte_core_create(const lwlte_core_config_t *config,
         return NULL;
     }
     me->modem = modem;
-    me->state = LWLTE_CORE_STATE_STOPPED;
+    me->state = CORE_STATE_STOPPED;
     me->destroying = false;
     me->destroy_in_progress = false;
     me->event_loop_task = NULL;
@@ -245,9 +244,9 @@ err:
     return NULL;
 }
 
-esp_err_t lwlte_core_destroy(lwlte_core_t *me)
+esp_err_t core_destroy(core_t *me)
 {
-    lwlte_core_state_t previous_state = LWLTE_CORE_STATE_STOPPED;
+    core_state_t previous_state = CORE_STATE_STOPPED;
     bool retry_destroy = false;
 
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
@@ -270,17 +269,17 @@ esp_err_t lwlte_core_destroy(lwlte_core_t *me)
         return ESP_ERR_INVALID_STATE;
     }
     if (me->destroying) {
-        if (previous_state != LWLTE_CORE_STATE_DESTROYING) {
+        if (previous_state != CORE_STATE_DESTROYING) {
             xSemaphoreGive(me->lock);
             return ESP_ERR_INVALID_STATE;
         }
         retry_destroy = true;
-    } else if (previous_state == LWLTE_CORE_STATE_DESTROYING) {
+    } else if (previous_state == CORE_STATE_DESTROYING) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
     me->destroying = true;
-    me->state = LWLTE_CORE_STATE_DESTROYING;
+    me->state = CORE_STATE_DESTROYING;
     me->destroy_in_progress = true;
     xSemaphoreGive(me->lock);
 
@@ -320,7 +319,7 @@ esp_err_t lwlte_core_destroy(lwlte_core_t *me)
     return ESP_OK;
 }
 
-esp_err_t lwlte_core_start(lwlte_core_t *me)
+esp_err_t core_start(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -332,7 +331,7 @@ esp_err_t lwlte_core_start(lwlte_core_t *me)
     return ESP_OK;
 }
 
-esp_err_t lwlte_core_stop(lwlte_core_t *me)
+esp_err_t core_stop(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -344,9 +343,9 @@ esp_err_t lwlte_core_stop(lwlte_core_t *me)
     return ESP_OK;
 }
 
-esp_err_t lwlte_core_register_event_callback(lwlte_core_t *me,
-                                              lwlte_core_event_callback_t callback,
-                                              void *user_ctx)
+esp_err_t core_register_event_callback(core_t *me,
+                                       core_event_callback_t callback,
+                                       void *user_ctx)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -355,7 +354,7 @@ esp_err_t lwlte_core_register_event_callback(lwlte_core_t *me,
 
     while (true) {
         xSemaphoreTake(me->lock, portMAX_DELAY);
-        if (me->destroying || me->state == LWLTE_CORE_STATE_DESTROYING) {
+        if (me->destroying || me->state == CORE_STATE_DESTROYING) {
             xSemaphoreGive(me->lock);
             return ESP_ERR_INVALID_STATE;
         }
@@ -382,7 +381,7 @@ esp_err_t lwlte_core_register_event_callback(lwlte_core_t *me,
     }
 }
 
-esp_event_loop_handle_t lwlte_core_get_event_loop(lwlte_core_t *me)
+esp_event_loop_handle_t core_get_event_loop(core_t *me)
 {
     if (!me || !me->lock) {
         return NULL;
@@ -395,7 +394,7 @@ esp_event_loop_handle_t lwlte_core_get_event_loop(lwlte_core_t *me)
     return event_loop;
 }
 
-esp_err_t lwlte_core_get_state(lwlte_core_t *me, lwlte_core_state_t *state)
+esp_err_t core_get_state(core_t *me, core_state_t *state)
 {
     ESP_RETURN_ON_FALSE(me && state && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -405,14 +404,14 @@ esp_err_t lwlte_core_get_state(lwlte_core_t *me, lwlte_core_state_t *state)
     return ESP_OK;
 }
 
-esp_err_t lwlte_core_get_net_state(lwlte_core_t *me, lwlte_net_state_t *state)
+esp_err_t core_get_net_state(core_t *me, core_net_state_t *state)
 {
     ESP_RETURN_ON_FALSE(me && state, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     return net_mgr_get_state(me, state);
 }
 
-esp_err_t lwlte_core_connect(lwlte_core_t *me)
+esp_err_t core_connect(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -424,7 +423,7 @@ esp_err_t lwlte_core_connect(lwlte_core_t *me)
     return ESP_OK;
 }
 
-esp_err_t lwlte_core_disconnect(lwlte_core_t *me)
+esp_err_t core_disconnect(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -436,16 +435,16 @@ esp_err_t lwlte_core_disconnect(lwlte_core_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_set_state(lwlte_core_t *me, lwlte_core_state_t state)
+esp_err_t core_set_state(core_t *me, core_state_t state)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
-    ESP_RETURN_ON_FALSE(state >= LWLTE_CORE_STATE_STOPPED &&
-                        state <= LWLTE_CORE_STATE_DESTROYING,
+    ESP_RETURN_ON_FALSE(state >= CORE_STATE_STOPPED &&
+                        state <= CORE_STATE_DESTROYING,
                         ESP_ERR_INVALID_ARG, TAG, "invalid state");
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying && state != LWLTE_CORE_STATE_DESTROYING) {
+    if (me->destroying && state != CORE_STATE_DESTROYING) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -455,53 +454,53 @@ esp_err_t core_set_state(lwlte_core_t *me, lwlte_core_state_t state)
     return ESP_OK;
 }
 
-lwlte_core_state_t core_get_state_value(lwlte_core_t *me)
+core_state_t core_get_state_value(core_t *me)
 {
     if (!me || !me->lock) {
-        return LWLTE_CORE_STATE_STOPPED;
+        return CORE_STATE_STOPPED;
     }
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    lwlte_core_state_t state = me->state;
+    core_state_t state = me->state;
     xSemaphoreGive(me->lock);
 
     return state;
 }
 
-bool core_is_destroying(lwlte_core_t *me)
+bool core_is_destroying(core_t *me)
 {
     if (!me || !me->lock) {
         return true;
     }
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    bool destroying = me->destroying || me->state == LWLTE_CORE_STATE_DESTROYING;
+    bool destroying = me->destroying || me->state == CORE_STATE_DESTROYING;
     xSemaphoreGive(me->lock);
 
     return destroying;
 }
 
-esp_err_t core_post_event(lwlte_core_t *me, lwlte_core_event_id_t event_id,
-                          const lwlte_core_event_data_t *event_data)
+esp_err_t core_post_event(core_t *me, core_event_id_t event_id,
+                          const core_event_data_t *event_data)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && me->event_loop, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
-    ESP_RETURN_ON_FALSE(event_id >= LWLTE_CORE_EVENT_STARTED &&
-                        event_id <= LWLTE_CORE_EVENT_ERROR,
+    ESP_RETURN_ON_FALSE(event_id >= CORE_EVENT_STARTED &&
+                        event_id <= CORE_EVENT_ERROR,
                         ESP_ERR_INVALID_ARG, TAG, "invalid event id");
 
-    lwlte_core_event_data_t empty_data = {0};
+    core_event_data_t empty_data = {0};
     if (!event_data) {
         event_data = &empty_data;
     }
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying || me->state == LWLTE_CORE_STATE_DESTROYING) {
+    if (me->destroying || me->state == CORE_STATE_DESTROYING) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t ret = esp_event_post_to(me->event_loop, LWLTE_CORE_EVENT, event_id,
+    esp_err_t ret = esp_event_post_to(me->event_loop, CORE_EVENT, event_id,
                                       event_data, sizeof(*event_data), 0);
     xSemaphoreGive(me->lock);
 
@@ -511,14 +510,14 @@ esp_err_t core_post_event(lwlte_core_t *me, lwlte_core_event_id_t event_id,
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static bool config_valid(const lwlte_core_config_t *config, modem_t *modem)
+static bool config_valid(const core_config_t *config, modem_t *modem)
 {
     return config && modem && config->apn &&
            config->primary_cid <= CORE_MAX_PDP_CONTEXTS;
 }
 
-static esp_err_t normalize_config(const lwlte_core_config_t *config,
-                                  lwlte_core_config_t *normalized)
+static esp_err_t normalize_config(const core_config_t *config,
+                                  core_config_t *normalized)
 {
     ESP_RETURN_ON_FALSE(config && normalized && config->apn,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -553,7 +552,7 @@ static esp_err_t normalize_config(const lwlte_core_config_t *config,
     return ESP_OK;
 }
 
-static esp_err_t create_event_loop(lwlte_core_t *me)
+static esp_err_t create_event_loop(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(!me->event_loop, ESP_ERR_INVALID_STATE, TAG,
@@ -587,7 +586,7 @@ static esp_err_t create_event_loop(lwlte_core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t destroy_event_loop(lwlte_core_t *me)
+static esp_err_t destroy_event_loop(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     if (!me->event_loop) {
@@ -613,7 +612,7 @@ static esp_err_t destroy_event_loop(lwlte_core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t send_simple_signal(lwlte_core_t *me,
+static esp_err_t send_simple_signal(core_t *me,
                                     core_fsm_sig_type_t sig_type)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
@@ -630,33 +629,33 @@ static esp_err_t send_simple_signal(lwlte_core_t *me,
     return core_fsm_send(me, &sig);
 }
 
-static bool api_state_allows(lwlte_core_t *me, core_fsm_sig_type_t sig_type)
+static bool api_state_allows(core_t *me, core_fsm_sig_type_t sig_type)
 {
     if (!me || !me->lock) {
         return false;
     }
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    lwlte_core_state_t state = me->state;
+    core_state_t state = me->state;
     bool destroying = me->destroying;
     xSemaphoreGive(me->lock);
 
-    if (destroying || state == LWLTE_CORE_STATE_DESTROYING) {
+    if (destroying || state == CORE_STATE_DESTROYING) {
         return false;
     }
 
     switch (sig_type) {
     case CORE_SIG_START:
-        return state == LWLTE_CORE_STATE_STOPPED;
+        return state == CORE_STATE_STOPPED;
     case CORE_SIG_STOP:
-        return state != LWLTE_CORE_STATE_STOPPED;
+        return state != CORE_STATE_STOPPED;
     case CORE_SIG_NET_ACTIVATE:
-        return state == LWLTE_CORE_STATE_READY ||
-               state == LWLTE_CORE_STATE_ERROR;
+        return state == CORE_STATE_READY ||
+               state == CORE_STATE_ERROR;
     case CORE_SIG_NET_DEACTIVATE:
-        return state == LWLTE_CORE_STATE_NET_ACTIVATING ||
-               state == LWLTE_CORE_STATE_ONLINE ||
-               state == LWLTE_CORE_STATE_ERROR;
+        return state == CORE_STATE_NET_ACTIVATING ||
+               state == CORE_STATE_ONLINE ||
+               state == CORE_STATE_ERROR;
     default:
         return false;
     }
@@ -667,7 +666,7 @@ static void core_modem_event_cb(modem_t *modem, const modem_event_t *event,
 {
     (void)modem;
 
-    lwlte_core_t *me = (lwlte_core_t *)user_ctx;
+    core_t *me = (core_t *)user_ctx;
     if (!me || !event) {
         return;
     }
@@ -689,7 +688,7 @@ static void core_modem_event_cb(modem_t *modem, const modem_event_t *event,
 static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
-    lwlte_core_t *me = (lwlte_core_t *)handler_arg;
+    core_t *me = (core_t *)handler_arg;
     if (!me) {
         return;
     }
@@ -698,18 +697,18 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
     me->event_loop_task = xTaskGetCurrentTaskHandle();
     xSemaphoreGive(me->lock);
 
-    if (event_base != LWLTE_CORE_EVENT) {
+    if (event_base != CORE_EVENT) {
         return;
     }
-    if (event_id < LWLTE_CORE_EVENT_STARTED || event_id > LWLTE_CORE_EVENT_ERROR) {
+    if (event_id < CORE_EVENT_STARTED || event_id > CORE_EVENT_ERROR) {
         return;
     }
 
-    lwlte_core_event_callback_t callback = NULL;
+    core_event_callback_t callback = NULL;
     void *user_ctx = NULL;
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying || me->state == LWLTE_CORE_STATE_DESTROYING) {
+    if (me->destroying || me->state == CORE_STATE_DESTROYING) {
         xSemaphoreGive(me->lock);
         return;
     }
@@ -722,8 +721,8 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
     xSemaphoreGive(me->lock);
 
     if (callback) {
-        callback(me, (lwlte_core_event_id_t)event_id,
-                 (const lwlte_core_event_data_t *)event_data, user_ctx);
+        callback(me, (core_event_id_t)event_id,
+                 (const core_event_data_t *)event_data, user_ctx);
 
         xSemaphoreTake(me->lock, portMAX_DELAY);
         if (me->event_callback_active > 0) {
@@ -742,7 +741,7 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
     }
 }
 
-static esp_err_t wait_event_callbacks_idle(lwlte_core_t *me)
+static esp_err_t wait_event_callbacks_idle(core_t *me)
 {
     if (!me || !me->lock) {
         return ESP_ERR_INVALID_ARG;
@@ -791,7 +790,7 @@ static esp_err_t wait_event_callbacks_idle(lwlte_core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t cleanup_core(lwlte_core_t *me)
+static esp_err_t cleanup_core(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 

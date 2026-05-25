@@ -23,7 +23,7 @@ extern "C" {
 #include "freertos/task.h"
 #include "freertos/timers.h"
 
-#include "lwlte_core.h"
+#include "core.h"
 #include "modem.h"
 
 /*********************
@@ -90,7 +90,7 @@ typedef struct {
     TimerHandle_t reconnect_timer;
     SemaphoreHandle_t reconnect_cb_done_sema;
     int reconnect_cb_active;
-    lwlte_net_state_t state;
+    core_net_state_t state;
     bool reconnect_enabled;
 } net_mgr_t;
 
@@ -99,14 +99,14 @@ typedef struct {
     uint8_t primary_cid;
 } pdp_mgr_t;
 
-struct lwlte_core {
-    lwlte_core_config_t config;
+struct core {
+    core_config_t config;
     modem_t *modem;
     esp_event_loop_handle_t event_loop;
     core_fsm_t fsm;
     net_mgr_t net_mgr;
     pdp_mgr_t pdp_mgr;
-    lwlte_core_state_t state;
+    core_state_t state;
     bool destroying;
     bool destroy_in_progress;
     SemaphoreHandle_t lock;
@@ -115,38 +115,38 @@ struct lwlte_core {
     TaskHandle_t event_callback_task;
     int event_callback_active;
     bool event_callback_waiting;
-    lwlte_core_event_callback_t event_callback;
+    core_event_callback_t event_callback;
     void *event_user_ctx;
 };
 
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
-esp_err_t core_fsm_init(lwlte_core_t *me);
+esp_err_t core_fsm_init(core_t *me);
 
 /**
  * @brief 停止 FSM 任务
  * @details Stop FSM task without deleting queue/semaphore resources
  * @param[in] me LTE 核心服务句柄
  */
-void core_fsm_stop(lwlte_core_t *me);
+void core_fsm_stop(core_t *me);
 
-void core_fsm_deinit(lwlte_core_t *me);
-esp_err_t core_fsm_send(lwlte_core_t *me, const core_fsm_sig_t *sig);
-bool core_fsm_is_task(lwlte_core_t *me);
+void core_fsm_deinit(core_t *me);
+esp_err_t core_fsm_send(core_t *me, const core_fsm_sig_t *sig);
+bool core_fsm_is_task(core_t *me);
 
-esp_err_t net_mgr_init(lwlte_core_t *me);
-esp_err_t net_mgr_deinit(lwlte_core_t *me);
-void net_mgr_cancel_reconnect(lwlte_core_t *me);
-esp_err_t net_mgr_start_activation(lwlte_core_t *me);
-esp_err_t net_mgr_deactivate(lwlte_core_t *me);
-esp_err_t net_mgr_handle_pdp_activated(lwlte_core_t *me,
-                                       const modem_pdp_context_t *pdp);
-esp_err_t net_mgr_handle_pdp_deactivated(lwlte_core_t *me,
-                                         const modem_pdp_context_t *pdp);
-esp_err_t net_mgr_get_state(lwlte_core_t *me, lwlte_net_state_t *state);
-esp_err_t net_mgr_set_state(lwlte_core_t *me, lwlte_net_state_t state);
-void net_mgr_set_reconnect_enabled(lwlte_core_t *me, bool enabled);
+esp_err_t net_mgr_init(core_t *me);
+esp_err_t net_mgr_deinit(core_t *me);
+void net_mgr_cancel_reconnect(core_t *me);
+esp_err_t net_mgr_start_activation(core_t *me);
+esp_err_t net_mgr_deactivate(core_t *me);
+esp_err_t net_mgr_handle_pdp_activated(core_t *me,
+                                        const modem_pdp_context_t *pdp);
+esp_err_t net_mgr_handle_pdp_deactivated(core_t *me,
+                                          const modem_pdp_context_t *pdp);
+esp_err_t net_mgr_get_state(core_t *me, core_net_state_t *state);
+esp_err_t net_mgr_set_state(core_t *me, core_net_state_t state);
+void net_mgr_set_reconnect_enabled(core_t *me, bool enabled);
 
 esp_err_t pdp_mgr_init(pdp_mgr_t *me, uint8_t primary_cid);
 esp_err_t pdp_mgr_get(const pdp_mgr_t *me, uint8_t cid,
@@ -154,11 +154,11 @@ esp_err_t pdp_mgr_get(const pdp_mgr_t *me, uint8_t cid,
 esp_err_t pdp_mgr_update(pdp_mgr_t *me, const modem_pdp_context_t *pdp);
 esp_err_t pdp_mgr_set_active(pdp_mgr_t *me, uint8_t cid, bool active);
 
-esp_err_t core_set_state(lwlte_core_t *me, lwlte_core_state_t state);
-lwlte_core_state_t core_get_state_value(lwlte_core_t *me);
-bool core_is_destroying(lwlte_core_t *me);
-esp_err_t core_post_event(lwlte_core_t *me, lwlte_core_event_id_t event_id,
-                          const lwlte_core_event_data_t *data);
+esp_err_t core_set_state(core_t *me, core_state_t state);
+core_state_t core_get_state_value(core_t *me);
+bool core_is_destroying(core_t *me);
+esp_err_t core_post_event(core_t *me, core_event_id_t event_id,
+                          const core_event_data_t *data);
 
 /**********************
  *      MACROS

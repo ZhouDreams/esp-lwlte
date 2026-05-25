@@ -1,6 +1,6 @@
 # 架构概览
 
-esp-lwlte 采用**四层分层架构**，层间通过包装 API + 事件队列/回调注册实现单向依赖与数据上行。
+esp-lwlte 采用**用户门面 + 内部分层服务架构**。业务 App 代码只通过 `lwlte_t` 和 `lwlte_*` 用户 API 操作 LTE；板级初始化或 App 自有配置代码可以通过公共 `lwlte_air780ep_config_t` 填写 UART/GPIO 参数。门面负责把用户 API 转成内部 service 调用，并在模块 factory 中完成依赖装配。内部层通过包装 API + 事件队列/回调注册实现单向依赖与数据上行。
 
 本组件直接构建在 ESP-IDF 之上，所有层都可以直接使用 ESP-IDF / FreeRTOS API（`xTaskCreate`、`xQueueCreate`、`vTaskDelay`、`uart_write_bytes` 等），不做平台抽象封装。这与 Espressif 官方组件（esp-mqtt、button、esp-sr 等）的设计哲学一致。
 
@@ -9,44 +9,24 @@ esp-lwlte 采用**四层分层架构**，层间通过包装 API + 事件队列/�
 ## 1. 分层架构
 
 ```
-                     调用方向（向下）
-    ┌──────────────────────────────────────────────────────┐
-    │                                                    │
-    ▼                                                    │
-┌──────────┐  ┌─────────────────────────────────────┐     │
-│   应用层  │  │  业务逻辑，零硬件引用，零模块引用          │     │
-│   App    │  │  只依赖 Core Service 公共接口            │     │
-└────┬─────┘  └─────────────────────────────────────┘     │
-     │                                                    │
-     ▼                                                    │
-┌──────────┐  ┌─────────────────────────────────────┐     │
-│ 核心服务  │  │  网络状态机、PDP 管理、连接/重连/保活    │     │
-│  Core    │  │  MQTT/HTTP 等上层协议                   │     │
-│ Service  │  │  通过 modem_* API 操作 modem_t，不知道   │     │
-└────┬─────┘  │  下面是哪个具体模块                        │     │
-     │        └─────────────────────────────────────┘     │
-     ▼                                                    │
-┌──────────┐  ┌─────────────────────────────────────┐     │
-│ 模块适配  │  │  定义 modem_* 抽象 API + 内部 modem_ops  │     │
-│  Modem   │  │  ├─ modem_t  (opaque 基类句柄)           │     │
-│ Adapter  │  │  └─ modem_air780ep  (子类实现)          │     │
-└────┬─────┘  │  封装具体 AT 指令差异，翻译 URC           │     │
-     │        └─────────────────────────────────────┘     │
-     ▼                                                    │
-┌──────────┐  ┌─────────────────────────────────────┐     │
-│  AT 引擎  │  │  通用 AT 协议引擎 + UART 硬件操作       │     │
-│    AT    │  │  发命令、收响应、行解析、单次命令超时处理  │     │
-│  Engine  │  │  UART 中断/轮询接收、TX 写入              │     │
-└──────────┘  │  URC 模式匹配与回调分发                   │     │
-              │  不关心具体指令含义                        │     │
-              └─────────────────────────────────────┘     │
-                                                          │
-                     回调方向（向上）                        │
-    ┌──────────────────────────────────────────────────┐   │
-    │  URC 事件、状态变更通知、数据到达                     │   │
-    │  每层通过注册回调与上层通信                           │   │
-    └──────────────────────────────────────────────────┘   │
+App
+  ↓ 只依赖 src/include/lwlte*.h
+LWLTE Facade
+  ↓ 调用 Core/MQTT/TCP/HTTP 等 service API，并在模块 factory 中完成装配
+Service Layer: Core, future MQTT, future TCP, future HTTP
+  ↓
+Modem Adapter
+  ↓
+AT Engine
 ```
+
+| 层 | 职责 |
+|----|------|
+| App | 用户业务逻辑只操作 `lwlte_t`；板级初始化代码可 include `lwlte_air780ep.h` 并填写 UART/GPIO 配置 |
+| LWLTE Facade | `lwlte_t` 用户门面、模块 factory、资源生命周期组合根、用户事件适配 |
+| Service Layer | Core 负责网络状态机、PDP 管理、连接/重连；MQTT/TCP/HTTP 后续作为并列 service 扩展 |
+| Modem Adapter | `modem_t` 抽象、具体模块 factory 与 AT 指令/URC 语义翻译 |
+| AT Engine | 通用 AT 协议引擎 + UART 硬件操作，只做命令响应和 URC 前缀分发 |
 
 ---
 
@@ -71,16 +51,21 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 
 ### 3.1 核心规则
 
+- 业务 App 代码只应 include `lwlte.h` 并调用 `lwlte_*` 操作；板级初始化或 App 自有配置代码可 include `lwlte_air780ep.h` 填写公开的 UART/GPIO 配置。
+- Facade 的通用文件只应调用 service 层 API。
+- Facade 的模块 factory 文件是 composition root，允许认识 AT Engine、Modem、具体 Modem factory 和 Core，用于创建并持有完整依赖树。
+- Service 层仍只能向下调用紧邻的 Modem Adapter，不能直接调用 AT Engine。
+
 | 类别 | 规则 | 示例 |
 |------|------|------|
-| **函数调用** | 只能调紧邻的下一层 | Core 不能调 `uart_write_bytes()` |
+| **函数调用** | 除 Facade 模块 factory 的装配例外外，只能调紧邻的下一层 | Core 不能调 `uart_write_bytes()` 或 `at_engine_send_cmd()` |
 | **ESP-IDF 引用** | 任何层都可以直接 `#include` ESP-IDF/FreeRTOS 头文件 | AT Engine 直接 include `driver/uart.h`、`freertos/task.h` |
-| **配置数据** | 自上而下单向传递 | App config → Core → Modem → AT Engine |
-| **事件/URC** | 自下而上通过事件队列/回调逐层上传 | AT Engine URC → Modem 事件 → Core 状态 → App 通知 |
+| **配置数据** | 自上而下单向传递 | App config → Facade factory → Core / Modem / AT Engine |
+| **事件/URC** | 自下而上通过事件队列/回调逐层上传 | AT Engine URC → Modem 事件 → Core 状态 → Facade 用户事件 → App 通知 |
 
 ### 3.2 跨层调用仍然禁止
 
-虽然所有层都可以使用 ESP-IDF API，但**层间函数调用仍然只能向下调紧邻的下一层**。Core 不能直接调 AT Engine 的函数，必须通过 Modem Adapter 间接调用。
+虽然所有层都可以使用 ESP-IDF API，但**层间函数调用仍然只能向下调紧邻的下一层**。Facade 模块 factory 只在初始化/销毁装配阶段例外；运行期 service 代码不能跨层调用。Core 不能直接调 AT Engine 的函数，必须通过 Modem Adapter 间接调用。
 
 不封装 FreeRTOS API 不等于可以跨层调业务接口。
 
@@ -88,9 +73,12 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 
 | 层 | 可以调用的层 | 可以使用的 ESP-IDF API | 可以知道的符号 |
 |----|------------|----------------------|-------------|
-| App | Core public API | 不限（但实践中只用于业务逻辑无关的初始化） | `lwlte_core.h`、`lwlte_mqtt.h` 等公共头文件 |
-| Core | Modem `modem_*` 统一 API | 不限（FreeRTOS task/queue/timer、esp_event 等） | `modem_t`、Core 自身定义的类型 |
-| Modem | AT Engine API | 不限（driver/gpio.h 用于模块复位/电源控制等） | AT Engine 公共头文件、Modem 自身定义的类型 |
+| App 业务代码 | LWLTE Facade 用户操作 API | 不限（但不应掺入 LTE 硬件装配逻辑） | `lwlte.h`、`lwlte_t`、`lwlte_connect()` 等 |
+| 板级初始化 / App 配置代码 | LWLTE Facade 模块 factory | 不限（用于准备公开配置） | `lwlte_air780ep_config_t` 中的 UART/GPIO 字段 |
+| Facade 通用文件 | Core/MQTT/TCP/HTTP 等 service API | 不限 | `lwlte_t`、`core_t`、service 层间类型 |
+| Facade 模块 factory | AT Engine、Modem、具体 Modem factory、Core | 不限（driver/gpio.h、driver/uart.h 等用于配置装配） | 完整装配 API，但不 include 任意 `_priv.h` |
+| Service: Core / future MQTT / future TCP / future HTTP | Modem `modem_*` 统一 API | 不限（FreeRTOS task/queue/timer、esp_event 等） | `modem_t`、service 自身定义的类型 |
+| Modem | AT Engine API | 不限（driver/gpio.h 用于模块复位/电源控制等） | AT Engine 层间头文件、Modem 自身定义的类型 |
 | AT Engine | 无下层（最底层） | 不限（driver/uart.h、FreeRTOS task/queue 等，直接操作硬件） | AT Engine 自身类型 |
 
 ---
@@ -100,14 +88,17 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 ### 4.1 AT 指令下行（调用链）
 
 ```
-App:  不需要知道 AT 指令存在
-         │
-Core:  modem_set_apn(modem, 1, "cmnet")
-         │  通过 modem_* 包装 API 调用（不知道下面是哪个模块）
-         ▼
-Modem: at_engine_send_cmd(at, "AT+CGDCONT=1,\"IP\",\"cmnet\"", &resp, 3000)
-         │  将语义操作翻译为具体 AT 指令字符串
-         ▼
+App:    lwlte_connect(lte)，不需要知道 AT 指令存在
+          │
+Facade: core_connect(core)
+          │  用户门面只调用 service API
+          ▼
+Core:   modem_set_apn(modem, 1, "cmnet")
+          │  通过 modem_* 包装 API 调用（不知道下面是哪个模块）
+          ▼
+Modem:  at_engine_send_cmd(at, "AT+CGDCONT=1,\"IP\",\"cmnet\"", &resp, 3000)
+          │  将语义操作翻译为具体 AT 指令字符串
+          ▼
 AT Eng: uart_write_bytes(uart_num, buf, len)    ← 直接调 ESP-IDF UART API
          │  加上 \r\n，处理单次命令超时
          ▼
@@ -130,10 +121,12 @@ Modem:  "翻译"：原始 URC 字符串 → 模块级语义事件
          ▼
 Modem:  event_task 从 event_queue 取出事件后调用 Core 回调
          ▼
-Core:   处理事件 → 更新网络状态机 → 通知 App
-         │  MODEM_EVENT_PDP_DEACTIVATED → APP_EVENT_NETWORK_LOST
-         │  回调：app_event_cb(event_id, data)
-         ▼
+Core:   处理事件 → 更新网络状态机 → 通知 Facade
+          │  MODEM_EVENT_PDP_DEACTIVATED → CORE_EVENT_NET_OFFLINE
+          ▼
+Facade: 翻译为 LWLTE 用户事件并调用用户回调
+          │  CORE_EVENT_NET_OFFLINE → LWLTE_EVENT_NET_OFFLINE
+          ▼
 App:    业务响应（重连、告警、降级等）
 ```
 
@@ -142,14 +135,14 @@ App:    业务响应（重连、告警、降级等）
 回调在初始化阶段由上层向下层注册，保证运行时调用方向始终是单向的：
 
 ```c
-/* Board Init：具体模块工厂保存 AT Engine 句柄，Core 不看到具体类型。 */
+/* Facade factory：具体模块工厂保存 AT Engine 句柄，Core 不看到具体类型。 */
 modem_air780ep_config_t modem_cfg = {
     .default_cmd_timeout_ms = 3000,
     .event_queue_size       = 8,
 };
 modem_t *modem = modem_air780ep_create(at, &modem_cfg);
 
-/* Board Init：通用 API 初始化具体模块，Air780EP 内部注册 URC handler。 */
+/* Facade factory：通用 API 初始化具体模块，Air780EP 内部注册 URC handler。 */
 modem_init(modem);  /* 内部调用 at_engine_register_urc(me->at, "+CGEV:", ...) */
 
 esp_err_t core_init(core_t *me, modem_t *modem)
@@ -167,7 +160,7 @@ esp_err_t core_init(core_t *me, modem_t *modem)
 
 ### 5.1 AT Engine 层（AT 引擎层）
 
-AT Engine 是四层架构的最底层，直接操作 UART 硬件。
+AT Engine 是内部最底层，直接操作 UART 硬件。
 
 | 维度 | 说明 |
 |------|------|
@@ -260,22 +253,22 @@ static esp_err_t sim800_get_signal(modem_t *me, modem_signal_t *signal)
 
 | 维度 | 说明 |
 |------|------|
-| **职责** | 网络状态机、PDP 激活/去激活管理、连接建立/重连/保活、MQTT/HTTP 客户端 |
-| **知道什么** | 网络协议、状态迁移规则、重试策略、保活机制、MQTT 协议 |
-| **不知道什么** | 具体 AT 指令格式、模块型号、底层硬件 |
-| **对外接口** | `lwlte_core_create()`、`lwlte_core_start()`、`lwlte_mqtt_publish()`、事件回调注册 |
-| **OOP 角色** | 业务逻辑 — 调用 modem 接口，不关心实现 |
+| **职责** | 网络状态机、PDP 激活/去激活管理、连接建立/重连/保活 |
+| **知道什么** | 网络状态迁移规则、重试策略、保活机制、Modem 语义 API |
+| **不知道什么** | 用户门面配置、具体 AT 指令格式、模块型号、底层硬件 |
+| **层间接口** | `core_create()`、`core_start()`、`core_connect()`、`core_register_event_callback()`、`CORE_EVENT` |
+| **OOP 角色** | 内部 service — 调用 modem 接口，不关心实现 |
 
-Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保活定时器，直接调 `xTaskCreate` 等 API。
+Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保活定时器，直接调 `xTaskCreate` 等 API。Core API 是给 Facade 和未来内部 service 使用的层间 API，不是 App 用户 API；App 只通过 `lwlte_*` 门面函数操作 LTE。
 
 ### 5.4 App 层（应用层）
 
 | 维度 | 说明 |
 |------|------|
 | **职责** | 用户业务逻辑 |
-| **知道什么** | Core Service 提供的公共 API |
-| **不知道什么** | 硬件、模块、AT 指令、协议细节 |
-| **规则** | 代码中不出现 AT 指令字符串、模块型号 |
+| **知道什么** | 业务代码知道 `lwlte_t` 和 `lwlte_*` 操作；板级初始化代码可知道 `lwlte_air780ep_config_t` 中公开的 UART/GPIO 字段 |
+| **不知道什么** | 业务代码不认识模块内部类型、AT 指令、协议细节；板级初始化也不 include 内部层头文件 |
+| **规则** | 业务逻辑与硬件配置分开；内部层头文件、AT 指令字符串和具体装配 API 不出现在业务逻辑中 |
 
 ---
 
@@ -283,12 +276,32 @@ Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保�
 
 ### 6.1 初始化链
 
-初始化从底向上，回调从顶向下注册：
+板级初始化或 App 自有配置代码只调用用户门面 factory，不直接创建 AT Engine、Modem 或 Core。这里填写的是公共 `lwlte_air780ep_config_t`，不是访问内部层：
+
+```c
+lwlte_air780ep_config_t config = {
+    .uart_num       = UART_NUM_1,
+    .uart_tx_pin    = GPIO_NUM_17,
+    .uart_rx_pin    = GPIO_NUM_16,
+    .uart_baud_rate = 115200,
+    .apn            = CONFIG_LWLTE_APN,
+    .primary_cid    = 1,
+    .auto_connect   = true,
+};
+
+lwlte_t *lte = NULL;
+ESP_ERROR_CHECK(lwlte_air780ep_init(&config, &lte));
+ESP_ERROR_CHECK(lwlte_register_event_callback(lte, app_event_handler, NULL));
+```
+
+### 6.2 Facade Factory 模式
+
+Facade 模块 factory 是 composition root，是唯一认识所有装配 API 和具体模块 factory 的文件：
 
 ```
-Board Init
+Facade factory
     │
-    ├─ 1. at_engine_create(&uart_config)        → 创建 AT Engine
+    ├─ 1. at_engine_create(&at_cfg)             → 创建 AT Engine
     │       └─ 内部创建 UART RX 线程，初始化 UART 硬件
     │
     ├─ 2. modem_air780ep_create(at, &modem_cfg) → 创建 Modem 实例
@@ -297,77 +310,87 @@ Board Init
     ├─ 3. modem_init(modem)                     → 初始化模块并注册 URC
     │       └─ modem 内部注册 URC handler 到 at engine
     │
-    ├─ 4. lwlte_core_create(&config, modem, &core) → 创建 Core 实例
+    ├─ 4. core_create(&core_cfg, modem)         → 创建 Core Service
     │       ├─ 传入 modem 句柄，Core 通过 modem_* API 操作模块
     │       └─ core 内部注册事件回调到 modem
     │
-    └─ 5. app_init(core)                        → App 持有 Core 句柄
-            └─ app 注册业务事件回调到 core
+    ├─ 5. core_register_event_callback(core, facade_core_event_handler, lte)
+    │       └─ Facade 把 CORE_EVENT 翻译为 LWLTE 用户事件
+    │
+    └─ 6. core_start(core)                      → 启动内部 service
 ```
 
-### 6.2 Board Init 模式
-
-Board Init 是唯一认识所有具体类型的文件，负责装配整个依赖树：
-
 ```c
-/* lwlte_board_init.c — 唯一认识硬件和模块型号的文件 */
+/* src/lwlte/lwlte_air780ep.c — Air780EP 门面 factory */
 
-lwlte_core_t *g_core;   /* 全局句柄（仅此一个） */
+typedef struct lwlte {
+    at_engine_t *at;
+    modem_t     *modem;
+    core_t      *core;
+    lwlte_event_callback_t event_callback;
+    void        *event_user_ctx;
+} lwlte_t;
 
-int lwlte_board_init(void)
+esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
+                              lwlte_t **out_lte)
 {
     /* 1. 底：创建 AT Engine（直接传入 UART 硬件配置） */
     at_engine_config_t at_cfg = {
-        .uart_num         = UART_NUM_1,
-        .tx_pin           = GPIO_NUM_17,
-        .rx_pin           = GPIO_NUM_16,
-        .baud_rate        = 115200,
-        .rx_buf_size      = 2048,
-        .rx_task_stack    = 4096,
-        .rx_task_priority = 10,
+        .uart_num  = config->uart_num,
+        .tx_pin    = config->uart_tx_pin,
+        .rx_pin    = config->uart_rx_pin,
+        .baud_rate = config->uart_baud_rate,
     };
     at_engine_t *at = at_engine_create(&at_cfg);
-    if (!at) return -1;
+    if (!at) return ESP_FAIL;
 
     /* 2. 模块适配（换模块只需换这一组配置和工厂） */
     modem_air780ep_config_t modem_cfg = {
-        .pwrkey_pin             = GPIO_NUM_4,
-        .reset_pin              = GPIO_NUM_NC,
-        .status_pin             = GPIO_NUM_NC,
-        .power_on_pulse_ms      = 1200,
-        .reset_pulse_ms         = 200,
-        .boot_wait_ms           = 5000,
-        .default_cmd_timeout_ms = 3000,
-        .event_queue_size       = 8,
-        .event_task_stack       = 4096,
-        .event_task_priority    = 9,
+        .pwrkey_pin = config->pwrkey_pin,
+        .reset_pin  = config->reset_pin,
+        .status_pin = config->status_pin,
     };
     modem_t *modem = modem_air780ep_create(at, &modem_cfg);
     if (!modem) goto err_at;
 
     if (modem_init(modem) != ESP_OK) goto err_modem;
 
-    /* 3. 核心服务 */
-    lwlte_core_config_t config = {
-        .apn       = CONFIG_LWLTE_APN,
-        .auto_conn = true,
-        .keepalive = 60,
+    /* 3. 核心服务：auto_connect 由 Facade 在 ready 后显式触发。 */
+    core_config_t core_cfg = {
+        .apn          = config->apn,
+        .primary_cid  = config->primary_cid,
+        .auto_connect = false,
     };
-    if (lwlte_core_create(&config, modem, &g_core) != ESP_OK) goto err_modem;
+    core_t *core = core_create(&core_cfg, modem);
+    if (!core) goto err_modem;
 
-    /* 4. 注册 App 事件回调 */
-    lwlte_core_register_event(g_core, LWLTE_EVENT_ALL, app_event_handler, NULL);
-    return 0;
+    lwlte_t *lte = calloc(1, sizeof(*lte));
+    if (!lte) goto err_core;
+
+    lte->at = at;
+    lte->modem = modem;
+    lte->core = core;
+    core_register_event_callback(core, facade_core_event_handler, lte);
+
+    if (core_start(core) != ESP_OK) goto err_core;
+    if (lwlte_wait_ready(lte, config->init_ready_timeout_ms) != ESP_OK) goto err_core;
+    if (config->auto_connect && lwlte_connect(lte) != ESP_OK) goto err_core;
+
+    *out_lte = lte;
+    return ESP_OK;
+
+err_core:
+    core_destroy(core);
 
 err_modem:
     modem_destroy(modem);
 err_at:
     at_engine_destroy(at);
-    return -1;
+    return ESP_FAIL;
 }
 ```
 
-**换模块时只改第 2 步的模块配置和具体工厂。** 其余 Core/App 代码零改动。
+**换模块时只新增/替换对应的门面 factory 和具体 Modem factory。** 通用 Facade、Core 和 App 代码零改动。
 
 ---
 
@@ -375,13 +398,13 @@ err_at:
 
 | OOP 概念 | 架构落点 | 具体表现 |
 |----------|---------|---------|
-| **封装** | 全部四层 | 每层对外只暴露句柄 + 操作函数，内部结构体不公开 |
+| **封装** | 全部层 | 每层对外只暴露句柄 + 操作函数，内部结构体不公开 |
 | **继承** | Modem 层 | `modem_t`（基类）→ `modem_air780ep_t`（子类），struct 嵌套 + container_of |
 | **多态** | Modem 层 | 内部 `modem_ops` 表 → 不同模块同一 `modem_*` API 不同行为 |
 | **抽象类** | Modem public API | 对外只暴露 `modem_t` + `modem_*` 包装函数，内部 ops 表由子类填充 |
 | **vptr 注入** | Modem 层内部 init 函数 | `me->ops = ops` 在具体模块 init/create 时完成，`static const` 存于 `.rodata` |
-| **板级装配** | Board Init | 唯一认识所有具体类型的文件，组装依赖树 |
-| **零硬件引用** | App 层 + Core 层 | 不 include 模块私有头文件 |
+| **资源装配** | Facade 模块 factory | 唯一认识所有装配 API 和具体模块 factory，组装依赖树 |
+| **业务/装配分离** | App 层 + Facade factory | 业务代码只操作 `lwlte_t`；板级初始化可填 UART/GPIO config；内部装配集中在 Facade factory |
 
 ---
 
@@ -389,36 +412,26 @@ err_at:
 
 | 旧架构 | 新架构 |
 |--------|--------|
-| 五层（Port → AT Engine → Modem → Core → App） | 四层（AT Engine → Modem → Core → App） |
+| 五层（Port → AT Engine → Modem → Core → App） | App → LWLTE Facade → Service → Modem → AT Engine |
 | Port 层封装 ESP-IDF API（lwlte_thread_create 等 wrapper） | 所有层直接使用 ESP-IDF/FreeRTOS API |
 | UART 操作在 Port 层，通过 ops 表间接调用 | UART 直接内置在 AT Engine，直接调 driver/uart.h |
 | port_ops 多态用于"换 RTOS" | 无 port_ops，不抽象平台 |
 | `port->ops->uart_write(port, buf, len)` | `uart_write_bytes(uart_num, buf, len)` |
 | Port 层同时处理 UART + 线程 + 互斥锁 + GPIO | AT Engine 处理 UART，Modem 处理 GPIO（模块复位），各层各自直接调 IDF API |
-| 三层（中间件 + Port + App） | 四层（AT Engine → Modem → Core → App） |
+| 三层（中间件 + Port + App） | 用户 Facade + 内部 Service/Modem/AT 分层 |
 | 模块差异散落在各处 | 模块差异集中在 Modem Adapter 层，通过 `modem_t` + `modem_*` API 统一，内部用 ops 表多态 |
 | 全局单例 `s_ctx` | create 返回句柄，支持多实例 |
 | URC 处理嵌入在 FSM 中 | URC 经 Modem `event_queue` / `event_task` 解耦后回调上传 |
-| core 同时认识 AT 和平台 | core 只认识 `modem_t` + `modem_*` API，不跨层 |
+| core 同时认识 AT 和平台 | Core service 只认识 `modem_t` + `modem_*` API，不跨层；App 不直接 include Core |
 
 ---
 
-## 9. 待细化问题
+## 9. 已明确约定
 
-以下问题值得在进入编码前进一步讨论：
-
-1. **FSM 放置**：网络状态机放在 Core 层是一整块，还是拆分为 Core（高层状态）+ Modem Impl（AT 级状态）两层 FSM？两者如何同步？
-
-2. **线程模型**：哪些层拥有自己的线程？AT Engine 有一个 UART RX 线程？Core 有一个 FSM 线程？线程数是否有硬约束？
-
-3. **错误传播**：AT Engine 返回 `ESP_ERR_TIMEOUT` 以及填充的 `at_response_t.status`（例如命令响应状态）如何由 Modem/Core 向上传播或转换，同时保持公共 API 只返回标准 `esp_err_t`？
-
-4. **资源生命周期**：deinit/destroy 的顺序如何保证反向释放？失败回滚（goto err_xxx）模式是否作为项目统一规范？
-
-5. **跨层数据结构**：AT Engine → Modem 的 `at_response_t`、Modem → Core 的 `modem_event_t`、Core → App 的 `app_event_t` 各包含什么字段？
-
-6. **重试策略归属**：AT Engine 只负责单次命令超时并返回 `ESP_ERR_TIMEOUT`；Modem 与 Core 如何基于该错误码划分模块级重试和网络状态机重试？
-
-7. **测试策略**：每层通过注入 mock ops 表做单元测试，但跨层集成测试（如 Modem + AT Engine 联调）要测到什么粒度？
-
-8. **并发模型**：AT Engine 接收线程和 Core FSM 线程之间的数据竞争由各自内部处理？是否需要一个明确的线程安全约定？
+- **状态机归属**：Core Service 持有网络状态机；`core_fsm_t`、`net_mgr_t`、`pdp_mgr_t` 是 `core_t` 的组合成员。Modem 只提供模块语义能力和事件翻译。
+- **线程模型**：AT Engine 拥有 UART RX task；Modem 拥有 event task；Core 拥有 FSM task 和 esp_event loop task。各线程通过队列/回调边界通信。
+- **错误传播**：公共和层间 API 使用 ESP-IDF 标准 `esp_err_t`；AT 响应细节先由 Modem 转换为模块语义，再由 Core/Facade 向上传播。
+- **生命周期**：Facade 模块 factory 创建并持有 AT Engine、Modem、Core 依赖树；销毁按反向顺序释放，失败路径使用统一 cleanup/goto 风格。
+- **事件数据**：AT Engine 使用 `at_response_t`；Modem 上报 `modem_event_t`；Core 上报 `core_event_data_t`；Facade 翻译为 `lwlte_event_data_t`。
+- **重试策略**：AT Engine 只处理单次命令超时；Core `net_mgr_t` 负责网络激活步骤、断线事件和重连策略。
+- **并发边界**：跨层不共享私有结构；每层用自己的锁、队列和任务保护内部状态。Service 层不跨层直接调用 AT Engine。

@@ -2,28 +2,31 @@
 
 在编码前先确定每个模块有哪些类（struct + 配套函数），是理解项目架构最重要的文档。每个类的定义包含：**所属层、职责、可见性、关键字段、关键方法、OOP 角色**。
 
-## 可见性三级定义
+## 可见性定义
 
 | 可见性 | 落入哪个头文件 | 谁能看到 | 命名前缀 |
 |--------|-------------|---------|---------|
-| **用户 API** | `include/lwlte_*.h` | App 开发者 | `lwlte_` |
-| **层间 API** | `include/at_engine.h`、`include/modem.h`、`include/modem_air780ep.h` | `at_engine.h`、`modem.h`：紧邻上层 + Board Init；`modem_air780ep.h`：仅 Board Init | `at_engine_`、`modem_`、`modem_air780ep_` |
-| **内部** | `.c` 或 `_priv.h` | 当前模块自身 | 无限制 |
+| 用户 API | `src/include/lwlte*.h` | App 开发者 | `lwlte_` |
+| 层间 API | `src/core/core.h`、`src/modem/modem.h`、`src/modem/modem_air780ep.h`、`src/at_engine/at_engine.h` | 组件内部相邻层；Facade factory 作为 composition root 可见全部装配 API | `core_`、`modem_`、`modem_air780ep_`、`at_engine_` |
+| 模块私有 API | `*_priv.h` | 当前模块自己的 `.c` 文件 | 模块内部命名 |
+| 文件内部 | `.c` 中 static | 当前 `.c` 文件 | 无限制 |
 
-**核心区别**：用户 API 是给 App 开发者用的，层间 API 是层与层之间、以及 Board Init 装配时用的。AT Engine 没有任何用户 API——它被 Modem 层完全封装，最终用户看不到它的存在。
+**核心区别**：用户 API 是给 App 开发者用的，层间 API 是层与层之间、以及 Facade 模块 factory 装配时用的。AT Engine、Modem 和 Core 都没有任何用户 API——它们被 LWLTE Facade 封装，最终用户看不到它们的存在。
+
+`*_priv.h` 虽然通过 `PRIV_INCLUDE_DIRS` 在编译上可见，但约束上只允许同模块源码 include。Core 不 include `modem_priv.h`，Modem 不 include `core_priv.h`，Facade 不 include 任意 `_priv.h`。
 
 ---
 
 ## 1. AT Engine（AT 引擎层）
 
-AT Engine 是四层架构的最底层，负责 AT 协议解析和 UART 硬件操作。该层有以下类：
+AT Engine 是内部最底层，负责 AT 协议解析和 UART 硬件操作。该层有以下类：
 
 ### 1.1 类总览
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
-| `at_engine_config_t` | 层间 API | Board Init | 配置结构体 | UART 硬件参数 + 任务参数 |
-| `at_engine_t` | 层间 API (opaque) | Modem 层 + Board Init | 句柄 | AT Engine 实例句柄 |
+| `at_engine_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | UART 硬件参数 + 任务参数 |
+| `at_engine_t` | 层间 API (opaque) | Modem 层 + Facade 模块 factory | 句柄 | AT Engine 实例句柄 |
 | `at_response_t` | 层间 API | Modem 层 | 值对象 | 一次 AT 命令的响应结果 |
 | `at_cmd_options_t` | 层间 API | Modem 层 | 值对象 | 单次命令的超时、成功终止匹配和 OK 处理选项 |
 | `at_cmd_success_match_t` | 层间 API | Modem 层 | 值对象 | 自定义成功响应匹配规则 |
@@ -34,7 +37,7 @@ AT Engine 是四层架构的最底层，负责 AT 协议解析和 UART 硬件操
 ### 1.2 `at_engine_config_t` — 引擎配置
 
 **所属层**：AT Engine  
-**可见性**：层间 API — Board Init 创建 AT Engine 时填充并传入  
+**可见性**：层间 API — Facade 模块 factory 创建 AT Engine 时填充并传入
 **OOP 角色**：配置结构体
 
 ```c
@@ -60,10 +63,10 @@ typedef struct {
 ### 1.3 `at_engine_t` — 引擎句柄
 
 **所属层**：AT Engine  
-**可见性**：层间 API (opaque) — Board Init 创建，Modem 层持有句柄；struct 定义在 `.c` 中  
+**可见性**：层间 API (opaque) — Facade 模块 factory 创建，Modem 层持有句柄；struct 定义在 `.c` 中
 **OOP 角色**：顶层对象，持有该层所有资源
 
-**公开方法**：
+**层间方法**：
 
 ```c
 at_engine_t *at_engine_create(const at_engine_config_t *config);
@@ -322,7 +325,7 @@ typedef struct {
 
 ## 2. Modem Adapter（模块适配层）
 
-Modem Adapter 是四层架构的第二层，负责把 Core 的语义操作翻译为具体模块的 AT 指令，并把模块 URC 翻译为 Core 可理解的事件。该层包含通用 Modem 基类、内部 ops 多态表、语义值对象，以及 Air780EP 具体子类。
+Modem Adapter 是 Core Service 的紧邻下层，负责把 Core 的语义操作翻译为具体模块的 AT 指令，并把模块 URC 翻译为 Core 可理解的事件。该层包含通用 Modem 基类、内部 ops 多态表、语义值对象，以及 Air780EP 具体子类。
 
 Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT Engine，不写 AT 指令字符串，也不 include 具体模块头文件。`modem_ops_t` 是 Modem 层内部多态机制，包装 API 内部再调用 `me->ops->method(me, ...)`。
 
@@ -330,7 +333,7 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT 
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
-| `modem_t` | 层间 API (opaque) + 内部基类 | Core + Board Init + Modem 实现 | 抽象基类/句柄 | Core 持有的 Modem 句柄，内部保存 ops、AT Engine、事件队列等公共资源 |
+| `modem_t` | 层间 API (opaque) + 内部基类 | Core + Facade 模块 factory + Modem 实现 | 抽象基类/句柄 | Core 持有的 Modem 句柄，内部保存 ops、AT Engine、事件队列等公共资源 |
 | `modem_ops_t` | 内部 | Modem 通用包装函数 + 具体子类 | 虚函数表 | 不暴露给 Core，子类用 `static const` ops 表实现多态 |
 | `modem_state_t` | 层间 API | Core + Modem 层 | 状态枚举 | Modem 层本地生命周期和低层连接状态 |
 | `modem_reg_status_t` | 层间 API | Core + Modem 层 | 状态枚举 | 蜂窝网络注册状态，来自 `+CEREG` / `+CGREG` / `+CREG` |
@@ -341,14 +344,14 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT 
 | `modem_event_id_t` | 层间 API | Core + Modem 层 | 事件枚举 | URC 翻译后的事件类型 |
 | `modem_event_t` | 层间 API | Core + Modem 层 | 值对象 | Modem event task 上报给 Core 的事件 |
 | `modem_event_callback_t` | 层间 API | Core + Modem 层 | 回调接口 | Core 注册，Modem event task 调用 |
-| `modem_air780ep_config_t` | 层间 API | Board Init | 配置结构体 | Air780EP GPIO、事件任务、默认超时等参数 |
+| `modem_air780ep_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Air780EP GPIO、事件任务、默认超时等参数 |
 | `modem_air780ep_t` | 内部 | Air780EP 实现自身 | 子类 | 继承 `modem_t`，实现 Air780EP AT 指令和 URC 翻译 |
 | `air780ep_cmd_ctx_t` | 内部 | Air780EP 实现自身 | 工作上下文 | 单次 AT 命令解析的临时数据 |
 
 ### 2.2 `modem_t` — 通用 Modem 句柄和基类
 
 **所属层**：Modem Adapter
-**可见性**：层间 API opaque + 内部结构体；`include/modem.h` 只暴露前置声明，`struct modem` 定义在 `src/modem/modem_priv.h` 或 `.c` 中
+**可见性**：层间 API opaque + 内部结构体；`src/modem/modem.h` 只暴露前置声明，`struct modem` 定义在 `src/modem/modem_priv.h` 或 `.c` 中
 **OOP 角色**：抽象基类 + 顶层句柄
 
 **公开类型**：
@@ -357,9 +360,9 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT 
 typedef struct modem modem_t;
 ```
 
-**声明顺序说明**：实际 `include/modem.h` 中应先完成 `modem_t` 前置声明，再定义状态枚举、值对象、事件对象和回调类型，最后声明以下函数原型。本节为了说明 `modem_t` 的使用方式，先集中列出公开方法。
+**声明顺序说明**：实际 `src/modem/modem.h` 中应先完成 `modem_t` 前置声明，再定义状态枚举、值对象、事件对象和回调类型，最后声明以下函数原型。本节为了说明 `modem_t` 的使用方式，先集中列出层间方法。
 
-**公开方法**（`include/modem.h`）：
+**层间方法**（`src/modem/modem.h`）：
 
 ```c
 esp_err_t modem_destroy(modem_t *me);
@@ -383,35 +386,25 @@ esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
 ```
 
-**内部结构**（定义在 `src/modem/modem_priv.h` 或 `.c`）：
+**关键内部字段类别**（非完整代码快照，实际以 `src/modem/modem_priv.h` 为准）：
 
-```c
-struct modem {
-    const modem_ops_t      *ops;                   // vptr，指向具体模块 ops 表
-    at_engine_t            *at;                    // 下层 AT Engine 句柄
-    SemaphoreHandle_t       lock;                  // 保护 state/callback/destroying
-    QueueHandle_t           event_queue;           // URC 翻译后的事件队列
-    TaskHandle_t            event_task;            // 调用 Core 回调的事件任务
-    SemaphoreHandle_t       event_task_done_sema;  // event task 退出同步
-    modem_event_callback_t  event_cb;              // Core 注册的事件回调
-    void                   *event_user_ctx;        // Core 事件回调上下文
-    modem_state_t           state;                 // Modem 层本地状态
-    bool                    destroying;            // destroy 已开始，拒绝新调用
-    bool                    event_task_stop_requested;
-    const char             *name;                  // 模块名称，如 "air780ep"
-};
-```
+- `ops`：指向具体模块 `modem_ops_t` 的 vptr。
+- `at`：Facade factory 注入的下层 AT Engine 句柄，Modem 借用但不拥有生命周期。
+- `lock`、`state`、`destroying`：保护 Modem 本地状态和销毁过程。
+- `event_queue`、`event_task` 及同步信号量：把 URC 翻译后的 `modem_event_t` 解耦后上报给 Core。
+- `event_cb`、`event_user_ctx`：Core 注册的上行事件回调槽位。
+- `name`：模块实现名称，如 `air780ep`，用于日志和诊断。
 
 **关键设计决策**：
 - `modem_t` 对 Core opaque，Core 不直接访问 `ops` 或内部字段。
 - 通用包装 API 统一做参数检查、状态检查和必填方法检查。
 - `event_queue + event_task` 属于基类资源，所有具体模块共用同一套上行事件解耦机制。
-- `at` 句柄由 Board Init 创建并传入具体模块工厂；Modem 不拥有 AT Engine 生命周期，只在 destroy 前注销自己注册的 URC handler。
+- `at` 句柄由 Facade 模块 factory 创建并传入具体模块工厂；Modem 不拥有 AT Engine 生命周期，只在 destroy 前注销自己注册的 URC handler。
 
 ### 2.3 `modem_ops_t` — Modem 虚函数表
 
 **所属层**：Modem Adapter
-**可见性**：内部；只给 Modem 通用实现和具体子类使用，不放入 `include/modem.h`
+**可见性**：内部；只给 Modem 通用实现和具体子类使用，不放入 `src/modem/modem.h`
 **OOP 角色**：虚函数表
 
 ```c
@@ -626,7 +619,7 @@ typedef void (*modem_event_callback_t)(modem_t *modem,
 ### 2.11 `modem_air780ep_config_t` — Air780EP 配置
 
 **所属层**：Modem Adapter
-**可见性**：层间 API，放入 `include/modem_air780ep.h`，只给 Board Init 使用
+**可见性**：层间 API，放入 `src/modem/modem_air780ep.h`，只给 Facade 模块 factory 使用
 **OOP 角色**：配置结构体
 
 ```c
@@ -648,7 +641,7 @@ modem_t *modem_air780ep_create(at_engine_t *at,
 ```
 
 **关键设计决策**：
-- `modem_air780ep_create()` 是具体模块工厂，只应出现在 Board Init 装配代码中。
+- `modem_air780ep_create()` 是具体模块工厂，只应出现在 Facade 模块 factory 装配代码中。
 - Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_t *`。
 - GPIO 控制属于 Modem 层职责，Air780EP 实现可以直接使用 ESP-IDF `driver/gpio.h`。
 
@@ -694,18 +687,12 @@ typedef struct {
 **可见性**：内部，仅 Air780EP 实现使用
 **OOP 角色**：临时工作上下文
 
-```c
-#define AIR780EP_MAX_RESPONSE_LINES  8
-#define AIR780EP_PARSE_BUF_SIZE      96
+**关键内容**（非完整代码快照）：
 
-typedef struct {
-    const char    *cmd;                                // 当前 AT 命令字符串
-    uint32_t       timeout_ms;                         // 本次命令超时
-    char          *lines[AIR780EP_MAX_RESPONSE_LINES]; // at_response_t lines 存储
-    at_response_t  response;                           // AT Engine 响应对象
-    char           parse_buf[AIR780EP_PARSE_BUF_SIZE]; // 解析辅助缓冲
-} air780ep_cmd_ctx_t;
-```
+- 当前 AT 命令字符串和本次命令超时。
+- 调用 AT Engine 所需的 `at_response_t` 与响应行指针数组。
+- Air780EP 响应解析用的临时工作缓冲。
+- 仅在单次命令调用栈内创建和使用，不跨命令保存，也不暴露给 Core。
 
 **使用模式**：Air780EP 普通 `OK/ERROR` 命令可继续使用 `at_engine_send_cmd()`。特殊成功终止命令在栈上创建 `air780ep_cmd_ctx_t` 和 `at_cmd_options_t`，调用 `at_engine_send_cmd_with_options()`，再解析 `response.lines`。该上下文不跨命令保存，不暴露给 Core。
 
@@ -763,30 +750,40 @@ typedef struct {
 
 ## 3. Core Service（核心服务层）
 
-Core Service 是四层架构的第三层，负责网络状态机、PDP 管理和连接恢复。Core 只通过 `modem_*` 包装 API 操作 `modem_t`，不直接调用 AT Engine，不写 AT 指令字符串。Core 通过 `esp_event` 向 App 发布上行事件，同时提供便捷回调注册 API。
+Core Service 是内部 service 层，负责网络状态机、PDP 管理和连接恢复。Core 只通过 `modem_*` 包装 API 操作 `modem_t`，不直接调用 AT Engine，不写 AT 指令字符串。Core 通过 `esp_event` 和回调把状态变化交给 LWLTE Facade，由 Facade 再翻译为用户事件。
+
+```
+Core Service
+├── core_t        层间 API opaque 句柄，Facade 持有并调用
+├── core_fsm_t    Core 内部组件，属于 core_t，负责串行处理 Core 信号
+├── net_mgr_t     Core 内部组件，属于 core_t，负责网络激活和重连策略
+└── pdp_mgr_t     Core 内部组件，属于 core_t，负责 PDP 上下文状态缓存
+```
+
+`net_mgr_t`、`pdp_mgr_t`、`core_fsm_t` 不是 `core_t` 子类。它们不能向上转型为 `core_t *`，也不实现 `core_ops`；它们是 `core_t` 的组合成员。`modem_air780ep_t` 才是 `modem_t` 的子类，因为它以 `modem_t base` 为第一个成员并实现 `modem_ops`。
 
 ### 3.1 类总览
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
-| `lwlte_core_config_t` | 用户 API | App / Board Init | 配置结构体 | Core 创建参数 |
-| `lwlte_core_t` | 用户 API (opaque) | App | 句柄 | Core 实例句柄 |
-| `lwlte_core_state_t` | 用户 API | App | 状态枚举 | Core 生命周期状态 |
-| `lwlte_net_state_t` | 用户 API | App | 状态枚举 | 网络连接状态 |
-| `lwlte_core_event_id_t` | 用户 API | App + esp_event | 事件枚举 | Core 上行事件类型，同时作为 esp_event event_id |
-| `lwlte_core_event_data_t` | 用户 API | App + esp_event | 值对象 | 事件携带数据 |
-| `lwlte_core_event_callback_t` | 用户 API | App | 回调接口 | 便捷回调签名（esp_event 的薄封装） |
-| `core_fsm_sig_type_t` | 内部 | Core FSM | 信号枚举 | FSM 内部信号类型 |
-| `core_fsm_sig_t` | 内部 | Core FSM | 值对象 | FSM 队列中的信号 |
-| `core_fsm_t` | 内部 | Core | 子模块 | FSM 线程 + 队列管理 |
-| `net_mgr_step_t` | 内部 | Net Mgr | 状态枚举 | 网络激活子步骤 |
-| `net_mgr_t` | 内部 | Core | 子模块 | 网络激活状态机 + 重连定时器 |
-| `pdp_mgr_t` | 内部 | Core | 子模块 | PDP context 缓存管理 |
+| `core_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Core 创建参数 |
+| `core_t` | 层间 API (opaque) | Facade | 句柄 | Core Service 实例句柄 |
+| `core_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | Core 生命周期状态 |
+| `core_net_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | 网络连接状态 |
+| `core_event_id_t` | 层间 API | Facade + esp_event | 事件枚举 | Core 上行事件类型，同时作为 esp_event event_id |
+| `core_event_data_t` | 层间 API | Facade + esp_event | 值对象 | 事件携带数据 |
+| `core_event_callback_t` | 层间 API | Facade | 回调接口 | Facade 接收 Core 事件的便捷回调签名 |
+| `core_fsm_sig_type_t` | 模块私有 API | Core FSM | 信号枚举 | FSM 内部信号类型 |
+| `core_fsm_sig_t` | 模块私有 API | Core FSM | 值对象 | FSM 队列中的信号 |
+| `core_fsm_t` | 模块私有 API | Core | 组合成员 | FSM 线程 + 队列管理 |
+| `net_mgr_step_t` | 模块私有 API | Net Mgr | 状态枚举 | 网络激活子步骤 |
+| `net_mgr_t` | 模块私有 API | Core | 组合成员 | 网络激活状态机 + 重连定时器 |
+| `pdp_mgr_t` | 模块私有 API | Core | 组合成员 | PDP context 缓存管理 |
 
-### 3.2 `lwlte_core_config_t` — Core 配置
+### 3.2 `core_config_t` — Core 配置
 
-**所属层**：Core Service  
-**可见性**：用户 API — Board Init 创建 Core 时填充并传入  
+**所属层**：Core Service
+**可见性**：层间 API — Facade 模块 factory 创建 Core 时填充并传入
 **OOP 角色**：配置结构体
 
 ```c
@@ -795,183 +792,149 @@ typedef struct {
     uint8_t     primary_cid;             // 主 PDP context ID，默认 1
     uint32_t    net_activate_timeout_ms; // 网络激活总超时（毫秒），默认 120000
     uint32_t    reconnect_delay_ms;      // 掉线重连固定延迟（毫秒），默认 5000
-    bool        auto_connect;            // 启动后自动激活网络
+    bool        auto_connect;            // Core 内部自动连接选项；Facade factory 通常设为 false，由用户公共配置决定是否 ready 后调用 lwlte_connect()
     int         fsm_queue_size;          // FSM 信号队列长度
     int         fsm_task_stack;          // FSM 任务栈大小（字节）
     int         fsm_task_priority;       // FSM 任务优先级
-} lwlte_core_config_t;
+} core_config_t;
 ```
 
-Event loop 参数不放入 config，Core 内部用默认值创建。Modem 引用在 `lwlte_core_create()` 参数中单独传入。
+Event loop 参数不放入 config，Core 内部用默认值创建。Modem 引用在 `core_create()` 参数中单独传入。`auto_connect` 是 Core 层间选项，不等同于用户公共 `lwlte_air780ep_config_t.auto_connect`；Facade 模块 factory 通常把 Core `auto_connect` 设为 false，并在 Core ready 后按用户公共配置决定是否调用 `lwlte_connect()`。
 
-### 3.3 `lwlte_core_t` — Core 句柄
+### 3.3 `core_t` — Core 句柄
 
-**所属层**：Core Service  
-**可见性**：用户 API (opaque) — App 持有句柄；struct 定义在 `src/core/core_priv.h`  
-**OOP 角色**：门面对象，持有该层所有子模块
+**所属层**：Core Service
+**可见性**：层间 API (opaque) — Facade 持有句柄；struct 定义在 `src/core/core_priv.h`
+**OOP 角色**：service 对象，组合持有 Core 内部组件
 
-**公开方法**：
+**层间方法**（`src/core/core.h`）：
 
 ```c
-lwlte_core_t *lwlte_core_create(const lwlte_core_config_t *config,
-                                 modem_t *modem);
-esp_err_t     lwlte_core_destroy(lwlte_core_t *me);
-esp_err_t     lwlte_core_start(lwlte_core_t *me);
-esp_err_t     lwlte_core_stop(lwlte_core_t *me);
+core_t *core_create(const core_config_t *config, modem_t *modem);
+esp_err_t core_destroy(core_t *me);
+esp_err_t core_start(core_t *me);
+esp_err_t core_stop(core_t *me);
 
-esp_err_t     lwlte_core_register_event_callback(lwlte_core_t *me,
-                                                  lwlte_core_event_callback_t callback,
-                                                  void *user_ctx);
-esp_event_loop_handle_t lwlte_core_get_event_loop(lwlte_core_t *me);
+esp_err_t core_register_event_callback(core_t *me,
+                                       core_event_callback_t callback,
+                                       void *user_ctx);
+esp_event_loop_handle_t core_get_event_loop(core_t *me);
 
-esp_err_t     lwlte_core_get_state(lwlte_core_t *me, lwlte_core_state_t *state);
-esp_err_t     lwlte_core_get_net_state(lwlte_core_t *me, lwlte_net_state_t *state);
+esp_err_t core_get_state(core_t *me, core_state_t *state);
+esp_err_t core_get_net_state(core_t *me, core_net_state_t *state);
 
-esp_err_t     lwlte_core_connect(lwlte_core_t *me);
-esp_err_t     lwlte_core_disconnect(lwlte_core_t *me);
+esp_err_t core_connect(core_t *me);
+esp_err_t core_disconnect(core_t *me);
 ```
 
-**内部结构**（定义在 `src/core/core_priv.h`）：
+**关键内部字段类别**（非完整代码快照，实际以 `src/core/core_priv.h` 为准）：
 
-```c
-struct lwlte_core {
-    lwlte_core_config_t      config;
-    modem_t                 *modem;
-    esp_event_loop_handle_t   event_loop;
-    core_fsm_t                fsm;
-    net_mgr_t                 net_mgr;
-    pdp_mgr_t                 pdp_mgr;
-    lwlte_core_state_t       state;
-    bool                      destroying;
-    SemaphoreHandle_t         lock;
-};
-```
+- `config`：Core 层间配置快照；`auto_connect` 为内部选项，Facade 通常设为 false。
+- `modem`：Facade factory 注入的 `modem_t` 句柄，Core 借用但不拥有生命周期。
+- `event_loop`、`event_callback`、`event_user_ctx`：Core 事件分发和 Facade 桥接回调。
+- `fsm`、`net_mgr`、`pdp_mgr`：`core_t` 的组合成员，分别负责信号串行化、网络激活/重连、PDP 缓存。
+- `state`、`destroying`、`lock`：Core 生命周期状态和并发保护。
 
 **关键设计决策**：
-- Core 没有 ops 多态——它不面向多种实现，只有一个实现
-- `modem` 句柄由 Board Init 传入，Core 不拥有 Modem 生命周期
-- `event_loop` 由 Core 在 `lwlte_core_create()` 中创建，在 `destroy` 中删除
-- `lock` 只保护 `state`/`destroying` 等短字段访问，FSM 线程调用 `modem_*` API 时不持锁
-- App API（`start`、`connect`、`disconnect`）只投递信号到 FSM 队列即返回，不阻塞
+- Core 没有 ops 多态；它不面向多种实现，只有一个实现。
+- `modem` 句柄由 Facade 模块 factory 传入，Core 不拥有 Modem 生命周期。
+- `event_loop` 由 Core 在 `core_create()` 中创建，在 `destroy` 中删除。
+- `lock` 只保护 `state`/`destroying` 等短字段访问，FSM 线程调用 `modem_*` API 时不持锁。
+- Facade 调用的 `start`、`connect`、`disconnect` 只投递信号到 FSM 队列即返回，不阻塞。
 
-### 3.4 `lwlte_core_state_t` — Core 生命周期状态
+### 3.4 Core 状态和事件类型
 
-**所属层**：Core Service  
-**可见性**：用户 API  
-**OOP 角色**：状态枚举
-
-```c
-typedef enum {
-    LWLTE_CORE_STATE_STOPPED = 0,       /**< 未启动； Stopped */
-    LWLTE_CORE_STATE_STARTING,          /**< 启动中，等待 Modem READY； Starting */
-    LWLTE_CORE_STATE_READY,             /**< Modem 就绪； Ready */
-    LWLTE_CORE_STATE_NET_ACTIVATING,    /**< 正在激活网络； Network activating */
-    LWLTE_CORE_STATE_ONLINE,            /**< 网络在线； Online */
-    LWLTE_CORE_STATE_ERROR,             /**< 错误； Error */
-    LWLTE_CORE_STATE_DESTROYING,        /**< 正在销毁； Destroying */
-} lwlte_core_state_t;
-```
-
-**边界说明**：`lwlte_core_state_t` 表示 Core 自身生命周期阶段，不替代 App 的业务状态机。重连策略、退避策略和业务状态迁移仍属于 App。
-
-### 3.5 `lwlte_net_state_t` — 网络连接状态
-
-**所属层**：Core Service  
-**可见性**：用户 API  
-**OOP 角色**：状态枚举
+**所属层**：Core Service
+**可见性**：层间 API
+**OOP 角色**：状态枚举 + 事件枚举 + 值对象 + 回调接口
 
 ```c
 typedef enum {
-    LWLTE_NET_STATE_OFFLINE = 0,        /**< 离线； Offline */
-    LWLTE_NET_STATE_ACTIVATING,         /**< 激活中； Activating */
-    LWLTE_NET_STATE_ONLINE,             /**< 在线； Online */
-    LWLTE_NET_STATE_ERROR,              /**< 激活失败； Activation failed */
-} lwlte_net_state_t;
-```
-
-**关键设计决策**：`lwlte_core_state_t` 和 `lwlte_net_state_t` 分开——前者是 Core 自身生命周期，后者是纯网络状态。App 可以只关心 `lwlte_net_state_t`。
-
-### 3.6 事件系统 — 基于 esp_event
-
-**所属层**：Core Service  
-**可见性**：用户 API  
-**OOP 角色**：事件枚举 + 值对象 + 回调接口
-
-Core 基于 `esp_event` 实现事件分发，不引入自定义链表。
-
-```c
-ESP_EVENT_DECLARE_BASE(LWLTE_CORE_EVENT);
+    CORE_STATE_STOPPED = 0,
+    CORE_STATE_STARTING,
+    CORE_STATE_READY,
+    CORE_STATE_NET_ACTIVATING,
+    CORE_STATE_ONLINE,
+    CORE_STATE_ERROR,
+    CORE_STATE_DESTROYING,
+} core_state_t;
 
 typedef enum {
-    LWLTE_CORE_EVENT_STARTED = 0,       /**< Core FSM 已启动； FSM started */
-    LWLTE_CORE_EVENT_READY,             /**< Modem 就绪； Modem ready */
-    LWLTE_CORE_EVENT_NET_CONNECTING,    /**< 开始网络激活； Network connecting */
-    LWLTE_CORE_EVENT_NET_ONLINE,        /**< 网络已上线； Network online */
-    LWLTE_CORE_EVENT_NET_OFFLINE,       /**< 网络已掉线； Network offline */
-    LWLTE_CORE_EVENT_NET_ERROR,         /**< 网络激活失败； Network activation error */
-    LWLTE_CORE_EVENT_STOPPED,           /**< Core FSM 已停止； FSM stopped */
-    LWLTE_CORE_EVENT_ERROR,             /**< Core 级错误； Core error */
-} lwlte_core_event_id_t;
+    CORE_NET_STATE_OFFLINE = 0,
+    CORE_NET_STATE_ACTIVATING,
+    CORE_NET_STATE_ONLINE,
+    CORE_NET_STATE_ERROR,
+} core_net_state_t;
+
+ESP_EVENT_DECLARE_BASE(CORE_EVENT);
+
+typedef enum {
+    CORE_EVENT_STARTED = 0,
+    CORE_EVENT_READY,
+    CORE_EVENT_NET_CONNECTING,
+    CORE_EVENT_NET_ONLINE,
+    CORE_EVENT_NET_OFFLINE,
+    CORE_EVENT_NET_ERROR,
+    CORE_EVENT_STOPPED,
+    CORE_EVENT_ERROR,
+} core_event_id_t;
 
 typedef struct {
-    lwlte_net_state_t net_state;        /**< 网络状态变化时有效； Valid on net state change */
-    int               error_code;        /**< 错误事件时有效； Valid on error event */
-} lwlte_core_event_data_t;
+    core_net_state_t net_state;
+    int              error_code;
+} core_event_data_t;
 
-typedef void (*lwlte_core_event_callback_t)(lwlte_core_t *core,
-                                             lwlte_core_event_id_t event_id,
-                                             const lwlte_core_event_data_t *data,
-                                             void *user_ctx);
+typedef void (*core_event_callback_t)(core_t *core,
+                                      core_event_id_t event_id,
+                                      const core_event_data_t *data,
+                                      void *user_ctx);
 ```
 
-**关键设计决策**：
-- `lwlte_core_register_event_callback()` 是便捷 API，内部通过 `esp_event_handler_register_with()` 注册到 Core 自己的 event loop，用 adapter 做签名转换
-- `lwlte_core_get_event_loop()` 暴露 event loop 句柄，允许其他模块（MQTT 等）直接用 `esp_event` API 订阅
-- `lwlte_core_event_data_t` 作为 `void *event_data` 传给 `esp_event`，类型安全由 `event_id` 保证
+**边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Facade 负责把这些层间状态翻译为 `lwlte_state_t`、`lwlte_net_state_t` 和用户事件。
 
-### 3.7 `core_fsm_t` — FSM 子模块
+### 3.5 `core_fsm_t` — FSM 组件
 
-**所属层**：Core Service  
-**可见性**：内部 — 仅 `src/core/core_fsm.c` 和 `lwlte_core_t` 使用  
-**OOP 角色**：子模块 — 管理 FSM 线程和信号队列
+**所属层**：Core Service
+**可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
+**OOP 角色**：`core_t` 的组合成员，管理 FSM 线程和信号队列
 
 ```c
 typedef enum {
-    CORE_SIG_MODEM_EVENT = 0,      // Modem 上行事件
-    CORE_SIG_START,                // 启动 FSM
-    CORE_SIG_STOP,                 // 停止 FSM
-    CORE_SIG_NET_ACTIVATE,         // 开始网络激活
-    CORE_SIG_NET_DEACTIVATE,       // 去激活网络
-    CORE_SIG_NET_STEP_DONE,        // 当前激活步骤完成
-    CORE_SIG_NET_STEP_TIMEOUT,     // 当前激活步骤超时
-    CORE_SIG_RECONNECT,            // 重连定时器到期
+    CORE_SIG_MODEM_EVENT = 0,
+    CORE_SIG_START,
+    CORE_SIG_STOP,
+    CORE_SIG_NET_ACTIVATE,
+    CORE_SIG_NET_DEACTIVATE,
+    CORE_SIG_NET_STEP_DONE,
+    CORE_SIG_NET_STEP_TIMEOUT,
+    CORE_SIG_RECONNECT,
 } core_fsm_sig_type_t;
 
 typedef struct {
-    core_fsm_sig_type_t  type;
-    void                *data;     // 信号附加数据（如 modem_event_t *）
+    core_fsm_sig_type_t type;
+    modem_event_t       modem_event;
+    int                 error_code;
 } core_fsm_sig_t;
 
 typedef struct {
-    TaskHandle_t         task;
-    QueueHandle_t        queue;
-    SemaphoreHandle_t    task_done_sema;
-    bool                 running;
-    bool                 stop_requested;
+    TaskHandle_t      task;
+    QueueHandle_t     queue;
+    SemaphoreHandle_t task_done_sema;
+    bool              running;
+    bool              stop_requested;
 } core_fsm_t;
 ```
 
 **关键设计决策**：
-- FSM 线程串行处理所有信号，根据 `lwlte_core_state` 分发到对应的处理函数
-- `CORE_SIG_MODEM_EVENT` 是 Modem 回调的唯一入口——Modem event_task 回调中只做 `xQueueSend(fsm.queue, &sig, 0)`，不直接推 Core 状态
-- 信号内存由发送者分配（栈上），FSM 消费时拷贝用到的 data
-- `CORE_SIG_RECONNECT` 由 FreeRTOS software timer 回调发送
+- FSM 线程串行处理所有信号，根据 `core_state_t` 分发到对应的处理函数。
+- `CORE_SIG_MODEM_EVENT` 是 Modem 回调的唯一入口；Modem event task 回调中只投递信号，不直接推 Core 状态。
+- `CORE_SIG_RECONNECT` 由 FreeRTOS software timer 回调发送。
 
-### 3.8 `net_mgr_t` — 网络管理器
+### 3.6 `net_mgr_t` — 网络管理组件
 
-**所属层**：Core Service  
-**可见性**：内部 — 仅 `src/core/net_mgr.c` 和 `lwlte_core_t` 使用  
-**OOP 角色**：子模块 — 网络激活子状态机 + 重连定时器
+**所属层**：Core Service
+**可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
+**OOP 角色**：`core_t` 的组合成员，管理网络激活子状态机 + 重连定时器
 
 ```c
 typedef enum {
@@ -986,13 +949,14 @@ typedef enum {
 } net_mgr_step_t;
 
 typedef struct {
-    net_mgr_step_t      current_step;
-    uint32_t            step_start_time_ms;
-    uint32_t            step_timeout_ms;
-    int                 retry_count;
-    int                 max_retry;
-    TimerHandle_t       reconnect_timer;
-    lwlte_net_state_t   state;
+    net_mgr_step_t    current_step;
+    uint32_t          step_start_time_ms;
+    uint32_t          step_timeout_ms;
+    int               retry_count;
+    int               max_retry;
+    TimerHandle_t     reconnect_timer;
+    core_net_state_t  state;
+    bool              reconnect_enabled;
 } net_mgr_t;
 ```
 
@@ -1007,19 +971,19 @@ typedef struct {
 | `ACTIVATE_PDP` | 激活 PDP | `modem_activate_pdp()` |
 | `DONE` | 网络上线 | 发布 `CORE_EVENT_NET_ONLINE` |
 
-每个步骤由 `CORE_SIG_NET_STEP_DONE` 驱动推进。FSM 处理函数调用对应的 `modem_*` API（阻塞），完成后向自己队列发送 `CORE_SIG_NET_STEP_DONE`。步骤超时发 `CORE_SIG_NET_STEP_TIMEOUT`，重试计数超过 `max_retry` 后进入 `NET_STEP_ERROR`，Core 发布 `LWLTE_CORE_EVENT_NET_ERROR`。
+每个步骤由 `CORE_SIG_NET_STEP_DONE` 驱动推进。FSM 处理函数调用对应的 `modem_*` API（阻塞），完成后向自己队列发送 `CORE_SIG_NET_STEP_DONE`。步骤超时发 `CORE_SIG_NET_STEP_TIMEOUT`，重试计数超过 `max_retry` 后进入 `NET_STEP_ERROR`，Core 发布 `CORE_EVENT_NET_ERROR`。
 
 **重连逻辑**：
-- 收到 `MODEM_EVENT_PDP_DEACTIVATED` → `net_state = OFFLINE` → 发布 `LWLTE_CORE_EVENT_NET_OFFLINE` → 启动 `reconnect_timer`（固定 `reconnect_delay_ms`）
-- 定时器回调发送 `CORE_SIG_RECONNECT` → FSM 重新触发网络激活流程
+- 收到 `MODEM_EVENT_PDP_DEACTIVATED` → `net_state = OFFLINE` → 发布 `CORE_EVENT_NET_OFFLINE` → 启动 `reconnect_timer`（固定 `reconnect_delay_ms`）。
+- 定时器回调发送 `CORE_SIG_RECONNECT` → FSM 重新触发网络激活流程。
 
 第一版只做固定延迟重连，不做指数退避。保活机制后续版本再加。
 
-### 3.9 `pdp_mgr_t` — PDP 管理器
+### 3.7 `pdp_mgr_t` — PDP 管理组件
 
-**所属层**：Core Service  
-**可见性**：内部 — 仅 `src/core/pdp_mgr.c` 和 `lwlte_core_t` 使用  
-**OOP 角色**：子模块 — PDP context 缓存
+**所属层**：Core Service
+**可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
+**OOP 角色**：`core_t` 的组合成员，缓存 PDP context 状态
 
 ```c
 #define CORE_MAX_PDP_CONTEXTS 4
@@ -1032,20 +996,20 @@ typedef struct {
 
 第一版仅做 PDP context 缓存，提供 `pdp_mgr_get()` / `pdp_mgr_update()` 两个内部接口。后续加多 PDP 管理时在这里扩展。
 
-### 3.10 Core 线程模型
+### 3.8 Core 线程模型
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Core Service 线程模型                    │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  App 线程 / App task                                        │
+│  Facade 线程 / App task                                     │
 │  ┌────────────────┐                                         │
-│  │ lwlte_core_*   │──→ 参数/状态检查                         │
+│  │ core_* API     │──→ 参数/状态检查                         │
 │  └───────┬────────┘    ──→ 获取 core->lock                  │
 │          │          ──→ 投递 SIG 到 fsm.queue               │
 │          │          ──→ 释放 lock → 返回                     │
-│          │          ★ App 调用不阻塞在 modem 操作上          │
+│          │          ★ Facade 调用不阻塞在 modem 操作上       │
 │          │                                                  │
 │  Modem event task                                           │
 │  ┌────────────────┐                                         │
@@ -1066,8 +1030,8 @@ typedef struct {
 │          │                                                  │
 │  Core event loop task (esp_event 内部)                       │
 │  ┌────────────────┐                                         │
-│  │ esp_event loop │──→ 分发到已注册的 handler               │
-│  └────────────────┘    ★ 便捷回调 + esp_event 订阅者        │
+│  │ esp_event loop │──→ 分发给 Facade / 内部订阅者            │
+│  └────────────────┘                                         │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -1079,67 +1043,62 @@ typedef struct {
 | Modem 回调不调 Core API | Modem event_task 中只 `xQueueSend` 到 FSM 队列，与 Modem 层"URC handler 不调 Core 回调"约束一致 |
 | FSM 线程不持锁跨阻塞 | `core->lock` 只保护短字段，调用 `modem_*` API 时不持锁 |
 | esp_event_post_to 不阻塞 | 投递事件不阻塞 FSM 线程 |
-| App API 不阻塞 | `start`/`connect`/`disconnect` 只投递信号即返回 |
+| Facade API 不阻塞 | `start`/`connect`/`disconnect` 只投递信号即返回 |
 
 **Modem 事件 → Core 行为映射**：
 
 | Modem Event | Core 行为 |
 |-------------|----------|
-| `MODEM_EVENT_READY` | core_state → READY，发布 `CORE_EVENT_READY`，若 auto_connect 则启动网络激活 |
+| `MODEM_EVENT_READY` | core_state → READY，发布 `CORE_EVENT_READY`；Facade 可在 ready 后按用户公共配置提交 `lwlte_connect()` |
 | `MODEM_EVENT_SIM_CHANGED` | 更新 net_mgr 可用的 SIM 状态 |
 | `MODEM_EVENT_REG_CHANGED` | 更新 net_mgr 可用的注册状态 |
 | `MODEM_EVENT_PDP_ACTIVATED` | net_state → ONLINE，发布 `CORE_EVENT_NET_ONLINE` |
 | `MODEM_EVENT_PDP_DEACTIVATED` | net_state → OFFLINE，发布 `CORE_EVENT_NET_OFFLINE`，启动重连定时器 |
 | `MODEM_EVENT_ERROR` | 根据 error_code 决定重试或进入 ERROR 状态 |
 
-### 3.11 初始化与装配
+### 3.9 初始化与装配
 
 ```c
-/* Board Init — Core 不依赖具体模块型号 */
+/* Facade 模块 factory — Core 不依赖具体模块型号 */
 
-lwlte_core_config_t core_cfg = {
+core_config_t core_cfg = {
     .apn                     = "cmnet",
     .primary_cid             = 1,
     .net_activate_timeout_ms = 120000,
     .reconnect_delay_ms      = 5000,
-    .auto_connect            = true,
+    .auto_connect            = false,  /* Facade 持有用户级 auto-connect 策略 */
     .fsm_queue_size          = 16,
     .fsm_task_stack          = 4096,
     .fsm_task_priority       = 8,
 };
 
-lwlte_core_t *core = lwlte_core_create(&core_cfg, modem);
+core_t *core = core_create(&core_cfg, modem);
+core_register_event_callback(core, facade_core_event_handler, lte);
+core_start(core);  // 异步，结果通过事件通知 Facade
 
-/* App 注册便捷回调 */
-lwlte_core_register_event_callback(core, app_event_handler, NULL);
-
-/* 其他模块（MQTT 等）可通过 esp_event 订阅 */
-esp_event_handler_register_with(
-    lwlte_core_get_event_loop(core),
-    LWLTE_CORE_EVENT, ESP_EVENT_ANY_ID,
-    mqtt_event_handler, NULL
-);
-
-lwlte_core_start(core);  // 异步，结果通过事件通知
+/* Facade 等待 CORE_EVENT_READY 后，如果用户公共 config 要求自动联网，再提交连接请求。 */
+if (user_config->auto_connect) {
+    lwlte_connect(lte);
+}
 ```
 
 **关键设计决策**：
-- `lwlte_core_create()` 接收 `modem_t *`，和 `modem_air780ep_create()` 接收 `at_engine_t *` 的模式一致
-- Core 不 include 具体模块头文件，只认识 `modem_t`
-- 换模块时 Core 代码零改动
+- `core_create()` 接收 `modem_t *`，和 `modem_air780ep_create()` 接收 `at_engine_t *` 的模式一致。
+- Core 不 include 具体模块头文件，只认识 `modem_t`。
+- 换模块时 Core 代码零改动。
 
 **错误处理规则**：
-- Core 公开 API 统一返回 `esp_err_t`
-- 参数错误返回 `ESP_ERR_INVALID_ARG`
-- 状态错误返回 `ESP_ERR_INVALID_STATE`
-- Core 不新增自定义错误码，统一使用 ESP-IDF 标准错误码
-- Modem 层返回的错误直接向上传播
+- Core 层间 API 统一返回 `esp_err_t` 或 NULL 句柄。
+- 参数错误返回 `ESP_ERR_INVALID_ARG`。
+- 状态错误返回 `ESP_ERR_INVALID_STATE`。
+- Core 不新增自定义错误码，统一使用 ESP-IDF 标准错误码。
+- Modem 层返回的错误直接向上传播。
 
 **与 Modem 层的边界**：
-- Core 可以调用 `modem_*` 包装 API，因为 Modem 是紧邻下层
-- Core 不能调用 AT Engine API
-- Core 不 include `modem_air780ep.h`
-- Core 通过 `modem_register_event_callback()` 接收 Modem 上行事件，内部回调只投递 FSM 信号
+- Core 可以调用 `modem_*` 包装 API，因为 Modem 是紧邻下层。
+- Core 不能调用 AT Engine API。
+- Core 不 include `modem_air780ep.h`。
+- Core 通过 `modem_register_event_callback()` 接收 Modem 上行事件，内部回调只投递 FSM 信号。
 
 ---
 

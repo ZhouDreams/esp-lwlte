@@ -14,15 +14,19 @@ esp-lwlte/
 
 ### src/ — 组件源码
 
-esp-lwlte 组件的全部源代码。内部按四层架构组织：
+esp-lwlte 组件的全部源代码。公共 API 与内部实现按以下目录组织：
 
 ```
 src/
-├── at_engine/     # AT 引擎层（通用 AT 协议引擎 + UART 硬件操作）
-├── modem/         # 模块适配层（接口定义 + 具体模块实现）
-├── core/          # 核心服务层（网络状态机、PDP 管理、MQTT/HTTP）
-└── include/       # 公共头文件（对外 API）
+├── include/       # 用户公共头文件，仅导出 lwlte.h、lwlte_air780ep.h
+├── lwlte/         # 用户门面层（lwlte_t、模块 factory、资源组合根）
+├── core/          # Core Service 层（网络状态机、PDP 管理、连接/重连）
+├── modem/         # 模块适配层（modem_t 抽象 + 具体模块实现）
+└── at_engine/     # AT 引擎层（通用 AT 协议引擎 + UART 硬件操作）
 ```
+
+`src/include/` 只放真正给 App include 的用户 API。
+`core.h`、`modem.h`、`modem_air780ep.h`、`at_engine.h` 放在各自模块目录，通过组件 `PRIV_INCLUDE_DIRS` 给内部源码使用，不导出给用户 App。
 
 ### examples/ — 示例代码
 

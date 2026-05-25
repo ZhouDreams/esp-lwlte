@@ -1,9 +1,9 @@
 /**
- * @file lwlte_core.h
- * @brief LTE 核心服务公共接口
- * @details LTE core service public interface
+ * @file core.h
+ * @brief LTE 核心服务层间接口
+ * @details LTE core service inter-layer interface
  * @author JovisDreams
- * @date 2026-05-24
+ * @date 2026-05-25
  */
 #pragma once
 
@@ -38,7 +38,7 @@ typedef struct modem modem_t;
  * @brief LTE 核心服务句柄
  * @details LTE core service handle
  */
-typedef struct lwlte_core lwlte_core_t;
+typedef struct core core_t;
 
 /**
  * @brief LTE 核心服务配置
@@ -53,62 +53,62 @@ typedef struct {
     int fsm_queue_size;                  /**< FSM 队列长度； FSM queue size */
     int fsm_task_stack;                  /**< FSM 任务栈大小； FSM task stack size */
     int fsm_task_priority;               /**< FSM 任务优先级； FSM task priority */
-} lwlte_core_config_t;
+} core_config_t;
 
 /**
  * @brief LTE 核心服务状态
  * @details LTE core service state
  */
 typedef enum {
-    LWLTE_CORE_STATE_STOPPED = 0,        /**< 已停止； Stopped */
-    LWLTE_CORE_STATE_STARTING,           /**< 启动中； Starting */
-    LWLTE_CORE_STATE_READY,              /**< 已就绪； Ready */
-    LWLTE_CORE_STATE_NET_ACTIVATING,     /**< 网络激活中； Network activating */
-    LWLTE_CORE_STATE_ONLINE,             /**< 网络在线； Online */
-    LWLTE_CORE_STATE_ERROR,              /**< 错误； Error */
-    LWLTE_CORE_STATE_DESTROYING,         /**< 销毁中； Destroying */
-} lwlte_core_state_t;
+    CORE_STATE_STOPPED = 0,              /**< 已停止； Stopped */
+    CORE_STATE_STARTING,                 /**< 启动中； Starting */
+    CORE_STATE_READY,                    /**< 已就绪； Ready */
+    CORE_STATE_NET_ACTIVATING,           /**< 网络激活中； Network activating */
+    CORE_STATE_ONLINE,                   /**< 网络在线； Online */
+    CORE_STATE_ERROR,                    /**< 错误； Error */
+    CORE_STATE_DESTROYING,               /**< 销毁中； Destroying */
+} core_state_t;
 
 /**
  * @brief LTE 网络状态
  * @details LTE network state
  */
 typedef enum {
-    LWLTE_NET_STATE_OFFLINE = 0,         /**< 离线； Offline */
-    LWLTE_NET_STATE_ACTIVATING,          /**< 激活中； Activating */
-    LWLTE_NET_STATE_ONLINE,              /**< 在线； Online */
-    LWLTE_NET_STATE_ERROR,               /**< 错误； Error */
-} lwlte_net_state_t;
+    CORE_NET_STATE_OFFLINE = 0,          /**< 离线； Offline */
+    CORE_NET_STATE_ACTIVATING,           /**< 激活中； Activating */
+    CORE_NET_STATE_ONLINE,               /**< 在线； Online */
+    CORE_NET_STATE_ERROR,                /**< 错误； Error */
+} core_net_state_t;
 
 /**
  * @brief LTE 核心服务事件基
  * @details LTE core service event base
  */
-ESP_EVENT_DECLARE_BASE(LWLTE_CORE_EVENT);
+ESP_EVENT_DECLARE_BASE(CORE_EVENT);
 
 /**
  * @brief LTE 核心服务事件 ID
  * @details LTE core service event ID
  */
 typedef enum {
-    LWLTE_CORE_EVENT_STARTED = 0,        /**< Core 已启动； Core started */
-    LWLTE_CORE_EVENT_READY,              /**< Core 已就绪； Core ready */
-    LWLTE_CORE_EVENT_NET_CONNECTING,     /**< 网络连接中； Network connecting */
-    LWLTE_CORE_EVENT_NET_ONLINE,         /**< 网络在线； Network online */
-    LWLTE_CORE_EVENT_NET_OFFLINE,        /**< 网络离线； Network offline */
-    LWLTE_CORE_EVENT_NET_ERROR,          /**< 网络错误； Network error */
-    LWLTE_CORE_EVENT_STOPPED,            /**< Core 已停止； Core stopped */
-    LWLTE_CORE_EVENT_ERROR,              /**< Core 错误； Core error */
-} lwlte_core_event_id_t;
+    CORE_EVENT_STARTED = 0,              /**< Core 已启动； Core started */
+    CORE_EVENT_READY,                    /**< Core 已就绪； Core ready */
+    CORE_EVENT_NET_CONNECTING,           /**< 网络连接中； Network connecting */
+    CORE_EVENT_NET_ONLINE,               /**< 网络在线； Network online */
+    CORE_EVENT_NET_OFFLINE,              /**< 网络离线； Network offline */
+    CORE_EVENT_NET_ERROR,                /**< 网络错误； Network error */
+    CORE_EVENT_STOPPED,                  /**< Core 已停止； Core stopped */
+    CORE_EVENT_ERROR,                    /**< Core 错误； Core error */
+} core_event_id_t;
 
 /**
  * @brief LTE 核心服务事件数据
  * @details LTE core service event data
  */
 typedef struct {
-    lwlte_net_state_t net_state;         /**< 网络状态； Network state */
+    core_net_state_t net_state;          /**< 网络状态； Network state */
     int error_code;                      /**< 错误码； Error code */
-} lwlte_core_event_data_t;
+} core_event_data_t;
 
 /**
  * @brief LTE 核心服务事件回调
@@ -118,10 +118,10 @@ typedef struct {
  * @param[in] data LTE 核心服务事件数据，可能为 NULL
  * @param[in] user_ctx 用户上下文
  */
-typedef void (*lwlte_core_event_callback_t)(lwlte_core_t *core,
-                                             lwlte_core_event_id_t event_id,
-                                             const lwlte_core_event_data_t *data,
-                                             void *user_ctx);
+typedef void (*core_event_callback_t)(core_t *core,
+                                      core_event_id_t event_id,
+                                      const core_event_data_t *data,
+                                      void *user_ctx);
 
 /**********************
  * GLOBAL PROTOTYPES
@@ -137,8 +137,7 @@ typedef void (*lwlte_core_event_callback_t)(lwlte_core_t *core,
  *         - 非 NULL: 创建成功，返回 LTE 核心服务句柄
  *         - NULL: 参数无效或内存不足
  */
-lwlte_core_t *lwlte_core_create(const lwlte_core_config_t *config,
-                                 modem_t *modem);
+core_t *core_create(const core_config_t *config, modem_t *modem);
 
 /**
  * @brief 销毁 LTE 核心服务
@@ -148,7 +147,7 @@ lwlte_core_t *lwlte_core_create(const lwlte_core_config_t *config,
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t lwlte_core_destroy(lwlte_core_t *me);
+esp_err_t core_destroy(core_t *me);
 
 /**
  * @brief 启动 LTE 核心服务
@@ -161,7 +160,7 @@ esp_err_t lwlte_core_destroy(lwlte_core_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t lwlte_core_start(lwlte_core_t *me);
+esp_err_t core_start(core_t *me);
 
 /**
  * @brief 停止 LTE 核心服务
@@ -174,7 +173,7 @@ esp_err_t lwlte_core_start(lwlte_core_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t lwlte_core_stop(lwlte_core_t *me);
+esp_err_t core_stop(core_t *me);
 
 /**
  * @brief 注册 LTE 核心服务事件回调
@@ -187,9 +186,9 @@ esp_err_t lwlte_core_stop(lwlte_core_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t lwlte_core_register_event_callback(lwlte_core_t *me,
-                                              lwlte_core_event_callback_t callback,
-                                              void *user_ctx);
+esp_err_t core_register_event_callback(core_t *me,
+                                       core_event_callback_t callback,
+                                       void *user_ctx);
 
 /**
  * @brief 获取 LTE 核心服务事件循环
@@ -199,7 +198,7 @@ esp_err_t lwlte_core_register_event_callback(lwlte_core_t *me,
  *         - 非 NULL: LTE 核心服务事件循环句柄
  *         - NULL: 参数无效或事件循环未创建
  */
-esp_event_loop_handle_t lwlte_core_get_event_loop(lwlte_core_t *me);
+esp_event_loop_handle_t core_get_event_loop(core_t *me);
 
 /**
  * @brief 获取 LTE 核心服务状态
@@ -210,7 +209,7 @@ esp_event_loop_handle_t lwlte_core_get_event_loop(lwlte_core_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t lwlte_core_get_state(lwlte_core_t *me, lwlte_core_state_t *state);
+esp_err_t core_get_state(core_t *me, core_state_t *state);
 
 /**
  * @brief 获取 LTE 网络状态
@@ -221,7 +220,7 @@ esp_err_t lwlte_core_get_state(lwlte_core_t *me, lwlte_core_state_t *state);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t lwlte_core_get_net_state(lwlte_core_t *me, lwlte_net_state_t *state);
+esp_err_t core_get_net_state(core_t *me, core_net_state_t *state);
 
 /**
  * @brief 连接 LTE 网络
@@ -234,7 +233,7 @@ esp_err_t lwlte_core_get_net_state(lwlte_core_t *me, lwlte_net_state_t *state);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t lwlte_core_connect(lwlte_core_t *me);
+esp_err_t core_connect(core_t *me);
 
 /**
  * @brief 断开 LTE 网络
@@ -247,7 +246,7 @@ esp_err_t lwlte_core_connect(lwlte_core_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t lwlte_core_disconnect(lwlte_core_t *me);
+esp_err_t core_disconnect(core_t *me);
 
 /**********************
  *      MACROS

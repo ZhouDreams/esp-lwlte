@@ -42,7 +42,7 @@ static void fsm_task(void *arg);
  *         - true: 应停止
  *         - false: 继续运行
  */
-static bool fsm_should_stop(lwlte_core_t *me);
+static bool fsm_should_stop(core_t *me);
 
 /**
  * @brief 分发 FSM 信号
@@ -50,21 +50,21 @@ static bool fsm_should_stop(lwlte_core_t *me);
  * @param[in] me LTE 核心服务句柄
  * @param[in] sig FSM 信号
  */
-static void handle_signal(lwlte_core_t *me, const core_fsm_sig_t *sig);
+static void handle_signal(core_t *me, const core_fsm_sig_t *sig);
 
 /**
  * @brief 处理启动信号
  * @details Handle start signal
  * @param[in] me LTE 核心服务句柄
  */
-static void handle_start(lwlte_core_t *me);
+static void handle_start(core_t *me);
 
 /**
  * @brief 处理停止信号
  * @details Handle stop signal
  * @param[in] me LTE 核心服务句柄
  */
-static void handle_stop(lwlte_core_t *me);
+static void handle_stop(core_t *me);
 
 /**
  * @brief 处理 Modem 事件
@@ -72,14 +72,14 @@ static void handle_stop(lwlte_core_t *me);
  * @param[in] me LTE 核心服务句柄
  * @param[in] event Modem 事件
  */
-static void handle_modem_event(lwlte_core_t *me, const modem_event_t *event);
+static void handle_modem_event(core_t *me, const modem_event_t *event);
 
 /**
  * @brief 处理 Modem 就绪状态
  * @details Handle Modem ready state
  * @param[in] me LTE 核心服务句柄
  */
-static void handle_ready(lwlte_core_t *me);
+static void handle_ready(core_t *me);
 
 /**
  * @brief 处理 Core 错误
@@ -87,7 +87,7 @@ static void handle_ready(lwlte_core_t *me);
  * @param[in] me LTE 核心服务句柄
  * @param[in] error_code 错误码
  */
-static void handle_core_error(lwlte_core_t *me, int error_code);
+static void handle_core_error(core_t *me, int error_code);
 
 /**
  * @brief 判断 Modem 状态是否已就绪
@@ -106,9 +106,9 @@ static bool modem_state_ready(modem_state_t state);
  * @param[in] event_id LTE 核心服务事件 ID
  * @param[in] data LTE 核心服务事件数据，可能为 NULL
  */
-static void post_event_checked(lwlte_core_t *me,
-                               lwlte_core_event_id_t event_id,
-                               const lwlte_core_event_data_t *data);
+static void post_event_checked(core_t *me,
+                               core_event_id_t event_id,
+                               const core_event_data_t *data);
 
 /**********************
  *  STATIC VARIABLES
@@ -121,7 +121,7 @@ static void post_event_checked(lwlte_core_t *me,
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-esp_err_t core_fsm_init(lwlte_core_t *me)
+esp_err_t core_fsm_init(core_t *me)
 {
     esp_err_t ret = ESP_OK;
 
@@ -169,7 +169,7 @@ err:
     return ret;
 }
 
-void core_fsm_stop(lwlte_core_t *me)
+void core_fsm_stop(core_t *me)
 {
     if (!me) {
         return;
@@ -204,7 +204,7 @@ void core_fsm_stop(lwlte_core_t *me)
     me->fsm.running = false;
 }
 
-void core_fsm_deinit(lwlte_core_t *me)
+void core_fsm_deinit(core_t *me)
 {
     if (!me) {
         return;
@@ -230,7 +230,7 @@ void core_fsm_deinit(lwlte_core_t *me)
     me->fsm.stop_requested = false;
 }
 
-esp_err_t core_fsm_send(lwlte_core_t *me, const core_fsm_sig_t *sig)
+esp_err_t core_fsm_send(core_t *me, const core_fsm_sig_t *sig)
 {
     ESP_RETURN_ON_FALSE(me && sig && me->fsm.queue, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -242,7 +242,7 @@ esp_err_t core_fsm_send(lwlte_core_t *me, const core_fsm_sig_t *sig)
     return ESP_OK;
 }
 
-bool core_fsm_is_task(lwlte_core_t *me)
+bool core_fsm_is_task(core_t *me)
 {
     return me && me->fsm.task && xTaskGetCurrentTaskHandle() == me->fsm.task;
 }
@@ -252,7 +252,7 @@ bool core_fsm_is_task(lwlte_core_t *me)
  **********************/
 static void fsm_task(void *arg)
 {
-    lwlte_core_t *me = (lwlte_core_t *)arg;
+    core_t *me = (core_t *)arg;
 
     while (!fsm_should_stop(me)) {
         core_fsm_sig_t sig = {0};
@@ -278,7 +278,7 @@ static void fsm_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static bool fsm_should_stop(lwlte_core_t *me)
+static bool fsm_should_stop(core_t *me)
 {
     if (!me || !me->lock) {
         return true;
@@ -291,7 +291,7 @@ static bool fsm_should_stop(lwlte_core_t *me)
     return stop;
 }
 
-static void handle_signal(lwlte_core_t *me, const core_fsm_sig_t *sig)
+static void handle_signal(core_t *me, const core_fsm_sig_t *sig)
 {
     if (!me || !sig) {
         return;
@@ -308,19 +308,19 @@ static void handle_signal(lwlte_core_t *me, const core_fsm_sig_t *sig)
         handle_stop(me);
         break;
     case CORE_SIG_NET_ACTIVATE: {
-        lwlte_core_state_t state = core_get_state_value(me);
-        if (state == LWLTE_CORE_STATE_READY || state == LWLTE_CORE_STATE_ERROR) {
+        core_state_t state = core_get_state_value(me);
+        if (state == CORE_STATE_READY || state == CORE_STATE_ERROR) {
             net_mgr_start_activation(me);
         }
         break;
     }
     case CORE_SIG_NET_DEACTIVATE: {
-        lwlte_core_state_t state = core_get_state_value(me);
-        if (state == LWLTE_CORE_STATE_NET_ACTIVATING ||
-            state == LWLTE_CORE_STATE_ONLINE ||
-            state == LWLTE_CORE_STATE_ERROR) {
+        core_state_t state = core_get_state_value(me);
+        if (state == CORE_STATE_NET_ACTIVATING ||
+            state == CORE_STATE_ONLINE ||
+            state == CORE_STATE_ERROR) {
             net_mgr_deactivate(me);
-            core_set_state(me, LWLTE_CORE_STATE_READY);
+            core_set_state(me, CORE_STATE_READY);
         }
         break;
     }
@@ -328,9 +328,9 @@ static void handle_signal(lwlte_core_t *me, const core_fsm_sig_t *sig)
         handle_modem_event(me, &sig->modem_event);
         break;
     case CORE_SIG_RECONNECT: {
-        lwlte_core_state_t state = core_get_state_value(me);
+        core_state_t state = core_get_state_value(me);
         if (!core_is_destroying(me) &&
-            (state == LWLTE_CORE_STATE_READY || state == LWLTE_CORE_STATE_ERROR)) {
+            (state == CORE_STATE_READY || state == CORE_STATE_ERROR)) {
             net_mgr_start_activation(me);
         }
         break;
@@ -344,17 +344,17 @@ static void handle_signal(lwlte_core_t *me, const core_fsm_sig_t *sig)
     }
 }
 
-static void handle_start(lwlte_core_t *me)
+static void handle_start(core_t *me)
 {
     modem_state_t modem_state = MODEM_STATE_CREATED;
-    lwlte_core_state_t state = core_get_state_value(me);
+    core_state_t state = core_get_state_value(me);
 
-    if (state != LWLTE_CORE_STATE_STOPPED) {
+    if (state != CORE_STATE_STOPPED) {
         return;
     }
 
-    core_set_state(me, LWLTE_CORE_STATE_STARTING);
-    post_event_checked(me, LWLTE_CORE_EVENT_STARTED, NULL);
+    core_set_state(me, CORE_STATE_STARTING);
+    post_event_checked(me, CORE_EVENT_STARTED, NULL);
 
     esp_err_t ret = modem_get_state(me->modem, &modem_state);
     if (ret != ESP_OK) {
@@ -366,30 +366,30 @@ static void handle_start(lwlte_core_t *me)
     }
 }
 
-static void handle_stop(lwlte_core_t *me)
+static void handle_stop(core_t *me)
 {
-    lwlte_core_state_t state = core_get_state_value(me);
+    core_state_t state = core_get_state_value(me);
 
-    if (state == LWLTE_CORE_STATE_STOPPED ||
-        state == LWLTE_CORE_STATE_DESTROYING) {
+    if (state == CORE_STATE_STOPPED ||
+        state == CORE_STATE_DESTROYING) {
         return;
     }
 
     net_mgr_set_reconnect_enabled(me, false);
     net_mgr_cancel_reconnect(me);
     net_mgr_deactivate(me);
-    core_set_state(me, LWLTE_CORE_STATE_STOPPED);
-    post_event_checked(me, LWLTE_CORE_EVENT_STOPPED, NULL);
+    core_set_state(me, CORE_STATE_STOPPED);
+    post_event_checked(me, CORE_EVENT_STOPPED, NULL);
 }
 
-static void handle_modem_event(lwlte_core_t *me, const modem_event_t *event)
+static void handle_modem_event(core_t *me, const modem_event_t *event)
 {
     if (!me || !event) {
         return;
     }
-    lwlte_core_state_t state = core_get_state_value(me);
-    if (core_is_destroying(me) || state == LWLTE_CORE_STATE_STOPPED ||
-        state == LWLTE_CORE_STATE_DESTROYING) {
+    core_state_t state = core_get_state_value(me);
+    if (core_is_destroying(me) || state == CORE_STATE_STOPPED ||
+        state == CORE_STATE_DESTROYING) {
         return;
     }
 
@@ -416,33 +416,33 @@ static void handle_modem_event(lwlte_core_t *me, const modem_event_t *event)
     }
 }
 
-static void handle_ready(lwlte_core_t *me)
+static void handle_ready(core_t *me)
 {
-    lwlte_core_state_t state = core_get_state_value(me);
+    core_state_t state = core_get_state_value(me);
 
-    if (state == LWLTE_CORE_STATE_ONLINE ||
-        state == LWLTE_CORE_STATE_NET_ACTIVATING ||
-        state == LWLTE_CORE_STATE_READY) {
+    if (state == CORE_STATE_ONLINE ||
+        state == CORE_STATE_NET_ACTIVATING ||
+        state == CORE_STATE_READY) {
         return;
     }
 
-    core_set_state(me, LWLTE_CORE_STATE_READY);
-    post_event_checked(me, LWLTE_CORE_EVENT_READY, NULL);
+    core_set_state(me, CORE_STATE_READY);
+    post_event_checked(me, CORE_EVENT_READY, NULL);
 
     if (me->config.auto_connect) {
         net_mgr_start_activation(me);
     }
 }
 
-static void handle_core_error(lwlte_core_t *me, int error_code)
+static void handle_core_error(core_t *me, int error_code)
 {
-    lwlte_core_event_data_t data = {
-        .net_state = LWLTE_NET_STATE_ERROR,
+    core_event_data_t data = {
+        .net_state = CORE_NET_STATE_ERROR,
         .error_code = error_code,
     };
 
-    core_set_state(me, LWLTE_CORE_STATE_ERROR);
-    post_event_checked(me, LWLTE_CORE_EVENT_ERROR, &data);
+    core_set_state(me, CORE_STATE_ERROR);
+    post_event_checked(me, CORE_EVENT_ERROR, &data);
 }
 
 static bool modem_state_ready(modem_state_t state)
@@ -453,9 +453,9 @@ static bool modem_state_ready(modem_state_t state)
            state == MODEM_STATE_PDP_ACTIVE;
 }
 
-static void post_event_checked(lwlte_core_t *me,
-                               lwlte_core_event_id_t event_id,
-                               const lwlte_core_event_data_t *data)
+static void post_event_checked(core_t *me,
+                               core_event_id_t event_id,
+                               const core_event_data_t *data)
 {
     esp_err_t ret = core_post_event(me, event_id, data);
     if (ret != ESP_OK) {
