@@ -1,0 +1,10 @@
+menu "esp-lwlte"
+
+    config LWLTE_AT_ENGINE_LOG_IO
+        bool "Print AT Engine UART TX/RX"
+        default y
+        help
+            Print AT Engine UART TX commands and non-empty RX lines via ESP_LOGI.
+            Logs are formatted as TX:|<command> and RX:|<line>.
+
+endmenu

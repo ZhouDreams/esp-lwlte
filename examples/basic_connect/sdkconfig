@@ -3270,6 +3270,13 @@ CONFIG_WL_SECTOR_SIZE_4096=y
 # default:
 CONFIG_WL_SECTOR_SIZE=4096
 # end of Wear Levelling
+
+#
+# esp-lwlte
+#
+# default:
+CONFIG_LWLTE_AT_ENGINE_LOG_IO=y
+# end of esp-lwlte
 # end of Component config
 
 # default:

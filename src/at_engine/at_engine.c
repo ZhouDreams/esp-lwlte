@@ -11,6 +11,9 @@
  *********************/
 #include "at_engine.h"
 
+#include "sdkconfig.h"
+
+#include <limits.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -119,6 +122,9 @@ static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx
 static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int error_code);
 static bool dispatch_urc(at_engine_t *me, const char *line, uint32_t epoch);
 static bool starts_with(const char *str, const char *prefix);
+#ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
+static void log_uart_line(const char *prefix, const char *data, size_t len);
+#endif
 
 /**********************
  *  STATIC VARIABLES
@@ -513,6 +519,9 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
         me->line_overflow = false;
         xSemaphoreGive(me->lock);
         if (line_ready) {
+#ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
+            log_uart_line("RX", me->line_work_buf, strlen(me->line_work_buf));
+#endif
             handle_line(me, me->line_work_buf, epoch);
         }
         return;
@@ -753,6 +762,9 @@ static esp_err_t write_cmd(at_engine_t *me, const char *cmd)
 
     bool has_line_end = (cmd[len - 1] == '\n' || cmd[len - 1] == '\r');
     if (has_line_end) {
+#ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
+        log_uart_line("TX", cmd, len);
+#endif
         int written = uart_write_bytes(me->uart_num, cmd, len);
         ESP_RETURN_ON_FALSE(written == (int)len, ESP_FAIL, TAG, "uart_write_bytes failed");
         return ESP_OK;
@@ -765,11 +777,30 @@ static esp_err_t write_cmd(at_engine_t *me, const char *cmd)
     buf[len + 1] = '\n';
     buf[len + 2] = '\0';
 
+#ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
+    log_uart_line("TX", buf, len + 2);
+#endif
     int written = uart_write_bytes(me->uart_num, buf, len + 2);
     free(buf);
     ESP_RETURN_ON_FALSE(written == (int)(len + 2), ESP_FAIL, TAG, "uart_write_bytes failed");
     return ESP_OK;
 }
+
+#ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
+static void log_uart_line(const char *prefix, const char *data, size_t len)
+{
+    if (!prefix || !data) {
+        return;
+    }
+
+    while (len > 0 && (data[len - 1] == '\r' || data[len - 1] == '\n')) {
+        len--;
+    }
+
+    int log_len = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+    ESP_LOGI(TAG, "%s:|%.*s", prefix, log_len, data);
+}
+#endif
 
 static void reset_response(at_response_t *response)
 {
