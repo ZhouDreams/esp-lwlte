@@ -37,6 +37,14 @@
 #define AIR780EP_CSTT_TIMEOUT_MS         60000
 #define AIR780EP_CIICR_TIMEOUT_MS        90000
 #define AIR780EP_CIPSHUT_TIMEOUT_MS      90000
+#define AIR780EP_SIM_READY_TIMEOUT_MS     10000
+#define AIR780EP_SIM_READY_POLL_INTERVAL_MS 1000
+#define AIR780EP_CME_SIM_NOT_INSERTED     10
+#define AIR780EP_CME_SIM_PIN_REQUIRED     11
+#define AIR780EP_CME_SIM_PUK_REQUIRED     12
+#define AIR780EP_CME_SIM_FAILURE          13
+#define AIR780EP_CME_SIM_BUSY             14
+#define AIR780EP_CME_SIM_WRONG            15
 #define AIR780EP_URC_RDY                 "RDY"
 #define AIR780EP_URC_CPIN                "+CPIN:"
 #define AIR780EP_URC_CREG                "+CREG:"
@@ -485,6 +493,23 @@ static esp_err_t consume_registration_extra_fields(const char *cursor);
  * @return SIM 状态
  */
 static modem_sim_status_t parse_sim_status_line(const char *line);
+
+/**
+ * @brief 缓存 SIM 状态
+ * @details Cache SIM status
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] status SIM 状态
+ */
+static void cache_sim_status(modem_air780ep_t *self, modem_sim_status_t status);
+
+/**
+ * @brief 从 CME 错误码映射明确 SIM 状态
+ * @details Map definite CME errors to SIM status
+ * @param[in] error_code CME 错误码
+ * @param[out] status SIM 状态
+ * @return true: 已映射为明确 SIM 状态； false: 非明确 SIM 状态
+ */
+static bool sim_status_from_cme_error(int error_code, modem_sim_status_t *status);
 
 /**
  * @brief 查询分组域附着状态
@@ -1408,6 +1433,47 @@ static modem_sim_status_t parse_sim_status_line(const char *line)
     return MODEM_SIM_ERROR;
 }
 
+static void cache_sim_status(modem_air780ep_t *self, modem_sim_status_t status)
+{
+    if (!self) {
+        return;
+    }
+
+    if (!self->base.lock) {
+        self->last_sim_status = status;
+        return;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->last_sim_status = status;
+    xSemaphoreGive(self->base.lock);
+}
+
+static bool sim_status_from_cme_error(int error_code, modem_sim_status_t *status)
+{
+    if (!status) {
+        return false;
+    }
+
+    switch (error_code) {
+    case AIR780EP_CME_SIM_NOT_INSERTED:
+        *status = MODEM_SIM_NOT_INSERTED;
+        return true;
+    case AIR780EP_CME_SIM_PIN_REQUIRED:
+        *status = MODEM_SIM_PIN_REQUIRED;
+        return true;
+    case AIR780EP_CME_SIM_PUK_REQUIRED:
+        *status = MODEM_SIM_PUK_REQUIRED;
+        return true;
+    case AIR780EP_CME_SIM_FAILURE:
+    case AIR780EP_CME_SIM_WRONG:
+        *status = MODEM_SIM_ERROR;
+        return true;
+    default:
+        return false;
+    }
+}
+
 static esp_err_t query_cgatt(modem_air780ep_t *self, bool *attached)
 {
     ESP_RETURN_ON_FALSE(self && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -1718,6 +1784,7 @@ static esp_err_t run_basic_init_cmds(modem_air780ep_t *self)
         "AT+CEREG=2",
         "AT+CGREG=2",
         "AT+CREG=2",
+        "AT*I"
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
@@ -2064,25 +2131,72 @@ static esp_err_t air780ep_get_sim_status(modem_t *me, modem_sim_status_t *status
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     modem_air780ep_t *self = to_air780ep(me);
-    air780ep_cmd_ctx_t ctx;
+    const uint32_t start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    bool sim_busy_seen = false;
 
-    esp_err_t ret = send_cmd(self, "AT+CPIN?", &ctx, 0);
-    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+CPIN? failed");
+    while (true) {
+        air780ep_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, "AT+CPIN?", &ctx, 0);
+        ESP_RETURN_ON_ERROR(ret, TAG, "send AT+CPIN? failed");
 
-    ret = ensure_at_ok(&ctx.response, "AT+CPIN?");
-    ESP_RETURN_ON_ERROR(ret, TAG, "AT+CPIN? failed");
+        if (ctx.response.status == AT_RESP_OK) {
+            const char *line = find_line_with_prefix(&ctx.response, "+CPIN:");
+            ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG,
+                                "+CPIN line missing");
 
-    const char *line = find_line_with_prefix(&ctx.response, "+CPIN:");
-    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG, "+CPIN line missing");
+            modem_sim_status_t parsed = parse_sim_status_line(line);
+            cache_sim_status(self, parsed);
+            *status = parsed;
+            return ESP_OK;
+        }
 
-    modem_sim_status_t parsed = parse_sim_status_line(line);
+        if (ctx.response.status == AT_RESP_CME_ERROR) {
+            modem_sim_status_t parsed = MODEM_SIM_UNKNOWN;
+            if (sim_status_from_cme_error(ctx.response.error_code, &parsed)) {
+                cache_sim_status(self, parsed);
+                *status = parsed;
+                return ESP_OK;
+            }
 
-    xSemaphoreTake(self->base.lock, portMAX_DELAY);
-    self->last_sim_status = parsed;
-    xSemaphoreGive(self->base.lock);
+            if (ctx.response.error_code == AIR780EP_CME_SIM_BUSY) {
+                sim_busy_seen = true;
+                uint32_t elapsed_ms =
+                    (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) -
+                    start_ms;
+                if (elapsed_ms >= AIR780EP_SIM_READY_TIMEOUT_MS) {
+                    break;
+                }
 
-    *status = parsed;
-    return ESP_OK;
+                uint32_t remaining_ms = AIR780EP_SIM_READY_TIMEOUT_MS - elapsed_ms;
+                uint32_t wait_ms = AIR780EP_SIM_READY_POLL_INTERVAL_MS;
+                if (remaining_ms < wait_ms) {
+                    wait_ms = remaining_ms;
+                }
+                if (wait_ms == 0) {
+                    break;
+                }
+
+                ESP_LOGW(TAG, "AT+CPIN? returned SIM busy, retry in %u ms",
+                         (unsigned int)wait_ms);
+                vTaskDelay(timeout_ticks(wait_ms));
+                continue;
+            }
+        }
+
+        ret = ensure_at_ok(&ctx.response, "AT+CPIN?");
+        ESP_RETURN_ON_ERROR(ret, TAG, "AT+CPIN? failed");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (sim_busy_seen) {
+        cache_sim_status(self, MODEM_SIM_UNKNOWN);
+        *status = MODEM_SIM_UNKNOWN;
+        ESP_LOGE(TAG, "AT+CPIN? SIM busy timeout after %u ms",
+                 (unsigned int)AIR780EP_SIM_READY_TIMEOUT_MS);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    return ESP_FAIL;
 }
 
 static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
