@@ -133,6 +133,8 @@ typedef struct {
  * @note 回调在 AT 引擎 RX 任务中同步执行，必须短小且非阻塞。
  * @note 回调不得在同一引擎实例上调用会获取引擎锁的 AT Engine API，包括
  *       at_engine_send_cmd()、at_engine_send_cmd_with_options()、
+ *       at_engine_flush_rx()、at_engine_begin_exclusive()、
+ *       at_engine_flush_rx_exclusive()、at_engine_end_exclusive()、
  *       at_engine_register_urc() 和 at_engine_unregister_urc()。
  * @param[in] prefix 匹配到的 URC 前缀
  * @param[in] line 完整 URC 行
@@ -224,6 +226,51 @@ esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
 esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
                                           at_response_t *response,
                                           const at_cmd_options_t *options);
+
+/**
+ * @brief 开始 AT 命令路径独占段
+ * @details Begin an exclusive AT command path section
+ * @note 层间私有 API，用于为非 AT 临界段保留命令路径；不得从同一 AT Engine 的 URC 回调中调用。
+ * @note 每次成功调用都必须调用 at_engine_end_exclusive()。
+ * @param[in] me AT 引擎句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 正在执行命令或正在销毁
+ */
+esp_err_t at_engine_begin_exclusive(at_engine_t *me);
+
+/**
+ * @brief 在独占段中清空 AT RX 输入
+ * @details Flush AT RX input while the caller holds an exclusive section
+ * @note 调用方必须已成功调用 at_engine_begin_exclusive()，且不得从同一 AT Engine 的 URC 回调中调用。
+ * @param[in] me AT 引擎句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 正在执行命令或正在销毁
+ */
+esp_err_t at_engine_flush_rx_exclusive(at_engine_t *me);
+
+/**
+ * @brief 结束 AT 命令路径独占段
+ * @details End an exclusive AT command path section
+ * @note 仅在 at_engine_begin_exclusive() 成功后调用；不得从同一 AT Engine 的 URC 回调中调用。
+ * @param[in] me AT 引擎句柄
+ */
+void at_engine_end_exclusive(at_engine_t *me);
+
+/**
+ * @brief 清空 AT RX 输入
+ * @details Flush AT RX input and discard pending buffered lines/events
+ * @note 调用方不得从同一 AT Engine 的 URC 回调中调用该函数。
+ * @param[in] me AT 引擎句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 正在执行命令或正在销毁
+ */
+esp_err_t at_engine_flush_rx(at_engine_t *me);
 
 /**
  * @brief 注册 URC 处理器

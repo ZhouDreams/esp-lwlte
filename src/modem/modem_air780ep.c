@@ -33,6 +33,7 @@
 #define AIR780EP_MAX_RESPONSE_LINES      8
 #define AIR780EP_PARSE_BUF_SIZE          128
 #define AIR780EP_DEFAULT_CMD_TIMEOUT_MS  9000
+#define AIR780EP_DEFAULT_READY_TIMEOUT_MS 30000
 #define AIR780EP_CSTT_TIMEOUT_MS         60000
 #define AIR780EP_CIICR_TIMEOUT_MS        90000
 #define AIR780EP_CIPSHUT_TIMEOUT_MS      90000
@@ -78,6 +79,9 @@ typedef struct {
     modem_reg_status_t last_reg_status;
     modem_signal_t last_signal;
     modem_pdp_context_t pdp[AIR780EP_MAX_PDP_CONTEXTS];
+    SemaphoreHandle_t rdy_sema;
+    bool rdy_seen;
+    bool waiting_rdy;
     bool urc_registered;
     bool initialized;
 } modem_air780ep_t;
@@ -536,34 +540,91 @@ static esp_err_t query_cgpaddr(modem_air780ep_t *self, uint8_t cid,
 static bool looks_like_ip_addr(const char *line);
 
 /**
- * @brief 毫秒转换为向上取整的 tick
- * @details Convert milliseconds to ticks rounded up
- * @param[in] ms 毫秒数
- * @return FreeRTOS tick 数，0 ms 返回 0，非 0 ms 至少返回 1
+ * @brief 转换毫秒超时为 FreeRTOS ticks
+ * @details Convert millisecond timeout to FreeRTOS ticks
+ * @param[in] timeout_ms 超时时间
+ * @return FreeRTOS ticks
  */
-static TickType_t ms_to_ticks_round_up(uint32_t ms);
+static TickType_t timeout_ticks(uint32_t timeout_ms);
 
 /**
- * @brief 输出 GPIO 脉冲
- * @details Output GPIO pulse
- * @param[in] pin GPIO 编号
- * @param[in] active_ms 高电平保持时间
+ * @brief 设置 initialized 标志
+ * @details Set initialized flag
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] initialized 初始化状态
+ */
+static void set_initialized(modem_air780ep_t *self, bool initialized);
+
+/**
+ * @brief 清除 RDY 等待状态
+ * @details Clear RDY wait state
+ * @param[in] self Air780EP 调制解调器实例
+ */
+static void clear_rdy_state(modem_air780ep_t *self);
+
+/**
+ * @brief 开始等待 RDY URC
+ * @details Begin waiting for RDY URC
+ * @param[in] self Air780EP 调制解调器实例
  * @return
  *         - ESP_OK: 成功
- *         - 其他: GPIO 错误
+ *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-static esp_err_t pulse_gpio(gpio_num_t pin, uint32_t active_ms);
+static esp_err_t begin_wait_rdy(modem_air780ep_t *self);
 
 /**
- * @brief 按需执行开机脉冲
- * @details Perform power-on pulse if needed
+ * @brief 取消等待 RDY URC
+ * @details Cancel waiting for RDY URC
+ * @param[in] self Air780EP 调制解调器实例
+ */
+static void cancel_wait_rdy(modem_air780ep_t *self);
+
+/**
+ * @brief 等待 RDY URC
+ * @details Wait for RDY URC
+ * @param[in] self Air780EP 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_TIMEOUT: 超时
+ */
+static esp_err_t wait_rdy(modem_air780ep_t *self);
+
+/**
+ * @brief 执行基础初始化命令
+ * @details Run basic initialization commands
+ * @param[in] self Air780EP 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 命令错误
+ */
+static esp_err_t run_basic_init_cmds(modem_air780ep_t *self);
+
+/**
+ * @brief 完成调制解调器 ready 流程
+ * @details Finish modem ready flow
+ * @param[in] me 调制解调器句柄
+ * @param[in] self Air780EP 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: 状态设置错误
+ */
+static esp_err_t finish_modem_ready(modem_t *me, modem_air780ep_t *self);
+
+/**
+ * @brief 硬件复位模块(通过 EN 引脚)
+ * @details Hardware reset module via EN pin
+ * @details 拉低 EN 引脚，等待 reset_pulse_ms，拉高 EN 引脚
+ * @details Pull EN low, wait reset_pulse_ms, pull EN high
  * @param[in] self Air780EP 调制解调器实例
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: GPIO 错误
  */
-static esp_err_t maybe_power_on(modem_air780ep_t *self);
+static esp_err_t hardware_reset(modem_air780ep_t *self);
 
 /**
  * @brief 注册 Air780EP URC 处理器
@@ -684,6 +745,9 @@ modem_t *modem_air780ep_create(at_engine_t *at,
     if (self->config.default_cmd_timeout_ms == 0) {
         self->config.default_cmd_timeout_ms = AIR780EP_DEFAULT_CMD_TIMEOUT_MS;
     }
+    if (self->config.ready_timeout_ms == 0) {
+        self->config.ready_timeout_ms = AIR780EP_DEFAULT_READY_TIMEOUT_MS;
+    }
 
     self->last_sim_status = MODEM_SIM_UNKNOWN;
     self->last_reg_status = MODEM_REG_UNKNOWN;
@@ -703,6 +767,14 @@ modem_t *modem_air780ep_create(at_engine_t *at,
                                     config->event_task_priority);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "modem base init failed: %s", esp_err_to_name(ret));
+        free(self);
+        return NULL;
+    }
+
+    self->rdy_sema = xSemaphoreCreateBinary();
+    if (!self->rdy_sema) {
+        ESP_LOGE(TAG, "create RDY semaphore failed");
+        modem_base_deinit(&self->base);
         free(self);
         return NULL;
     }
@@ -1539,59 +1611,215 @@ static bool looks_like_ip_addr(const char *line)
     return true;
 }
 
-static TickType_t ms_to_ticks_round_up(uint32_t ms)
+static TickType_t timeout_ticks(uint32_t timeout_ms)
 {
-    if (ms == 0) {
-        return 0;
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (timeout_ms > 0 && ticks == 0) {
+        return 1;
     }
 
-    uint64_t ticks = ((uint64_t)ms * configTICK_RATE_HZ + 999ULL) / 1000ULL;
-    if (ticks > (uint64_t)portMAX_DELAY) {
-        return portMAX_DELAY;
-    }
-
-    return (TickType_t)ticks;
+    return ticks;
 }
 
-static esp_err_t pulse_gpio(gpio_num_t pin, uint32_t active_ms)
+static void set_initialized(modem_air780ep_t *self, bool initialized)
 {
-    if (pin == GPIO_NUM_NC) {
-        return ESP_OK;
+    if (!self) {
+        return;
     }
 
-    esp_err_t ret = gpio_reset_pin(pin);
-    ESP_RETURN_ON_ERROR(ret, TAG, "reset GPIO %d failed", pin);
-
-    ret = gpio_set_direction(pin, GPIO_MODE_OUTPUT);
-    ESP_RETURN_ON_ERROR(ret, TAG, "set GPIO %d direction failed", pin);
-
-    ret = gpio_set_level(pin, 0);
-    ESP_RETURN_ON_ERROR(ret, TAG, "set GPIO %d low failed", pin);
-    vTaskDelay(ms_to_ticks_round_up(10));
-
-    ret = gpio_set_level(pin, 1);
-    ESP_RETURN_ON_ERROR(ret, TAG, "set GPIO %d high failed", pin);
-    if (active_ms > 0) {
-        vTaskDelay(ms_to_ticks_round_up(active_ms));
+    if (!self->base.lock) {
+        self->initialized = initialized;
+        return;
     }
 
-    ret = gpio_set_level(pin, 0);
-    ESP_RETURN_ON_ERROR(ret, TAG, "set GPIO %d low failed", pin);
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->initialized = initialized;
+    xSemaphoreGive(self->base.lock);
+}
+
+static void clear_rdy_state(modem_air780ep_t *self)
+{
+    if (!self) {
+        return;
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        self->rdy_seen = false;
+        self->waiting_rdy = false;
+        xSemaphoreGive(self->base.lock);
+    } else {
+        self->rdy_seen = false;
+        self->waiting_rdy = false;
+    }
+
+    if (self->rdy_sema) {
+        while (xSemaphoreTake(self->rdy_sema, 0) == pdTRUE) {
+        }
+    }
+}
+
+static esp_err_t begin_wait_rdy(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.lock && self->rdy_sema,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->waiting_rdy = true;
+    xSemaphoreGive(self->base.lock);
+
     return ESP_OK;
 }
 
-static esp_err_t maybe_power_on(modem_air780ep_t *self)
+static void cancel_wait_rdy(modem_air780ep_t *self)
+{
+    if (!self || !self->base.lock) {
+        return;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->waiting_rdy = false;
+    xSemaphoreGive(self->base.lock);
+}
+
+static esp_err_t wait_rdy(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.lock && self->rdy_sema,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    bool seen = self->rdy_seen;
+    xSemaphoreGive(self->base.lock);
+
+    if (!seen) {
+        TickType_t ticks = timeout_ticks(self->config.ready_timeout_ms);
+        BaseType_t sema_ret = xSemaphoreTake(self->rdy_sema, ticks);
+        if (sema_ret != pdTRUE) {
+            cancel_wait_rdy(self);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    seen = self->rdy_seen;
+    self->waiting_rdy = false;
+    xSemaphoreGive(self->base.lock);
+
+    return seen ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+static esp_err_t run_basic_init_cmds(modem_air780ep_t *self)
 {
     ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
 
-    esp_err_t ret = pulse_gpio(self->config.pwrkey_pin, self->config.power_on_pulse_ms);
-    ESP_RETURN_ON_ERROR(ret, TAG, "pulse PWRKEY failed");
+    const char *cmds[] = {
+        "ATE0",
+        "AT+CMEE=1",
+        "AT+CEREG=2",
+        "AT+CGREG=2",
+        "AT+CREG=2",
+    };
 
-    if (self->config.boot_wait_ms > 0) {
-        vTaskDelay(ms_to_ticks_round_up(self->config.boot_wait_ms));
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        air780ep_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, cmds[i], &ctx, 0);
+        ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cmds[i]);
+        ret = ensure_at_ok(&ctx.response, cmds[i]);
+        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed", cmds[i]);
     }
 
     return ESP_OK;
+}
+
+static esp_err_t finish_modem_ready(modem_t *me, modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(me && self, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = modem_set_state(me, MODEM_STATE_READY);
+    ESP_RETURN_ON_ERROR(ret, TAG, "set ready state failed");
+
+    set_initialized(self, true);
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_READY,
+    };
+    ret = modem_post_event(me, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post ready event failed: %s", esp_err_to_name(ret));
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t hardware_reset(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    esp_err_t ret = at_engine_begin_exclusive(self->base.at);
+    ESP_RETURN_ON_ERROR(ret, TAG, "begin AT exclusive failed");
+
+    if (self->config.en_pin == GPIO_NUM_NC) {
+        clear_rdy_state(self);
+
+        ret = at_engine_flush_rx_exclusive(self->base.at);
+        if (ret != ESP_OK) {
+            at_engine_end_exclusive(self->base.at);
+            ESP_RETURN_ON_ERROR(ret, TAG, "flush RX input failed");
+        }
+
+        ret = begin_wait_rdy(self);
+        at_engine_end_exclusive(self->base.at);
+        ESP_RETURN_ON_ERROR(ret, TAG, "begin RDY wait failed");
+        return ESP_OK;
+    }
+
+    clear_rdy_state(self);
+
+    ret = at_engine_flush_rx_exclusive(self->base.at);
+    ESP_GOTO_ON_ERROR(ret, err_before_en_low, TAG, "flush RX input before reset failed");
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << (uint32_t)self->config.en_pin,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ret = gpio_config(&io_conf);
+    ESP_GOTO_ON_ERROR(ret, err_before_en_low, TAG, "configure EN GPIO failed");
+
+    ret = gpio_set_level(self->config.en_pin, 0);
+    ESP_GOTO_ON_ERROR(ret, err_before_en_low, TAG, "set EN GPIO low failed");
+
+    if (self->config.reset_pulse_ms > 0) {
+        vTaskDelay(timeout_ticks(self->config.reset_pulse_ms));
+    }
+
+    clear_rdy_state(self);
+
+    ret = at_engine_flush_rx_exclusive(self->base.at);
+    ESP_GOTO_ON_ERROR(ret, err_after_en_low, TAG, "flush RX input failed");
+
+    ret = begin_wait_rdy(self);
+    ESP_GOTO_ON_ERROR(ret, err_after_en_low, TAG, "begin RDY wait failed");
+
+    ret = gpio_set_level(self->config.en_pin, 1);
+    ESP_GOTO_ON_ERROR(ret, err_after_en_low, TAG, "set EN GPIO high failed");
+
+    at_engine_end_exclusive(self->base.at);
+    return ESP_OK;
+
+err_after_en_low:
+    {
+        esp_err_t restore_ret = gpio_set_level(self->config.en_pin, 1);
+        if (restore_ret != ESP_OK) {
+            ESP_LOGW(TAG, "restore EN GPIO high failed: %s", esp_err_to_name(restore_ret));
+        }
+    }
+err_before_en_low:
+    at_engine_end_exclusive(self->base.at);
+
+    return ret;
 }
 
 static esp_err_t register_urcs(modem_air780ep_t *self)
@@ -1682,7 +1910,14 @@ static esp_err_t air780ep_destroy(modem_t *me)
         }
     }
 
-    self->initialized = false;
+    if (self->rdy_sema) {
+        vSemaphoreDelete(self->rdy_sema);
+        self->rdy_sema = NULL;
+    }
+    self->rdy_seen = false;
+    self->waiting_rdy = false;
+
+    set_initialized(self, false);
     return ESP_OK;
 }
 
@@ -1694,51 +1929,34 @@ static esp_err_t air780ep_init(modem_t *me)
     bool urc_registered_before = self->urc_registered;
     esp_err_t ret = ESP_OK;
 
+    set_initialized(self, false);
+
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "set initializing state failed");
-
-    ret = maybe_power_on(self);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "power on failed");
 
     ret = register_urcs(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
 
-    const char *cmds[] = {
-        "ATE0",
-        "AT+CMEE=1",
-        "AT+CEREG=2",
-        "AT+CGREG=2",
-        "AT+CREG=2",
-    };
+    ret = hardware_reset(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "hardware reset failed");
 
-    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
-        air780ep_cmd_ctx_t ctx;
-        ret = send_cmd(self, cmds[i], &ctx, 0);
-        ESP_GOTO_ON_ERROR(ret, err, TAG, "send %s failed", cmds[i]);
-        ret = ensure_at_ok(&ctx.response, cmds[i]);
-        ESP_GOTO_ON_ERROR(ret, err, TAG, "%s failed", cmds[i]);
-    }
+    ret = wait_rdy(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait RDY failed");
 
-    self->initialized = true;
+    ret = run_basic_init_cmds(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "run init commands failed");
 
-    ret = modem_set_state(me, MODEM_STATE_READY);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "set ready state failed");
-
-    const modem_event_t event = {
-        .id = MODEM_EVENT_READY,
-    };
-    ret = modem_post_event(me, &event);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "post ready event failed: %s", esp_err_to_name(ret));
-    }
+    ret = finish_modem_ready(me, self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "finish modem ready failed");
 
     return ESP_OK;
 
 err:
+    cancel_wait_rdy(self);
     if (!urc_registered_before && self->urc_registered) {
         unregister_urcs(self);
     }
-    self->initialized = false;
+    set_initialized(self, false);
     (void)modem_set_state(me, MODEM_STATE_ERROR);
     return ret;
 }
@@ -1748,16 +1966,39 @@ static esp_err_t air780ep_reset(modem_t *me)
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
     modem_air780ep_t *self = to_air780ep(me);
-    air780ep_cmd_ctx_t ctx;
+    bool urc_registered_before = self->urc_registered;
+    esp_err_t ret = ESP_OK;
 
-    esp_err_t ret = send_cmd(self, "AT+RESET", &ctx, 0);
-    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+RESET failed");
+    set_initialized(self, false);
 
-    ret = ensure_at_ok(&ctx.response, "AT+RESET");
-    ESP_RETURN_ON_ERROR(ret, TAG, "AT+RESET failed");
+    ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "set initializing state failed");
 
-    self->initialized = false;
-    return modem_set_state(me, MODEM_STATE_CREATED);
+    ret = register_urcs(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
+
+    ret = hardware_reset(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "hardware reset failed");
+
+    ret = wait_rdy(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait RDY failed");
+
+    ret = run_basic_init_cmds(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "run init commands failed");
+
+    ret = finish_modem_ready(me, self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "finish modem ready failed");
+
+    return ESP_OK;
+
+err:
+    cancel_wait_rdy(self);
+    if (!urc_registered_before && self->urc_registered) {
+        unregister_urcs(self);
+    }
+    set_initialized(self, false);
+    (void)modem_set_state(me, MODEM_STATE_ERROR);
+    return ret;
 }
 
 static esp_err_t air780ep_get_info(modem_t *me, modem_info_t *info)
@@ -2287,13 +2528,24 @@ static void rdy_urc_handler(const char *prefix, const char *line, void *user_ctx
     }
 
     modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
-    const modem_event_t event = {
-        .id = MODEM_EVENT_READY,
-    };
-    esp_err_t ret = modem_post_event(&self->base, &event);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "post ready event failed: %s", esp_err_to_name(ret));
+    bool signal_waiter = false;
+    SemaphoreHandle_t rdy_sema = NULL;
+
+    if (!self->base.lock) {
+        return;
     }
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    if (self->waiting_rdy) {
+        self->rdy_seen = true;
+        signal_waiter = true;
+        rdy_sema = self->rdy_sema;
+    }
+    xSemaphoreGive(self->base.lock);
+
+    if (signal_waiter && rdy_sema) {
+        (void)xSemaphoreGive(rdy_sema);
+    }
+
 }
 
 static void cpin_urc_handler(const char *prefix, const char *line, void *user_ctx)

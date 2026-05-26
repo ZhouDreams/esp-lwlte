@@ -25,7 +25,7 @@
 /*********************
  *      DEFINES
  *********************/
-#define TAG                                  "basic_connect"
+#define TAG                                  "appmain"
 
 #define EXAMPLE_LTE_UART_NUM                 UART_NUM_1
 #define EXAMPLE_LTE_UART_TX_PIN              GPIO_NUM_0
@@ -35,7 +35,7 @@
 #define EXAMPLE_LTE_APN                      ""
 #define EXAMPLE_LTE_PRIMARY_CID              1
 
-#define EXAMPLE_MODULE_POWER_STABLE_MS       3000
+#define EXAMPLE_MODEM_RESET_PULSE_MS         500
 #define EXAMPLE_INIT_READY_TIMEOUT_MS        30000
 #define EXAMPLE_NET_ONLINE_TIMEOUT_MS        120000
 #define EXAMPLE_POLL_INTERVAL_MS             100
@@ -128,14 +128,11 @@ void app_main(void)
         .uart_rx_pin = EXAMPLE_LTE_UART_RX_PIN,
         .uart_baud_rate = EXAMPLE_LTE_UART_BAUD_RATE,
         .en_pin = EXAMPLE_LTE_EN_PIN,
-        .pwrkey_pin = GPIO_NUM_NC,
-        .reset_pin = GPIO_NUM_NC,
-        .status_pin = GPIO_NUM_NC,
         .apn = EXAMPLE_LTE_APN,
         .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
         .auto_connect = false,
         .init_ready_timeout_ms = EXAMPLE_INIT_READY_TIMEOUT_MS,
-        .module_power_stable_ms = EXAMPLE_MODULE_POWER_STABLE_MS,
+        .modem_reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
     };
 
     ESP_LOGI(TAG, "esp-lwlte basic connect example");

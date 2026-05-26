@@ -56,7 +56,7 @@
 | 查询版本信息 | `AT+CGMR` | `+CGMR: "<revision>"` + `OK` | 软件版本标识 | 9s | `modem_info_t.fw_revision` | 可用于判断 AT 固件版本能力 |
 | 查询 IMEI | `AT+CGSN` | `<IMEI>` + `OK` | 15 位 IMEI | 9s | `modem_info_t.imei` | 纯数据行，无 `+CGSN:` 前缀 |
 | 查询 IMSI | `AT+CIMI` | `<IMSI>` + `OK` | 15 位 IMSI | 9s | `modem_info_t.imsi` | SIM 未 ready 时可能失败 |
-| 重启模块 | `AT+RESET` | `OK` | 无 | 9s | `modem_reset()` | 重启后等待 `RDY` 或重新执行初始化序列 |
+| 重启模块 | `AT+RESET` | `OK` | 无 | 9s | 保留为 AT 参考，不映射当前 `modem_reset()` | 当前 Air780EP reset 通过 EN 硬复位实现，等待 `RDY` 后重新执行初始化序列 |
 | 功能模式 | `AT+CFUN=<fun>[,<rst>]`，`AT+CFUN?` | `+CFUN: <fun>` + `OK` | `0` 最少功能；`1` 全功能；`4` 飞行模式；`rst=1` 复位 ME | 45s | Air780EP 初始化/复位内部辅助步骤 | `AT+CFUN=1,1` 可主动重启模块 |
 
 ## 串口与结果码配置
@@ -128,12 +128,12 @@
 
 | 前缀/完整行 | 来源 | 触发条件 | 映射建议 | 注意事项 |
 |-------------|------|----------|----------|----------|
-| `RDY` | 模块启动 | 模块重启完成 | `MODEM_EVENT_READY` | PDF 片段未系统列出，但旧实现已注册，实机常见 |
+| `RDY` | 模块启动 | 模块重启完成 | 释放初始化 RDY 等待；AT 初始化完成后再投递 `MODEM_EVENT_READY` | PDF 片段未系统列出，但旧实现已注册，实机常见 |
 | `+CPIN:` | SIM | SIM 状态变化 | 更新 SIM 状态，必要时触发重新注册流程 | 同时也是 `AT+CPIN?` 查询响应前缀 |
 | `+CREG:` | 网络注册 | CREG URC 开启后注册状态变化 | 更新通用注册状态 | 同时也是 `AT+CREG?` 查询响应前缀 |
 | `+CEREG:` | EPS 注册 | CEREG URC 开启后 LTE 注册状态变化 | 优先用于 LTE 注册状态 | 同时也是 `AT+CEREG?` 查询响应前缀 |
 | `+CGREG:` | GPRS 注册 | CGREG URC 开启后分组域注册状态变化 | 更新分组域注册状态 | 同时也是 `AT+CGREG?` 查询响应前缀 |
-| `+CGEV:` | 分组域事件 | PDP/PDN 激活、去激活或修改 | 触发 `MODEM_EVENT_PDP_ACTIVATED` / `MODEM_EVENT_PDP_DEACTIVATED` | 需要 `AT+CGEREP=1` 启用转发 |
+| `+CGEV:` | 分组域事件 | PDP/PDN 激活、去激活或修改 | 触发 `MODEM_EVENT_PDP_ACTIVATED` / `MODEM_EVENT_PDP_DEACTIVATED` | 当前实现不发送 `AT+CGEREP`；若模块默认上报则处理 |
 | `+PDP DEACT` / `+PDP:DEACT` | TCPIP 示例 | PDP 上下文被网络释放 | 网络离线，执行恢复流程 | 手册 TCPIP 章节写法不完全一致，实现时可兼容两个文本 |
 
 ### 后续连接层 URC
@@ -151,16 +151,15 @@
 
 1. `ATE0`
 2. `AT+CMEE=1`
-3. ~~`AT+CGEREP=1`，启用 `+CGEV` 分组域事件~~（Air780EP 不支持，始终返回 ERROR，已移除；`+CGEV` URC 默认启用）
-4. `AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2`，启用注册状态 URC
-5. `AT+CPIN?`，要求 `+CPIN: READY`
-6. `AT+CSQ`，解析 `+CSQ: <rssi>,<ber>` 并按 Core 阈值判断信号可用性
-7. `AT+CEREG?` 或 `AT+CGREG?`，要求 `stat=1` 或 `stat=5`
-8. `AT+CGATT?`，要求 `+CGATT: 1`
-9. `AT+CSTT`，使用模块自动获取 APN；本实现的 TCPIP 激活路径仅支持 `cid=1`
-10. `AT+CIICR`，激活移动场景
-11. `AT+CIFSR`，读取本地 IP
-12. 可选 `AT+CIPPING="<host>",4,32,10,64`，执行基础连通性检查
+3. `AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2`，启用注册状态 URC
+4. `AT+CPIN?`，要求 `+CPIN: READY`
+5. `AT+CSQ`，解析 `+CSQ: <rssi>,<ber>` 并按 Core 阈值判断信号可用性
+6. `AT+CEREG?` 或 `AT+CGREG?`，要求 `stat=1` 或 `stat=5`
+7. `AT+CGATT?`，要求 `+CGATT: 1`
+8. `AT+CSTT`，使用模块自动获取 APN；本实现的 TCPIP 激活路径仅支持 `cid=1`
+9. `AT+CIICR`，激活移动场景
+10. `AT+CIFSR`，读取本地 IP
+11. 可选 `AT+CIPPING="<host>",4,32,10,64`，执行基础连通性检查
 
 错误恢复建议：
 

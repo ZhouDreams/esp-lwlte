@@ -448,8 +448,8 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
 
 | ops 方法 | 语义边界 | Air780EP 第一版命令 |
 |----------|----------|---------------------|
-| `init` | 建立 AT 口基础工作环境，注册 URC，不激活 PDP | `ATE0`、`AT+CMEE=1`、`AT+CGEREP=1`，注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT` |
-| `reset` | 模块软件复位，复位后由 Core 决定是否重新 `init` | 优先 `AT+RESET`；需要切换功能模式时才考虑 `AT+CFUN=1,1` |
+| `init` | 建立 AT 口基础工作环境，注册 URC，不激活 PDP | `ATE0`、`AT+CMEE=1`、`AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2`，注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT` |
+| `reset` | 通过 EN 执行硬复位，并在 RDY 后恢复基础 AT 工作环境 | 注册 URC 后拉低 EN、等待 `reset_pulse_ms`、拉高 EN、等待 RDY URC，再执行基础 AT 初始化命令 |
 | `get_info` | 读取模块/SIM 静态标识，Core 不解析原始 AT 行 | `AT+CGSN`、`AT+CIMI`、`AT+ICCID`、`AT+CGMM`、`AT+CGMR`；`ATI`/`AT+VER` 可作为固件信息补充 |
 | `get_sim_status` | 查询 SIM/PIN 可用性 | `AT+CPIN?` |
 | `get_signal` | 查询当前基础信号质量 | `AT+CSQ`；`AT+CESQ` 只作为后续 LTE 扩展指标来源 |
@@ -624,12 +624,9 @@ typedef void (*modem_event_callback_t)(modem_t *modem,
 
 ```c
 typedef struct {
-    gpio_num_t pwrkey_pin;              // PWRKEY GPIO，未使用时为 GPIO_NUM_NC
-    gpio_num_t reset_pin;               // RESET GPIO，未使用时为 GPIO_NUM_NC
-    gpio_num_t status_pin;              // STATUS GPIO，未使用时为 GPIO_NUM_NC
-    uint32_t   power_on_pulse_ms;       // PWRKEY 上电脉冲宽度
-    uint32_t   reset_pulse_ms;          // RESET 脉冲宽度
-    uint32_t   boot_wait_ms;            // 上电后等待模块启动时间
+    gpio_num_t en_pin;                  // EN GPIO，未使用时为 GPIO_NUM_NC
+    uint32_t   reset_pulse_ms;          // 复位脉冲(EN 拉低保持)时长
+    uint32_t   ready_timeout_ms;        // 等待 RDY URC 超时
     uint32_t   default_cmd_timeout_ms;  // Air780EP 命令默认超时
     int        event_queue_size;        // Modem 事件队列长度
     int        event_task_stack;        // Modem event task 栈大小
@@ -644,6 +641,7 @@ modem_t *modem_air780ep_create(at_engine_t *at,
 - `modem_air780ep_create()` 是具体模块工厂，只应出现在 Facade 模块 factory 装配代码中。
 - Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_t *`。
 - GPIO 控制属于 Modem 层职责，Air780EP 实现可以直接使用 ESP-IDF `driver/gpio.h`。
+- 硬件复位通过 EN 引脚实现：注册 URC 后，拉低 EN，等待 reset_pulse_ms，再拉高 EN；随后等待 RDY URC，收到 RDY 后才发送 AT 初始化命令。`air780ep_init()` 和 `air780ep_reset()` 都使用此方式。
 
 ### 2.12 `modem_air780ep_t` — Air780EP 子类
 
@@ -670,6 +668,9 @@ typedef struct {
     modem_reg_status_t       last_reg_status; // 最近一次网络注册状态
     modem_signal_t           last_signal;   // 最近一次信号质量
     modem_pdp_context_t      pdp[AIR780EP_MAX_PDP_CONTEXTS];
+    SemaphoreHandle_t        rdy_sema;      // RDY 等待同步信号量
+    bool                     rdy_seen;      // 本轮 init/reset 是否收到 RDY
+    bool                     waiting_rdy;   // 是否处于受控 RDY 等待窗口
     bool                     urc_registered;
     bool                     initialized;
 } modem_air780ep_t;
@@ -714,9 +715,9 @@ typedef struct {
 │  AT Engine RX task                                          │
 │  ┌────────────────┐                                         │
 │  │ URC callback   │──→ Air780EP URC handler                  │
-│  └───────┬────────┘    ──→ 解析 RDY/+CPIN/+CREG/+CEREG       │
-│          │              /+CGREG/+CGEV/+PDP DEACT             │
-│          │          ──→ 生成 modem_event_t                  │
+│  └───────┬────────┘    ──→ RDY 释放 init/reset 等待           │
+│          │          ──→ 解析 +CPIN/+CREG/+CEREG/+CGREG       │
+│          │              /+CGEV/+PDP DEACT 并生成 modem_event_t│
 │          │          ──→ xQueueSend(event_queue, ..., 0)      │
 │          │              不得直接调用 Core 回调                │
 │          │                                                  │
@@ -967,7 +968,7 @@ typedef struct {
 | `CHECK_SIM` | 查询 SIM 状态 | `modem_get_sim_status()` |
 | `CHECK_SIGNAL` | 查询信号质量 | `modem_get_signal()` |
 | `CHECK_REGISTRATION` | 查询网络注册 | `modem_get_registration()` |
-| `SET_APN` | 配置 APN | `modem_set_apn()` |
+| `SET_APN` | APN 非空时配置 APN；APN 为空时跳过 | `modem_set_apn()`（仅非空 APN） |
 | `ACTIVATE_PDP` | 激活 PDP | `modem_activate_pdp()` |
 | `DONE` | 网络上线 | 发布 `CORE_EVENT_NET_ONLINE` |
 

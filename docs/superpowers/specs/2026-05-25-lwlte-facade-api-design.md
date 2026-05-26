@@ -1,5 +1,7 @@
 # LWLTE Facade API Design
 
+**后续修订**: Air780EP 引脚、APN 空值语义和 RDY 初始化等待流程以后续设计 `docs/superpowers/specs/2026-05-25-air780ep-rdy-init-flow-design.md` 为准；该后续设计移除了 `modem_boot_wait_ms`，并要求空 APN 不发送 APN 配置命令。
+
 ## 背景
 
 当前项目已有 AT Engine、Modem Adapter、Core Service 三层，并且 `examples/basic_connect` 已能通过 `lwlte_core_*` API 发起基础联网流程。但示例代码同时 include 并直接使用了 `at_engine.h`、`modem.h`、`modem_air780ep.h` 和 `lwlte_core.h`，这使示例承担了 Board Init、模块装配和用户业务三种角色。

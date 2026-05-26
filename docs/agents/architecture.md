@@ -209,7 +209,7 @@ typedef struct {
 | **不知道什么** | 网络状态机逻辑、上层协议、应用业务 |
 | **OOP 角色** | 子类 — 内嵌 `modem_t`，实现内部 `modem_ops` 虚函数 |
 
-Modem Impl 可以直接使用 `driver/gpio.h` 控制模块的 RESET/PWRKEY 引脚。
+Modem Impl 可以直接使用 `driver/gpio.h` 控制模块的 EN 引脚。
 
 **Modem 层的核心价值**：不同 LTE 模块最大的差异就是 AT 指令格式和 URC 格式。把差异封装在 modem_impl 中，通过统一的 `modem_*` API 暴露给 Core，上层零感知。
 内部再由 `modem_ops` 多态转发到具体模块。
@@ -298,6 +298,8 @@ ESP_ERROR_CHECK(lwlte_register_event_callback(lte, app_event_handler, NULL));
 
 Facade 模块 factory 是 composition root，是唯一认识所有装配 API 和具体模块 factory 的文件：
 
+Air780EP modem 初始化时先完成 AT Engine 和 URC 注册，再通过 EN 执行硬复位，等待 RDY URC 后发送基础 AT 初始化命令。Facade 的 init_ready_timeout_ms 是 RDY 等待和 Core ready 等待的初始化总超时。
+
 ```
 Facade factory
     │
@@ -346,9 +348,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
 
     /* 2. 模块适配（换模块只需换这一组配置和工厂） */
     modem_air780ep_config_t modem_cfg = {
-        .pwrkey_pin = config->pwrkey_pin,
-        .reset_pin  = config->reset_pin,
-        .status_pin = config->status_pin,
+        .en_pin = config->en_pin,
     };
     modem_t *modem = modem_air780ep_create(at, &modem_cfg);
     if (!modem) goto err_at;

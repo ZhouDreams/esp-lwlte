@@ -330,6 +330,77 @@ esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
     return ESP_OK;
 }
 
+esp_err_t at_engine_begin_exclusive(at_engine_t *me)
+{
+    ESP_RETURN_ON_FALSE(me && me->lock && me->cmd_mutex,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = begin_send_call(me);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (xSemaphoreTake(me->cmd_mutex, portMAX_DELAY) != pdTRUE) {
+        end_send_call(me);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->cmd_ctx || me->state != AT_STATE_IDLE) {
+        xSemaphoreGive(me->lock);
+        xSemaphoreGive(me->cmd_mutex);
+        end_send_call(me);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreGive(me->lock);
+
+    return ESP_OK;
+}
+
+esp_err_t at_engine_flush_rx_exclusive(at_engine_t *me)
+{
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->cmd_ctx || me->state != AT_STATE_IDLE) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    flush_rx_input_locked(me);
+    xSemaphoreGive(me->lock);
+
+    return ESP_OK;
+}
+
+void at_engine_end_exclusive(at_engine_t *me)
+{
+    if (!me) {
+        return;
+    }
+
+    if (me->cmd_mutex) {
+        xSemaphoreGive(me->cmd_mutex);
+    }
+    if (me->lock) {
+        end_send_call(me);
+    }
+}
+
+esp_err_t at_engine_flush_rx(at_engine_t *me)
+{
+    esp_err_t ret = at_engine_begin_exclusive(me);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = at_engine_flush_rx_exclusive(me);
+    at_engine_end_exclusive(me);
+
+    return ret;
+}
+
 esp_err_t at_engine_register_urc(at_engine_t *me, const char *prefix,
                                  at_urc_handler_t *handler)
 {

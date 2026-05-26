@@ -79,21 +79,27 @@ static bool gpio_optional_valid(gpio_num_t pin);
 static bool non_negative_int(int value);
 
 /**
- * @brief 按需使能模块 EN 引脚
- * @details Enable module EN pin if configured
+ * @brief 获取初始化 ready 总超时
+ * @details Get total init ready timeout
  * @param[in] config Air780EP LTE 初始化配置
- * @return
- *         - ESP_OK: 成功
- *         - other: GPIO 错误码
+ * @return 初始化 ready 总超时； Total init ready timeout
  */
-static esp_err_t enable_module_if_needed(const lwlte_air780ep_config_t *config);
+static uint32_t ready_timeout_ms(const lwlte_air780ep_config_t *config);
 
 /**
- * @brief 毫秒级延时
- * @details Delay in milliseconds
- * @param[in] delay_ms 延时时间，单位毫秒
+ * @brief 计算初始化剩余超时
+ * @details Calculate remaining init timeout
+ * @param[in] start_tick 初始化开始 tick； Init start tick
+ * @param[in] total_timeout_ms 初始化总超时； Total init timeout
+ * @param[out] out_timeout_ms 剩余超时输出； Remaining timeout output
+ * @return
+ *         - ESP_OK: 成功； Success
+ *         - ESP_ERR_INVALID_ARG: 参数无效； Invalid argument
+ *         - ESP_ERR_TIMEOUT: 初始化已超时； Init timed out
  */
-static void delay_ms(uint32_t delay_ms);
+static esp_err_t remaining_timeout_ms(TickType_t start_tick,
+                                      uint32_t total_timeout_ms,
+                                      uint32_t *out_timeout_ms);
 
 /**
  * @brief 初始化失败后清理门面
@@ -124,16 +130,12 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
 
     esp_err_t ret = validate_config(config);
     ESP_RETURN_ON_ERROR(ret, TAG, "invalid config");
+    const uint32_t total_ready_timeout_ms = ready_timeout_ms(config);
+    const TickType_t init_start_tick = xTaskGetTickCount();
 
     lwlte_t *me = NULL;
     ret = lwlte_create_empty(&me);
     ESP_RETURN_ON_ERROR(ret, TAG, "create facade failed");
-
-    ret = enable_module_if_needed(config);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "enable module failed: %s", esp_err_to_name(ret));
-        return cleanup_after_failure(me, ret);
-    }
 
     const at_engine_config_t at_config = {
         .uart_num = config->uart_num,
@@ -153,13 +155,18 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ESP_OK);
     }
 
+    uint32_t stage_timeout_ms = 0;
+    ret = remaining_timeout_ms(init_start_tick, total_ready_timeout_ms,
+                               &stage_timeout_ms);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "init timeout before modem create");
+        return cleanup_after_failure(me, ret);
+    }
+
     const modem_air780ep_config_t modem_config = {
-        .pwrkey_pin = config->pwrkey_pin,
-        .reset_pin = config->reset_pin,
-        .status_pin = config->status_pin,
-        .power_on_pulse_ms = config->modem_power_on_pulse_ms,
+        .en_pin = config->en_pin,
         .reset_pulse_ms = config->modem_reset_pulse_ms,
-        .boot_wait_ms = config->modem_boot_wait_ms,
+        .ready_timeout_ms = stage_timeout_ms,
         .default_cmd_timeout_ms = config->modem_default_cmd_timeout_ms,
         .event_queue_size = config->modem_event_queue_size,
         .event_task_stack = config->modem_event_task_stack,
@@ -205,10 +212,14 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ret);
     }
 
-    uint32_t ready_timeout_ms = config->init_ready_timeout_ms ?
-                                config->init_ready_timeout_ms :
-                                LWLTE_AIR780EP_DEFAULT_READY_MS;
-    ret = lwlte_wait_ready(me, ready_timeout_ms);
+    ret = remaining_timeout_ms(init_start_tick, total_ready_timeout_ms,
+                               &stage_timeout_ms);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "init timeout before waiting core ready");
+        return cleanup_after_failure(me, ret);
+    }
+
+    ret = lwlte_wait_ready(me, stage_timeout_ms);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "wait ready failed: %s", esp_err_to_name(ret));
         return cleanup_after_failure(me, ret);
@@ -239,11 +250,8 @@ static esp_err_t validate_config(const lwlte_air780ep_config_t *config)
     ESP_RETURN_ON_FALSE(gpio_required_valid(config->uart_tx_pin) &&
                         gpio_required_valid(config->uart_rx_pin),
                         ESP_ERR_INVALID_ARG, TAG, "invalid UART pins");
-    ESP_RETURN_ON_FALSE(gpio_optional_valid(config->en_pin) &&
-                        gpio_optional_valid(config->pwrkey_pin) &&
-                        gpio_optional_valid(config->reset_pin) &&
-                        gpio_optional_valid(config->status_pin),
-                        ESP_ERR_INVALID_ARG, TAG, "invalid optional GPIO pins");
+    ESP_RETURN_ON_FALSE(gpio_optional_valid(config->en_pin),
+                        ESP_ERR_INVALID_ARG, TAG, "invalid en_pin GPIO");
     ESP_RETURN_ON_FALSE(config->uart_baud_rate > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid UART baud rate");
     ESP_RETURN_ON_FALSE(config->primary_cid == LWLTE_AIR780EP_PRIMARY_CID,
@@ -282,40 +290,43 @@ static bool non_negative_int(int value)
     return value >= 0;
 }
 
-static esp_err_t enable_module_if_needed(const lwlte_air780ep_config_t *config)
+static uint32_t ready_timeout_ms(const lwlte_air780ep_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "config is NULL");
-    if (config->en_pin == GPIO_NUM_NC) {
-        return ESP_OK;
+    if (config && config->init_ready_timeout_ms > 0) {
+        return config->init_ready_timeout_ms;
     }
 
-    esp_err_t ret = gpio_reset_pin(config->en_pin);
-    ESP_RETURN_ON_ERROR(ret, TAG, "reset EN GPIO failed");
+    return LWLTE_AIR780EP_DEFAULT_READY_MS;
+}
 
-    ret = gpio_set_direction(config->en_pin, GPIO_MODE_OUTPUT);
-    ESP_RETURN_ON_ERROR(ret, TAG, "set EN GPIO direction failed");
+static esp_err_t remaining_timeout_ms(TickType_t start_tick,
+                                      uint32_t total_timeout_ms,
+                                      uint32_t *out_timeout_ms)
+{
+    ESP_RETURN_ON_FALSE(out_timeout_ms, ESP_ERR_INVALID_ARG, TAG,
+                        "out_timeout_ms is NULL");
 
-    ret = gpio_set_level(config->en_pin, 1);
-    ESP_RETURN_ON_ERROR(ret, TAG, "set EN GPIO high failed");
+    TickType_t total_ticks = pdMS_TO_TICKS(total_timeout_ms);
+    if (total_timeout_ms > 0 && total_ticks == 0) {
+        total_ticks = 1;
+    }
+    if ((uint64_t)total_ticks * portTICK_PERIOD_MS < total_timeout_ms) {
+        total_ticks++;
+    }
 
-    if (config->module_power_stable_ms > 0) {
-        delay_ms(config->module_power_stable_ms);
+    TickType_t elapsed_ticks = xTaskGetTickCount() - start_tick;
+    if (elapsed_ticks >= total_ticks) {
+        *out_timeout_ms = 0;
+        return ESP_ERR_TIMEOUT;
+    }
+
+    TickType_t remaining_ticks = total_ticks - elapsed_ticks;
+    *out_timeout_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+    if (*out_timeout_ms == 0) {
+        *out_timeout_ms = portTICK_PERIOD_MS ? portTICK_PERIOD_MS : 1;
     }
 
     return ESP_OK;
-}
-
-static void delay_ms(uint32_t delay_ms)
-{
-    if (delay_ms == 0) {
-        return;
-    }
-
-    TickType_t ticks = ((delay_ms - 1U) / portTICK_PERIOD_MS) + 1U;
-    if (ticks == 0) {
-        ticks = 1;
-    }
-    vTaskDelay(ticks);
 }
 
 static esp_err_t cleanup_after_failure(lwlte_t *me, esp_err_t original_err)

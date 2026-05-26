@@ -1,5 +1,7 @@
 # Air780EP 系统 AT 指令文档设计
 
+**后续修订**: 当前 Air780EP 初始化命令以后续实现和 `docs/agents/at_cmd_air780ep.md` 为准：不发送 `AT+CGEREP=1`，RDY 只作为 init/reset 等待信号，ready 事件在基础 AT 初始化命令成功后投递。
+
 ## 背景
 
 项目下一步要实现 `modem_air780ep_t`，该类负责把 Core 层的语义操作翻译为 Air780EP 模块的具体 AT 指令，并把系统级 URC 翻译为模块事件。

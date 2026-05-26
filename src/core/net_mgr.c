@@ -612,13 +612,15 @@ static esp_err_t run_activation_once(core_t *me,
 
     me->net_mgr.current_step = NET_STEP_SET_APN;
     me->net_mgr.step_start_time_ms = now_ms();
-    ret = modem_set_apn(me->modem, me->config.primary_cid, me->config.apn);
-    continue_ret = check_activation_continue(me, activation_start_ms);
-    if (continue_ret != ESP_OK) {
-        return continue_ret;
-    }
-    if (ret != ESP_OK) {
-        return ret;
+    if (me->config.apn[0] != '\0') {
+        ret = modem_set_apn(me->modem, me->config.primary_cid, me->config.apn);
+        continue_ret = check_activation_continue(me, activation_start_ms);
+        if (continue_ret != ESP_OK) {
+            return continue_ret;
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
     }
 
     me->net_mgr.current_step = NET_STEP_ACTIVATE_PDP;

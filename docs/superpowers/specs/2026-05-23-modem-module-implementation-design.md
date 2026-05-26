@@ -2,6 +2,8 @@
 
 日期：2026-05-23
 
+**后续修订**: Air780EP 初始化流程以后续设计 `docs/superpowers/specs/2026-05-25-air780ep-rdy-init-flow-design.md` 为准；RDY 仅释放 init/reset 等待，`MODEM_EVENT_READY` 在基础 AT 初始化命令成功后投递；不再使用 `AT+RESET` 或固定 boot wait 作为初始化 ready 判定。
+
 ## 背景
 
 本设计用于实现 esp-lwlte 的第二部分：Modem Adapter（模块适配层）。AT Engine 已提供 `at_engine_send_cmd()`、`at_engine_send_cmd_with_options()` 和 URC 注册能力，`docs/agents/classes.md` 已定义 Modem 层的类、值对象、事件模型和 Air780EP 子类边界。

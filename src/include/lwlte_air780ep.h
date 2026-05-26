@@ -35,9 +35,10 @@ extern "C" {
  * @brief Air780EP LTE 初始化配置
  * @details Air780EP LTE initialization configuration
  * @note uart_num、uart_tx_pin、uart_rx_pin、uart_baud_rate 和 primary_cid 为必填字段。
- * @note en_pin、pwrkey_pin、reset_pin 和 status_pin 可设为 GPIO_NUM_NC，以禁用门面对对应 GPIO 的控制。
+ * @note en_pin 可设为 GPIO_NUM_NC，以禁用门面对 EN GPIO 的控制。
  * @note 超时、任务和缓冲区字段为 0 时使用下层默认值；init_ready_timeout_ms 为 0 时使用门面默认值。
- * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串，除非 Core 或下层将其解释为运营商默认值。
+ * @note init_ready_timeout_ms 覆盖 Air780EP RDY 等待和 Core ready 等待的初始化总超时。
+ * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
  * @note UART 端口必须满足 UART_NUM_0 <= uart_num < UART_NUM_MAX；UART TX/RX 必须是有效 GPIO 且不能为 GPIO_NUM_NC。
  * @note uart_baud_rate 必须大于 0；Air780EP 门面当前仅支持 primary_cid 为 1。
  * @note 有符号的队列、任务和缓冲区字段允许 0 表示默认值，非 0 值必须大于 0。
@@ -48,14 +49,10 @@ typedef struct {
     gpio_num_t uart_rx_pin;               /**< 必填 UART RX GPIO，不能为 GPIO_NUM_NC； Required UART RX GPIO, not GPIO_NUM_NC */
     int uart_baud_rate;                   /**< 必填 UART 波特率，必须大于 0； Required UART baud rate, must be > 0 */
     gpio_num_t en_pin;                    /**< 可选模块 EN GPIO，GPIO_NUM_NC 表示不控制； Optional module EN GPIO, GPIO_NUM_NC disables control */
-    gpio_num_t pwrkey_pin;                /**< 可选 PWRKEY GPIO，GPIO_NUM_NC 表示不控制； Optional PWRKEY GPIO, GPIO_NUM_NC disables control */
-    gpio_num_t reset_pin;                 /**< 可选 RESET GPIO，GPIO_NUM_NC 表示不控制； Optional RESET GPIO, GPIO_NUM_NC disables control */
-    gpio_num_t status_pin;                /**< 可选 STATUS GPIO，GPIO_NUM_NC 表示不读取； Optional STATUS GPIO, GPIO_NUM_NC disables read */
     const char *apn;                      /**< 可选 APN，NULL/空表示门面不配置； Optional APN, NULL/empty means facade does not configure it */
     uint8_t primary_cid;                  /**< 必填主 PDP 上下文 ID，Air780EP 门面当前仅支持 1； Required primary PDP context ID, Air780EP facade currently supports 1 only */
     bool auto_connect;                    /**< ready 后是否自动提交联网请求，不等待网络上线； Whether to submit connect after ready, without waiting online */
-    uint32_t init_ready_timeout_ms;        /**< 初始化等待 ready 超时，0 使用门面默认值； Ready wait timeout during init, 0 uses facade default */
-    uint32_t module_power_stable_ms;       /**< EN 拉高后电源稳定等待，0 表示不额外等待； Power stable wait after EN high, 0 skips extra wait */
+    uint32_t init_ready_timeout_ms;        /**< 初始化 RDY+Core ready 总超时，0 使用门面默认值； Total init RDY+Core ready timeout, 0 uses facade default */
     uint32_t net_activate_timeout_ms;      /**< 网络激活总超时，0 使用 Core 默认值； Network activation timeout, 0 uses Core default */
     uint32_t reconnect_delay_ms;           /**< 重连延迟，0 使用 Core 默认值； Reconnect delay, 0 uses Core default */
     int at_rx_buf_size;                   /**< AT RX 缓冲大小，0 使用默认值； AT RX buffer size, 0 uses default */
@@ -64,9 +61,7 @@ typedef struct {
     int at_rx_line_buf_size;              /**< AT 单行缓冲大小，0 使用默认值； AT line buffer size, 0 uses default */
     int at_cmd_default_timeout_ms;         /**< AT 默认命令超时，0 使用默认值； AT default command timeout, 0 uses default */
     int at_max_response_lines;             /**< AT 最大响应行数，0 使用默认值； AT maximum response lines, 0 uses default */
-    uint32_t modem_power_on_pulse_ms;      /**< Modem 开机脉冲时长，0 表示不保持脉冲； Modem power-on pulse length, 0 keeps no pulse */
-    uint32_t modem_reset_pulse_ms;         /**< Modem 复位脉冲时长，0 表示不执行复位脉冲； Modem reset pulse length, 0 disables reset pulse */
-    uint32_t modem_boot_wait_ms;           /**< Modem 启动等待，0 表示不额外等待； Modem boot wait, 0 skips extra wait */
+    uint32_t modem_reset_pulse_ms;         /**< Modem 复位脉冲(EN 拉低保持)时长，0 表示不额外等待； Modem reset pulse (EN low hold) length, 0 skips extra wait */
     uint32_t modem_default_cmd_timeout_ms; /**< Modem 默认命令超时，0 使用默认值； Modem default command timeout, 0 uses default */
     int modem_event_queue_size;            /**< Modem 事件队列长度，0 使用默认值； Modem event queue size, 0 uses default */
     int modem_event_task_stack;            /**< Modem 事件任务栈大小，0 使用默认值； Modem event task stack, 0 uses default */

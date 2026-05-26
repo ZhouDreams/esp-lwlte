@@ -1,5 +1,7 @@
 # Basic Connect Example Design
 
+**后续修订**: Air780EP 用户侧示例已迁移到 LWLTE Facade；EN/RDY 初始化、空 APN 语义和 public config 字段以后续设计 `docs/superpowers/specs/2026-05-25-air780ep-rdy-init-flow-design.md` 为准。
+
 ## Goal
 
 Add a minimal ESP-IDF example that demonstrates the library's smallest useful path after the Core MVP:
@@ -42,45 +44,41 @@ The default configuration targets the user's current ESP32-C3 Pro DevKit and Air
 | UART port | `UART_NUM_1` |
 | ESP32-C3 TX to Air780EP RX | `GPIO0` |
 | ESP32-C3 RX from Air780EP TX | `GPIO1` |
-| Air780EP EN | `GPIO2`, held high |
+| Air780EP EN | `GPIO2`, controlled by Air780EP facade init |
 | UART baud rate | `115200` |
-| APN | empty string, meaning module/operator default in the Air780EP activation path |
+| APN | empty string; facade does not send an APN configuration command |
 
-The Air780EP `EN` pin is level-controlled: high means the module runs, low powers it down. The example must configure GPIO2 as output and keep it high before creating AT Engine/Modem/Core.
+The Air780EP `EN` pin is level-controlled: high means the module runs, low powers it down. Current example code does not manually hold EN high before creating low-level objects; it calls `lwlte_air780ep_init()`, which registers URCs, toggles EN low/high, waits for `RDY`, and then sends AT initialization commands.
 
-Do not pass GPIO2 as `modem_air780ep_config_t.pwrkey_pin`. The current Air780EP adapter treats `pwrkey_pin` as a pulse output and returns it low after the pulse, which would power down this hardware wiring. Use `GPIO_NUM_NC` for `pwrkey_pin`, `reset_pin`, and `status_pin` in the modem config unless a future adapter adds explicit EN support.
+Old low-level `pwrkey_pin` / `reset_pin` / `status_pin` guidance is superseded. Current app code only configures the public Air780EP facade `en_pin`.
 
 ## Behavior
 
-The example flow is:
+The current example flow is:
 
 1. Configure logging and print a startup banner with pin/baud/APN defaults.
-2. Drive Air780EP EN (`GPIO2`) high and wait briefly for hardware power stabilization.
-3. Create `at_engine_t` with UART1, GPIO0/GPIO1, baud 115200, and practical RX/command buffer defaults.
-4. Create `modem_t` via `modem_air780ep_create()` with pulse/control pins set to `GPIO_NUM_NC`.
-5. Call `modem_init()`.
-6. Create `lwlte_core_t` with `apn = ""`, `primary_cid = 1`, `auto_connect = false`, and default timeout/task values where zero is supported.
-7. Register a Core event callback that logs each event and updates simple volatile flags.
-8. Call `lwlte_core_start()`.
-9. Wait for `LWLTE_CORE_EVENT_READY` with a timeout.
-10. Call `lwlte_core_connect()`.
-11. Wait for `LWLTE_CORE_EVENT_NET_ONLINE` or `LWLTE_CORE_EVENT_NET_ERROR`.
-12. Keep the task alive and print Core/network state every 5 seconds.
+2. Call `lwlte_air780ep_init()` with UART, EN, CID, APN, reset pulse and timeout settings.
+3. The facade creates AT Engine, Air780EP Modem and Core internally.
+4. Air780EP Modem registers URCs, toggles EN, waits for `RDY`, sends AT initialization commands, then reports ready.
+5. Register an LTE facade event callback that logs events and updates simple volatile flags.
+6. Call `lwlte_connect()`.
+7. Wait for `LWLTE_EVENT_NET_ONLINE` or `LWLTE_EVENT_NET_ERROR`.
+8. Keep the task alive and print LTE/network state every 5 seconds.
 
-The example should not call lower-level blocking modem operations from its public Core control path except for construction and `modem_init()`. Runtime network control should go through Core APIs.
+The example should not call lower-level AT Engine, Modem or Core APIs directly. Runtime network control should go through LWLTE facade APIs.
 
 ## Event Logging
 
-The Core event callback should log at least:
+The LTE facade event callback should log at least:
 
-- `LWLTE_CORE_EVENT_STARTED`
-- `LWLTE_CORE_EVENT_READY`
-- `LWLTE_CORE_EVENT_NET_CONNECTING`
-- `LWLTE_CORE_EVENT_NET_ONLINE`
-- `LWLTE_CORE_EVENT_NET_OFFLINE`
-- `LWLTE_CORE_EVENT_NET_ERROR`
-- `LWLTE_CORE_EVENT_STOPPED`
-- `LWLTE_CORE_EVENT_ERROR`
+- `LWLTE_EVENT_STARTED`
+- `LWLTE_EVENT_READY`
+- `LWLTE_EVENT_NET_CONNECTING`
+- `LWLTE_EVENT_NET_ONLINE`
+- `LWLTE_EVENT_NET_OFFLINE`
+- `LWLTE_EVENT_NET_ERROR`
+- `LWLTE_EVENT_STOPPED`
+- `LWLTE_EVENT_ERROR`
 
 For network events with data, include `net_state` and `error_code` in the log.
 
@@ -90,7 +88,7 @@ Keep the example linear and explicit:
 
 - If a create/init/start/connect step fails, log the failing step and error name.
 - Cleanup in reverse order for resources that were successfully created.
-- If Core start/connect times out, log the current Core and network state.
+- If connect times out, log the current LTE and network state.
 - After a fatal setup failure, keep the task alive with periodic delay so serial logs remain readable.
 
 Because the example is intended for manual board validation, it should prefer clear logs over complex recovery logic.
@@ -111,9 +109,9 @@ The example README should include:
 
 - What the example demonstrates.
 - Hardware wiring table.
-- Note that Air780EP EN on GPIO2 is held high by the example.
+- Note that Air780EP EN on GPIO2 is controlled by the modem adapter during facade init.
 - Build/flash/monitor commands.
-- Expected serial log milestones: startup, Core ready, network connecting, network online or error.
+- Expected serial log milestones: startup, LTE network connecting, network online or error.
 - Troubleshooting notes for SIM/APN/signal/registration failures.
 
 ## Validation
