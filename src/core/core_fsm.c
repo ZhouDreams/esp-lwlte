@@ -81,8 +81,8 @@ static void finish_service_cmd(core_t *me, core_cmd_t *cmd,
                                core_cmd_result_t result,
                                const void *result_data);
 static void release_modem_protocol_payload(modem_event_t *event);
-static void release_fsm_signal_payload(core_fsm_sig_t *sig);
-static void drain_fsm_queue_payloads(core_t *me);
+static void release_fsm_signal_payload(core_t *me, core_fsm_sig_t *sig);
+static void drain_fsm_queue_payloads(core_t *me, QueueHandle_t queue);
 
 /**
  * @brief 处理 Modem 就绪状态
@@ -169,7 +169,7 @@ err:
         me->fsm.task_done_sema = NULL;
     }
     if (me->fsm.queue) {
-        drain_fsm_queue_payloads(me);
+        drain_fsm_queue_payloads(me, me->fsm.queue);
         vQueueDelete(me->fsm.queue);
         me->fsm.queue = NULL;
     }
@@ -230,9 +230,17 @@ void core_fsm_deinit(core_t *me)
     }
 
     if (me->fsm.queue) {
-        drain_fsm_queue_payloads(me);
-        vQueueDelete(me->fsm.queue);
-        me->fsm.queue = NULL;
+        QueueHandle_t queue = me->fsm.queue;
+        if (me->lock) {
+            xSemaphoreTake(me->lock, portMAX_DELAY);
+            queue = me->fsm.queue;
+            me->fsm.queue = NULL;
+            xSemaphoreGive(me->lock);
+        } else {
+            me->fsm.queue = NULL;
+        }
+        drain_fsm_queue_payloads(me, queue);
+        vQueueDelete(queue);
     }
     if (me->fsm.task_done_sema) {
         vSemaphoreDelete(me->fsm.task_done_sema);
@@ -244,10 +252,19 @@ void core_fsm_deinit(core_t *me)
 
 esp_err_t core_fsm_send(core_t *me, const core_fsm_sig_t *sig)
 {
-    ESP_RETURN_ON_FALSE(me && sig && me->fsm.queue, ESP_ERR_INVALID_ARG, TAG,
+    ESP_RETURN_ON_FALSE(me && sig && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
 
-    if (xQueueSend(me->fsm.queue, sig, 0) != pdTRUE) {
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->fsm.stop_requested || !me->fsm.running ||
+        !me->fsm.task || !me->fsm.queue) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    BaseType_t send_ret = xQueueSend(me->fsm.queue, sig, 0);
+    xSemaphoreGive(me->lock);
+
+    if (send_ret != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
 
@@ -274,13 +291,13 @@ static void fsm_task(void *arg)
             continue;
         }
         if (fsm_should_stop(me)) {
-            release_fsm_signal_payload(&sig);
+            release_fsm_signal_payload(me, &sig);
             break;
         }
         handle_signal(me, &sig);
     }
 
-    drain_fsm_queue_payloads(me);
+    drain_fsm_queue_payloads(me, me->fsm.queue);
 
     if (me && me->lock) {
         xSemaphoreTake(me->lock, portMAX_DELAY);
@@ -312,7 +329,7 @@ static void handle_signal(core_t *me, core_fsm_sig_t *sig)
         return;
     }
     if (core_is_destroying(me)) {
-        release_fsm_signal_payload(sig);
+        release_fsm_signal_payload(me, sig);
         return;
     }
 
@@ -612,7 +629,7 @@ static void release_modem_protocol_payload(modem_event_t *event)
     event->data.protocol_data.payload_len = 0;
 }
 
-static void release_fsm_signal_payload(core_fsm_sig_t *sig)
+static void release_fsm_signal_payload(core_t *me, core_fsm_sig_t *sig)
 {
     if (!sig) {
         return;
@@ -623,7 +640,7 @@ static void release_fsm_signal_payload(core_fsm_sig_t *sig)
         release_modem_protocol_payload(&sig->modem_event);
         break;
     case CORE_SIG_SERVICE_CMD:
-        core_free_cmd(sig->service_cmd);
+        finish_service_cmd(me, sig->service_cmd, CORE_CMD_RESULT_ERROR, NULL);
         sig->service_cmd = NULL;
         break;
     default:
@@ -631,14 +648,14 @@ static void release_fsm_signal_payload(core_fsm_sig_t *sig)
     }
 }
 
-static void drain_fsm_queue_payloads(core_t *me)
+static void drain_fsm_queue_payloads(core_t *me, QueueHandle_t queue)
 {
-    if (!me || !me->fsm.queue) {
+    if (!me || !queue) {
         return;
     }
 
     core_fsm_sig_t sig = {0};
-    while (xQueueReceive(me->fsm.queue, &sig, 0) == pdTRUE) {
-        release_fsm_signal_payload(&sig);
+    while (xQueueReceive(queue, &sig, 0) == pdTRUE) {
+        release_fsm_signal_payload(me, &sig);
     }
 }

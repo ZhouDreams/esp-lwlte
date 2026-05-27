@@ -114,7 +114,9 @@ typedef enum {
 
 /**
  * @brief Core 协议数据
- * @details Core protocol data
+ * @details Core protocol data. For CORE_EVENT_PROTOCOL_DATA, topic/payload are
+ * heap-owned by the protocol event consumer. The MQTT service must copy data it
+ * needs and call core_release_event_payload() before its event callback returns.
  */
 typedef struct {
     core_protocol_t protocol;            /**< 协议类型； Protocol type */
@@ -361,6 +363,13 @@ esp_err_t core_disconnect(core_t *me);
  *         - ESP_ERR_TIMEOUT: FSM 队列已满
  */
 esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
+
+/**
+ * @brief 释放 Core 协议事件负载
+ * @details Release heap-owned payload carried by CORE_EVENT_PROTOCOL_DATA.
+ * @param[in,out] event_data Core 事件数据
+ */
+void core_release_event_payload(core_event_data_t *event_data);
 
 /**********************
  *      MACROS

@@ -550,6 +550,11 @@ void core_free_cmd(core_cmd_t *cmd)
     free_core_cmd(cmd);
 }
 
+void core_release_event_payload(core_event_data_t *event_data)
+{
+    release_core_event_payload(event_data);
+}
+
 esp_err_t core_post_protocol_data(core_t *me,
                                   const core_protocol_data_t *protocol_data)
 {
@@ -560,9 +565,9 @@ esp_err_t core_post_protocol_data(core_t *me,
     esp_err_t ret = clone_protocol_data(&event_data, protocol_data);
     ESP_RETURN_ON_ERROR(ret, TAG, "clone protocol data failed");
 
-    /* MQTT service must copy topic/payload during the event callback. The
-     * current Core implementation keeps protocol payload heap-owned until the
-     * MQTT handler returns through core_event_adapter(), then releases it. */
+    /* MQTT service must copy topic/payload during the event callback and call
+     * core_release_event_payload() before returning. Core cannot free this in
+     * core_event_adapter() because ESP event data is shared across handlers. */
     ret = core_post_event(me, CORE_EVENT_PROTOCOL_DATA, &event_data);
     if (ret != ESP_OK) {
         release_core_event_payload(&event_data);
@@ -777,6 +782,10 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
     if (event_id < CORE_EVENT_STARTED || event_id > CORE_EVENT_PROTOCOL_CLOSED) {
         return;
     }
+    if (event_id == CORE_EVENT_PROTOCOL_DATA ||
+        event_id == CORE_EVENT_PROTOCOL_CLOSED) {
+        return;
+    }
 
     core_event_callback_t callback = NULL;
     void *user_ctx = NULL;
@@ -784,7 +793,6 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->destroying || me->state == CORE_STATE_DESTROYING) {
         xSemaphoreGive(me->lock);
-        release_core_event_payload((core_event_data_t *)event_data);
         return;
     }
     callback = me->event_callback;
@@ -815,7 +823,6 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
         }
     }
 
-    release_core_event_payload((core_event_data_t *)event_data);
 }
 
 static esp_err_t wait_event_callbacks_idle(core_t *me)

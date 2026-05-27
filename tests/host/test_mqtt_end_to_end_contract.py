@@ -204,6 +204,53 @@ class MqttEndToEndContractTest(unittest.TestCase):
         ]:
             self.assertIn(token, self.core_c)
 
+        self.assertIn("core_release_event_payload(core_event_data_t *event_data);", self.core_h)
+
+        adapter_start = self.core_c.rindex("static void core_event_adapter")
+        adapter_body = self.core_c[
+            adapter_start:
+            self.core_c.index("static esp_err_t wait_event_callbacks_idle", adapter_start)
+        ]
+        self.assertIn("event_id == CORE_EVENT_PROTOCOL_DATA", adapter_body)
+        self.assertNotIn("release_core_event_payload", adapter_body)
+
+        fsm_send_body = self.core_fsm_c[
+            self.core_fsm_c.index("esp_err_t core_fsm_send"):
+            self.core_fsm_c.index("bool core_fsm_is_task")
+        ]
+        for token in [
+            "xSemaphoreTake(me->lock",
+            "me->fsm.stop_requested",
+            "!me->fsm.task",
+            "!me->fsm.queue",
+            "xQueueSend(me->fsm.queue, sig, 0)",
+        ]:
+            self.assertIn(token, fsm_send_body)
+        self.assertLess(
+            fsm_send_body.index("me->fsm.stop_requested"),
+            fsm_send_body.index("xQueueSend(me->fsm.queue, sig, 0)"),
+        )
+
+        fsm_deinit_body = self.core_fsm_c[
+            self.core_fsm_c.index("void core_fsm_deinit"):
+            self.core_fsm_c.index("esp_err_t core_fsm_send")
+        ]
+        for token in [
+            "QueueHandle_t queue = me->fsm.queue;",
+            "drain_fsm_queue_payloads(me, queue);",
+            "me->fsm.queue = NULL;",
+            "vQueueDelete(queue);",
+        ]:
+            self.assertIn(token, fsm_deinit_body)
+        self.assertLess(
+            fsm_deinit_body.index("xSemaphoreGive(me->lock);"),
+            fsm_deinit_body.index("drain_fsm_queue_payloads(me, queue);"),
+        )
+        self.assertLess(
+            fsm_deinit_body.index("drain_fsm_queue_payloads(me, queue);"),
+            fsm_deinit_body.index("vQueueDelete(queue);"),
+        )
+
         for token in [
             "CORE_SIG_SERVICE_CMD",
             "handle_service_cmd(me, sig->service_cmd);",
@@ -215,9 +262,15 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "MODEM_EVENT_PROTOCOL_DATA",
             "MODEM_EVENT_PROTOCOL_CLOSED",
             "release_modem_protocol_payload(&sig->modem_event);",
-            "core_free_cmd(sig->service_cmd);",
+            "finish_service_cmd(me, sig->service_cmd, CORE_CMD_RESULT_ERROR, NULL);",
         ]:
             self.assertIn(token, self.core_fsm_c)
+
+        release_body = self.core_fsm_c[
+            self.core_fsm_c.index("static void release_fsm_signal_payload"):
+            self.core_fsm_c.index("static void drain_fsm_queue_payloads")
+        ]
+        self.assertNotIn("core_free_cmd(sig->service_cmd);", release_body)
 
     def test_modem_mqtt_ops_and_air780ep_commands_exist(self):
         for token in [

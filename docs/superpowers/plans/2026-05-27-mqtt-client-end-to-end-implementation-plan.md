@@ -936,7 +936,7 @@ case MODEM_EVENT_PROTOCOL_CLOSED:
     break;
 ```
 
-Implement `core_post_protocol_data()` in `core.c` by allocating topic/payload copies into a `core_event_data_t`, posting `CORE_EVENT_PROTOCOL_DATA`, and releasing the copies if `esp_event_post_to()` fails. Document in a code comment that MQTT service must copy during the event callback and that the current implementation keeps protocol payload heap-owned until the MQTT handler releases it.
+Implement `core_post_protocol_data()` in `core.c` by allocating topic/payload copies into a `core_event_data_t`, posting `CORE_EVENT_PROTOCOL_DATA`, and releasing the copies if `esp_event_post_to()` fails. Add `core_release_event_payload()` so the MQTT service can release successful protocol event payloads after copying during its ESP event callback. Document in a code comment that Core cannot release this payload in `core_event_adapter()` because ESP event data is shared across handlers.
 
 - [ ] **Step 9: Run the Core command queue regression and verify it passes**
 

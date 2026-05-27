@@ -1015,7 +1015,7 @@ typedef void (*core_event_callback_t)(core_t *core,
 
 **边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Facade 负责把这些层间状态翻译为 `lwlte_state_t`、`lwlte_net_state_t` 和用户事件。协议事件追加在 `CORE_EVENT_ERROR` 之后以保持既有事件枚举 ABI：`CORE_EVENT_STOPPED == 6`、`CORE_EVENT_ERROR == 7`。
 
-`core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 Core event callback 执行期间有效；MQTT Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据。
+`core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 Core event callback 执行期间有效；MQTT Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据，并在回调返回前调用 `core_release_event_payload()` 释放 Core 为 `CORE_EVENT_PROTOCOL_DATA` 分配的堆内存。Core 自带的 `core_event_adapter` 不消费协议事件，避免在其他 ESP event handler 前释放共享事件数据。
 
 ### 3.5 Core command queue 类型
 
@@ -1096,6 +1096,7 @@ typedef struct {
 - `core_submit_cmd()` 复制异步执行所需的字符串和 payload；调用方传入的指针只需在调用期间有效。
 - `core_submit_cmd()` 深拷贝 `core_cmd_t` 到 Core-owned heap object，然后发送 `CORE_SIG_SERVICE_CMD` 到 `core_fsm_t.queue`。
 - Core FSM 成功入队后拥有复制出的 command，执行 command 并调用 `done_cb` 后释放它。
+- Core FSM 停止或销毁时若丢弃已入队 command，必须以 `CORE_CMD_RESULT_ERROR` 调用 `done_cb` 后释放它。
 - 如果 enqueue 失败，`core_submit_cmd()` 在返回 `ESP_FAIL` 前释放复制出的 command。
 - Core FSM 是 command 的唯一执行位置，执行 command 时可以调用 `modem_*` API。
 - `done_cb` 必须短小非阻塞；MQTT 的 `done_cb` 只投递 `MQTT_SIG_CORE_CMD_DONE` 到 MQTT FSM 队列，不直接修改 MQTT 状态。
