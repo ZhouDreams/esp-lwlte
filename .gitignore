@@ -6,6 +6,8 @@
 
 # Build files
 build/
+sdkconfig.old
+dependencies.lock
 
 # Worktrees
 .worktrees/
