@@ -847,7 +847,10 @@ static void handle_runtime_operation(mqtt_client_t *me, mqtt_fsm_sig_t *sig,
                                      mqtt_client_operation_t operation)
 {
     if (me->pending_cmd.active) {
-        post_error_event(me, ESP_ERR_INVALID_STATE, operation);
+        mqtt_fsm_sig_t requeue = *sig;
+        sig->data = NULL;
+        sig->data_size = 0;
+        (void)send_fsm_sig(me, &requeue);
         return;
     }
     if (!state_is(me, MQTT_CLIENT_STATE_CONNECTED)) {

@@ -649,6 +649,12 @@ void lwlte_handle_mqtt_event(mqtt_client_t *mqtt,
         lwlte_data.error_code = 0;
     }
 
+    if (me->core) {
+        core_net_state_t core_net = CORE_NET_STATE_OFFLINE;
+        (void)core_get_net_state(me->core, &core_net);
+        lwlte_data.net_state = map_core_net_state(core_net);
+    }
+
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->destroying) {
         xSemaphoreGive(me->lock);

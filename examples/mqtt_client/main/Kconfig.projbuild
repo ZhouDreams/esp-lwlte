@@ -1,0 +1,25 @@
+menu "Example MQTT Settings"
+
+config EXAMPLE_MQTT_HOST
+    string "MQTT broker host"
+    default "admin.jovisdreams.site"
+
+config EXAMPLE_MQTT_PORT
+    int "MQTT broker port"
+    range 1 65535
+    default 1883
+
+config EXAMPLE_MQTT_CLIENT_ID
+    string "MQTT client ID"
+    default "esp-lwlte-mqtt-example"
+
+config EXAMPLE_MQTT_TOKEN
+    string "ThingsBoard device access token (used as MQTT username)"
+    default ""
+
+config EXAMPLE_MQTT_KEEPALIVE_S
+    int "MQTT keepalive seconds"
+    range 10 1200
+    default 120
+
+endmenu
