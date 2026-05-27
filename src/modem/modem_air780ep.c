@@ -184,6 +184,19 @@ static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal);
 static esp_err_t air780ep_get_registration(modem_t *me, modem_reg_status_t *status);
 
 /**
+ * @brief 获取 Air780EP 分组域附着状态
+ * @details Get Air780EP packet domain attach status
+ * @param[in] me 调制解调器句柄
+ * @param[out] attached 是否已附着
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
+static esp_err_t air780ep_get_packet_attach_status(modem_t *me, bool *attached);
+
+/**
  * @brief 设置 Air780EP APN
  * @details Set Air780EP APN
  * @param[in] me 调制解调器句柄
@@ -738,6 +751,7 @@ static const modem_ops_t s_air780ep_ops = {
     .get_sim_status = air780ep_get_sim_status,
     .get_signal = air780ep_get_signal,
     .get_registration = air780ep_get_registration,
+    .get_packet_attach_status = air780ep_get_packet_attach_status,
     .set_apn = air780ep_set_apn,
     .activate_pdp = air780ep_activate_pdp,
     .deactivate_pdp = air780ep_deactivate_pdp,
@@ -2325,6 +2339,14 @@ static esp_err_t air780ep_get_registration(modem_t *me, modem_reg_status_t *stat
     }
 
     return last_err;
+}
+
+static esp_err_t air780ep_get_packet_attach_status(modem_t *me, bool *attached)
+{
+    ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    return query_cgatt(self, attached);
 }
 
 static esp_err_t air780ep_set_apn(modem_t *me, uint8_t cid, const char *apn)

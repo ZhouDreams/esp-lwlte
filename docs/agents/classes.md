@@ -378,6 +378,7 @@ esp_err_t modem_get_info(modem_t *me, modem_info_t *info);
 esp_err_t modem_get_sim_status(modem_t *me, modem_sim_status_t *status);
 esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
 esp_err_t modem_get_registration(modem_t *me, modem_reg_status_t *status);
+esp_err_t modem_get_packet_attach_status(modem_t *me, bool *attached);
 
 esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn);
 esp_err_t modem_activate_pdp(modem_t *me, uint8_t cid);
@@ -416,6 +417,7 @@ typedef struct modem_ops {
     esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);
     esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
     esp_err_t (*get_registration)(modem_t *me, modem_reg_status_t *status);
+    esp_err_t (*get_packet_attach_status)(modem_t *me, bool *attached);
     esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
     esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
     esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);
@@ -454,8 +456,9 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
 | `get_sim_status` | 查询 SIM/PIN 可用性 | `AT+CPIN?` |
 | `get_signal` | 查询当前基础信号质量 | `AT+CSQ`；`AT+CESQ` 只作为后续 LTE 扩展指标来源 |
 | `get_registration` | 查询蜂窝网络注册状态 | Air780EP 优先 `AT+CEREG?`，必要时用 `AT+CGREG?` 补充分组域状态，用 `AT+CREG?` 作为通用注册状态兜底 |
+| `get_packet_attach_status` | 查询分组域附着状态 | `AT+CGATT?`，要求 `+CGATT: 1` 后才能进入 PDP/TCPIP 激活阶段 |
 | `set_apn` | 配置 PDP context 的 APN | `AT+CGDCONT=<cid>,"IP","<apn>"`；APN 用户名/密码后续再通过单独能力扩展，不塞进当前 API |
-| `activate_pdp` | 确认 SIM/注册/附着后激活数据面并获得 IP | 先检查 `AT+CPIN?`、`AT+CEREG?`/`AT+CGREG?`、`AT+CGATT?`；Air780EP TCPIP 路径使用 `AT+CSTT`、`AT+CIICR`、`AT+CIFSR` |
+| `activate_pdp` | 注册和附着已就绪后激活数据面并获得 IP | Air780EP TCPIP 路径使用 `AT+CSTT`、`AT+CIICR`、`AT+CIFSR`；Core 先通过 `get_sim_status`、`get_registration`、`get_packet_attach_status` 等阶段确认前置条件 |
 | `deactivate_pdp` | 关闭数据面并清理 Air780EP TCPIP 场景 | 优先 `AT+CIPSHUT`；标准 PDP 路径需要时可使用 `AT+CGACT=0,<cid>` |
 | `get_pdp_context` | 返回 APN、激活状态和 IP 地址快照 | 组合缓存值、`AT+CGDCONT?`、`AT+CGACT?`、`AT+CGPADDR=<cid>`；TCPIP 路径下也可使用最近一次 `AT+CIFSR` 结果 |
 
@@ -942,9 +945,11 @@ typedef enum {
     NET_STEP_IDLE = 0,
     NET_STEP_CHECK_SIM,
     NET_STEP_CHECK_SIGNAL,
-    NET_STEP_CHECK_REGISTRATION,
+    NET_STEP_WAIT_REGISTRATION,
+    NET_STEP_WAIT_PACKET_ATTACH,
     NET_STEP_SET_APN,
     NET_STEP_ACTIVATE_PDP,
+    NET_STEP_QUERY_IP,
     NET_STEP_DONE,
     NET_STEP_ERROR,
 } net_mgr_step_t;
@@ -956,6 +961,8 @@ typedef struct {
     int               retry_count;
     int               max_retry;
     TimerHandle_t     reconnect_timer;
+    SemaphoreHandle_t reconnect_cb_done_sema;
+    int               reconnect_cb_active;
     core_net_state_t  state;
     bool              reconnect_enabled;
 } net_mgr_t;
@@ -965,14 +972,16 @@ typedef struct {
 
 | 步骤 | 操作 | Modem API |
 |------|------|-----------|
-| `CHECK_SIM` | 查询 SIM 状态 | `modem_get_sim_status()` |
-| `CHECK_SIGNAL` | 查询信号质量 | `modem_get_signal()` |
-| `CHECK_REGISTRATION` | 查询网络注册 | `modem_get_registration()` |
-| `SET_APN` | APN 非空时配置 APN；APN 为空时跳过 | `modem_set_apn()`（仅非空 APN） |
-| `ACTIVATE_PDP` | 激活 PDP | `modem_activate_pdp()` |
-| `DONE` | 网络上线 | 发布 `CORE_EVENT_NET_ONLINE` |
+| `NET_STEP_CHECK_SIM` | 查询 SIM 状态；未 ready 时按轮询间隔继续等待，PIN/PUK/缺卡等终止状态直接失败 | `modem_get_sim_status()` |
+| `NET_STEP_CHECK_SIGNAL` | 查询信号质量，成功后进入注册等待阶段 | `modem_get_signal()` |
+| `NET_STEP_WAIT_REGISTRATION` | 轮询网络注册状态；home/roaming 后继续，denied 为终止失败，其他状态继续等待 | `modem_get_registration()` |
+| `NET_STEP_WAIT_PACKET_ATTACH` | 轮询分组域附着状态；附着完成后才进入 APN/PDP 激活阶段 | `modem_get_packet_attach_status()` |
+| `NET_STEP_SET_APN` | APN 非空时配置 APN；APN 为空时跳过 | `modem_set_apn()`（仅非空 APN） |
+| `NET_STEP_ACTIVATE_PDP` | 激活 PDP；若模块返回前置状态错误，重新查询 SIM/注册/附着并回到对应等待阶段 | `modem_activate_pdp()` |
+| `NET_STEP_QUERY_IP` | 查询 PDP context，要求 active 且 IP 非空后才完成上线 | `modem_get_pdp_context()` |
+| `NET_STEP_DONE` | 网络上线 | 发布 `CORE_EVENT_NET_ONLINE` |
 
-每个步骤由 `CORE_SIG_NET_STEP_DONE` 驱动推进。FSM 处理函数调用对应的 `modem_*` API（阻塞），完成后向自己队列发送 `CORE_SIG_NET_STEP_DONE`。步骤超时发 `CORE_SIG_NET_STEP_TIMEOUT`，重试计数超过 `max_retry` 后进入 `NET_STEP_ERROR`，Core 发布 `CORE_EVENT_NET_ERROR`。
+网络激活由 `net_mgr_start_activation()` 在一次 FSM 信号处理中运行 staged polling loop。进入激活时只发布一次 `CORE_EVENT_NET_CONNECTING`，随后按 SIM、信号、注册、分组域附着、APN、PDP 激活、IP 查询顺序同步调用 `modem_*` API；前置条件未满足时返回 `ESP_ERR_NOT_FINISHED`，`run_activation_loop()` 按 `NET_MGR_WAIT_POLL_INTERVAL_MS` 等待后继续轮询。只有 PDP active 且获得有效 IP 后才发布 `CORE_EVENT_NET_ONLINE`；终止错误、注册拒绝、SIM 致命状态或整体 `net_activate_timeout_ms` 超时才进入 `NET_STEP_ERROR` 并发布 `CORE_EVENT_NET_ERROR`。销毁期间激活流程直接中止并返回，不发布网络错误事件。
 
 **重连逻辑**：
 - 收到 `MODEM_EVENT_PDP_DEACTIVATED` → `net_state = OFFLINE` → 发布 `CORE_EVENT_NET_OFFLINE` → 启动 `reconnect_timer`（固定 `reconnect_delay_ms`）。

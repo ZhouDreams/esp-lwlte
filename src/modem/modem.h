@@ -278,6 +278,20 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
 esp_err_t modem_get_registration(modem_t *me, modem_reg_status_t *status);
 
 /**
+ * @brief 获取分组域附着状态
+ * @details Get packet domain attach status
+ * @param[in] me 调制解调器句柄
+ * @param[out] attached 是否已附着
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_FAIL: 查询失败
+ */
+esp_err_t modem_get_packet_attach_status(modem_t *me, bool *attached);
+
+/**
  * @brief 设置 APN
  * @details Set APN
  * @param[in] me 调制解调器句柄

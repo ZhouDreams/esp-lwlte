@@ -19,6 +19,7 @@
  *      DEFINES
  *********************/
 #define TAG "net_mgr"
+#define NET_MGR_WAIT_POLL_INTERVAL_MS 1000
 
 /**********************
  *      TYPEDEFS
@@ -61,17 +62,86 @@ static esp_err_t wait_timer_service_idle(void);
 static uint32_t now_ms(void);
 
 /**
- * @brief 执行一次网络激活流程
- * @details Run one network activation attempt
+ * @brief 进入网络激活流程
+ * @details Enter network activation flow
+ * @param[in] me LTE 核心服务句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - other: 状态设置或事件发布失败
+ */
+static esp_err_t enter_activation(core_t *me);
+
+/**
+ * @brief 执行网络激活阶段循环
+ * @details Run network activation stage loop
  * @param[in] me LTE 核心服务句柄
  * @param[in] activation_start_ms 激活开始时间
  * @return
  *         - ESP_OK: 成功
- *         - ESP_ERR_INVALID_STATE: SIM 或网络注册状态未就绪
- *         - other: 调制解调器操作错误
+ *         - ESP_ERR_TIMEOUT: 激活超时
+ *         - other: 激活失败
  */
-static esp_err_t run_activation_once(core_t *me,
+static esp_err_t run_activation_loop(core_t *me,
                                      uint32_t activation_start_ms);
+
+/**
+ * @brief 执行当前网络激活阶段
+ * @details Run current network activation stage
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] activation_start_ms 激活开始时间
+ * @return
+ *         - ESP_OK: 当前阶段完成
+ *         - ESP_ERR_NOT_FINISHED: 当前阶段仍需等待
+ *         - other: 当前阶段失败
+ */
+static esp_err_t run_activation_step(core_t *me,
+                                     uint32_t activation_start_ms);
+
+/**
+ * @brief 设置网络激活阶段
+ * @details Set network activation stage
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] step 网络激活阶段
+ */
+static void set_activation_step(core_t *me, net_mgr_step_t step);
+
+/**
+ * @brief 等待下一次网络激活轮询
+ * @details Wait for next network activation poll
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] activation_start_ms 激活开始时间
+ * @return
+ *         - ESP_OK: 可以继续
+ *         - ESP_ERR_INVALID_STATE: Core 正在销毁
+ *         - ESP_ERR_TIMEOUT: 网络激活已超时
+ */
+static esp_err_t wait_next_poll(core_t *me, uint32_t activation_start_ms);
+
+/**
+ * @brief 完成网络激活
+ * @details Complete network activation
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] pdp PDP 上下文
+ * @return
+ *         - ESP_OK: 成功
+ *         - other: 状态设置或事件发布失败
+ */
+static esp_err_t complete_activation(core_t *me,
+                                     const modem_pdp_context_t *pdp);
+
+/**
+ * @brief 重新分类 PDP 激活状态错误
+ * @details Reclassify PDP activation invalid state
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] activation_start_ms 激活开始时间
+ * @return
+ *         - ESP_ERR_NOT_FINISHED: 前置条件需继续等待
+ *         - ESP_ERR_INVALID_STATE: 前置条件终止失败或原始状态错误
+ *         - ESP_ERR_TIMEOUT: 网络激活已超时
+ *         - other: 前置条件查询失败
+ */
+static esp_err_t classify_pdp_activation_invalid_state(core_t *me,
+                                                       uint32_t activation_start_ms);
 
 /**
  * @brief 判断网络激活是否超时
@@ -115,6 +185,26 @@ static esp_err_t fail_activation(core_t *me, esp_err_t err);
  *         - false: 未注册
  */
 static bool registration_ready(modem_reg_status_t status);
+
+/**
+ * @brief 判断 SIM 状态是否为终止错误
+ * @details Check whether SIM status is terminal failure
+ * @param[in] status SIM 状态
+ * @return
+ *         - true: 终止错误
+ *         - false: 可等待或已就绪
+ */
+static bool sim_status_fatal(modem_sim_status_t status);
+
+/**
+ * @brief 判断网络注册状态是否被拒绝
+ * @details Check whether network registration is denied
+ * @param[in] status 网络注册状态
+ * @return
+ *         - true: 注册被拒绝
+ *         - false: 未被拒绝
+ */
+static bool registration_denied(modem_reg_status_t status);
 
 /**
  * @brief 判断 PDP 上下文是否为主上下文
@@ -305,41 +395,19 @@ esp_err_t net_mgr_start_activation(core_t *me)
     net_mgr_cancel_reconnect(me);
     me->net_mgr.reconnect_enabled = true;
     me->net_mgr.retry_count = 0;
-    uint32_t activation_start_ms = now_ms();
 
-    esp_err_t ret = ESP_FAIL;
-    while (me->net_mgr.retry_count < me->net_mgr.max_retry) {
-        esp_err_t continue_ret = check_activation_continue(me, activation_start_ms);
-        if (continue_ret == ESP_ERR_INVALID_STATE) {
-            return continue_ret;
-        }
-        if (continue_ret == ESP_ERR_TIMEOUT) {
-            return fail_activation(me, ESP_ERR_TIMEOUT);
-        }
+    const uint32_t activation_start_ms = now_ms();
+    esp_err_t ret = enter_activation(me);
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
-        me->net_mgr.step_start_time_ms = now_ms();
-        ret = run_activation_once(me, activation_start_ms);
-        if (ret == ESP_OK) {
-            return ESP_OK;
-        }
-        if (ret == ESP_ERR_INVALID_STATE && core_is_destroying(me)) {
-            return ESP_ERR_INVALID_STATE;
-        }
-        if (ret == ESP_ERR_TIMEOUT) {
-            return fail_activation(me, ESP_ERR_TIMEOUT);
-        }
-
-        continue_ret = check_activation_continue(me, activation_start_ms);
-        if (continue_ret == ESP_ERR_INVALID_STATE) {
-            return continue_ret;
-        }
-        if (continue_ret == ESP_ERR_TIMEOUT) {
-            return fail_activation(me, ESP_ERR_TIMEOUT);
-        }
-
-        me->net_mgr.retry_count++;
-        ESP_LOGW(TAG, "activation attempt %d failed: %s",
-                 me->net_mgr.retry_count, esp_err_to_name(ret));
+    ret = run_activation_loop(me, activation_start_ms);
+    if (ret == ESP_OK) {
+        return ESP_OK;
+    }
+    if (ret == ESP_ERR_INVALID_STATE && core_is_destroying(me)) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     return fail_activation(me, ret);
@@ -390,23 +458,18 @@ esp_err_t net_mgr_handle_pdp_activated(core_t *me,
     esp_err_t ret = net_mgr_get_state(me, &old_state);
     ESP_RETURN_ON_ERROR(ret, TAG, "get net state failed");
 
+    pdp_mgr_update(&me->pdp_mgr, pdp);
     if (old_state == CORE_NET_STATE_ONLINE) {
-        pdp_mgr_update(&me->pdp_mgr, pdp);
+        return ESP_OK;
+    }
+    if (old_state != CORE_NET_STATE_ACTIVATING) {
+        return ESP_OK;
+    }
+    if (!pdp->active || pdp->ip_addr[0] == '\0') {
         return ESP_OK;
     }
 
-    ret = net_mgr_set_state(me, CORE_NET_STATE_ONLINE);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    ret = core_set_state(me, CORE_STATE_ONLINE);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    pdp_mgr_update(&me->pdp_mgr, pdp);
-    post_net_state(me, CORE_EVENT_NET_ONLINE, CORE_NET_STATE_ONLINE, 0);
-
-    return ESP_OK;
+    return complete_activation(me, pdp);
 }
 
 esp_err_t net_mgr_handle_pdp_deactivated(core_t *me,
@@ -551,53 +614,271 @@ static void reconnect_timer_cb(TimerHandle_t timer)
     }
 }
 
-static esp_err_t run_activation_once(core_t *me,
-                                     uint32_t activation_start_ms)
+static esp_err_t enter_activation(core_t *me)
 {
-    modem_sim_status_t sim_status = MODEM_SIM_UNKNOWN;
-    modem_signal_t signal = {0};
-    modem_reg_status_t reg_status = MODEM_REG_UNKNOWN;
-    modem_pdp_context_t pdp = {0};
-    esp_err_t ret = ESP_OK;
-
-    me->net_mgr.current_step = NET_STEP_CHECK_SIM;
-    me->net_mgr.step_start_time_ms = now_ms();
-    ret = core_set_state(me, CORE_STATE_NET_ACTIVATING);
+    esp_err_t ret = core_set_state(me, CORE_STATE_NET_ACTIVATING);
     if (ret != ESP_OK) {
         return ret;
     }
+
     ret = net_mgr_set_state(me, CORE_NET_STATE_ACTIVATING);
     if (ret != ESP_OK) {
         return ret;
     }
+
+    set_activation_step(me, NET_STEP_CHECK_SIM);
     post_net_state(me, CORE_EVENT_NET_CONNECTING,
                    CORE_NET_STATE_ACTIVATING, 0);
 
-    ret = modem_get_sim_status(me->modem, &sim_status);
+    return ESP_OK;
+}
+
+static esp_err_t run_activation_loop(core_t *me,
+                                     uint32_t activation_start_ms)
+{
+    while (true) {
+        esp_err_t ret = check_activation_continue(me, activation_start_ms);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+
+        ret = run_activation_step(me, activation_start_ms);
+        if (ret == ESP_OK) {
+            if (me->net_mgr.current_step == NET_STEP_DONE) {
+                return ESP_OK;
+            }
+            continue;
+        }
+        if (ret == ESP_ERR_NOT_FINISHED) {
+            ret = wait_next_poll(me, activation_start_ms);
+            if (ret != ESP_OK) {
+                return ret;
+            }
+            continue;
+        }
+
+        return ret;
+    }
+}
+
+static esp_err_t run_activation_step(core_t *me,
+                                     uint32_t activation_start_ms)
+{
+    esp_err_t ret = ESP_OK;
+    esp_err_t continue_ret = ESP_OK;
+    switch (me->net_mgr.current_step) {
+    case NET_STEP_CHECK_SIM: {
+        modem_sim_status_t sim_status = MODEM_SIM_UNKNOWN;
+        ret = modem_get_sim_status(me->modem, &sim_status);
+        continue_ret = check_activation_continue(me, activation_start_ms);
+        if (continue_ret != ESP_OK) {
+            return continue_ret;
+        }
+        if (ret == ESP_ERR_TIMEOUT) {
+            return ESP_ERR_NOT_FINISHED;
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        if (sim_status == MODEM_SIM_READY) {
+            set_activation_step(me, NET_STEP_CHECK_SIGNAL);
+            return ESP_OK;
+        }
+        if (sim_status_fatal(sim_status)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    case NET_STEP_CHECK_SIGNAL: {
+        modem_signal_t signal = {0};
+        ret = modem_get_signal(me->modem, &signal);
+        continue_ret = check_activation_continue(me, activation_start_ms);
+        if (continue_ret != ESP_OK) {
+            return continue_ret;
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        set_activation_step(me, NET_STEP_WAIT_REGISTRATION);
+        return ESP_OK;
+    }
+
+    case NET_STEP_WAIT_REGISTRATION: {
+        modem_reg_status_t reg_status = MODEM_REG_UNKNOWN;
+        ret = modem_get_registration(me->modem, &reg_status);
+        continue_ret = check_activation_continue(me, activation_start_ms);
+        if (continue_ret != ESP_OK) {
+            return continue_ret;
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        if (registration_ready(reg_status)) {
+            set_activation_step(me, NET_STEP_WAIT_PACKET_ATTACH);
+            return ESP_OK;
+        }
+        if (registration_denied(reg_status)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    case NET_STEP_WAIT_PACKET_ATTACH: {
+        bool attached = false;
+        ret = modem_get_packet_attach_status(me->modem, &attached);
+        continue_ret = check_activation_continue(me, activation_start_ms);
+        if (continue_ret != ESP_OK) {
+            return continue_ret;
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        if (attached) {
+            set_activation_step(me, NET_STEP_SET_APN);
+            return ESP_OK;
+        }
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    case NET_STEP_SET_APN:
+        if (me->config.apn[0] != '\0') {
+            ret = modem_set_apn(me->modem, me->config.primary_cid,
+                                me->config.apn);
+            continue_ret = check_activation_continue(me, activation_start_ms);
+            if (continue_ret != ESP_OK) {
+                return continue_ret;
+            }
+            if (ret != ESP_OK) {
+                return ret;
+            }
+        }
+        set_activation_step(me, NET_STEP_ACTIVATE_PDP);
+        return ESP_OK;
+
+    case NET_STEP_ACTIVATE_PDP:
+        ret = modem_activate_pdp(me->modem, me->config.primary_cid);
+        continue_ret = check_activation_continue(me, activation_start_ms);
+        if (continue_ret == ESP_ERR_TIMEOUT) {
+            esp_err_t cleanup_ret = modem_deactivate_pdp(me->modem,
+                                                         me->config.primary_cid);
+            if (cleanup_ret != ESP_OK) {
+                ESP_LOGW(TAG, "cleanup after PDP activation failed: %s",
+                         esp_err_to_name(cleanup_ret));
+            }
+            return continue_ret;
+        }
+        if (continue_ret != ESP_OK) {
+            return continue_ret;
+        }
+        if (ret == ESP_ERR_INVALID_STATE) {
+            return classify_pdp_activation_invalid_state(me,
+                                                         activation_start_ms);
+        }
+        if (ret != ESP_OK) {
+            esp_err_t cleanup_ret = modem_deactivate_pdp(me->modem,
+                                                         me->config.primary_cid);
+            if (cleanup_ret != ESP_OK) {
+                ESP_LOGW(TAG, "cleanup after PDP activation failed: %s",
+                         esp_err_to_name(cleanup_ret));
+            }
+            continue_ret = check_activation_continue(me, activation_start_ms);
+            if (continue_ret != ESP_OK) {
+                return continue_ret;
+            }
+            return ret;
+        }
+        set_activation_step(me, NET_STEP_QUERY_IP);
+        return ESP_OK;
+
+    case NET_STEP_QUERY_IP: {
+        modem_pdp_context_t pdp = {0};
+        ret = modem_get_pdp_context(me->modem, me->config.primary_cid, &pdp);
+        continue_ret = check_activation_continue(me, activation_start_ms);
+        if (continue_ret != ESP_OK) {
+            return continue_ret;
+        }
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        if (!pdp.active) {
+            set_activation_step(me, NET_STEP_WAIT_PACKET_ATTACH);
+            return ESP_ERR_NOT_FINISHED;
+        }
+        if (pdp.ip_addr[0] == '\0') {
+            return ESP_ERR_NOT_FINISHED;
+        }
+        ret = check_activation_continue(me, activation_start_ms);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        return complete_activation(me, &pdp);
+    }
+
+    case NET_STEP_DONE:
+        return ESP_OK;
+
+    case NET_STEP_IDLE:
+    case NET_STEP_ERROR:
+    default:
+        return ESP_ERR_INVALID_STATE;
+    }
+}
+
+static void set_activation_step(core_t *me, net_mgr_step_t step)
+{
+    me->net_mgr.current_step = step;
+    me->net_mgr.step_start_time_ms = now_ms();
+}
+
+static esp_err_t wait_next_poll(core_t *me, uint32_t activation_start_ms)
+{
+    esp_err_t ret = check_activation_continue(me, activation_start_ms);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    const uint32_t timeout_ms = me->config.net_activate_timeout_ms;
+    const uint32_t elapsed_ms = now_ms() - activation_start_ms;
+    if (elapsed_ms >= timeout_ms) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    uint32_t delay_ms = NET_MGR_WAIT_POLL_INTERVAL_MS;
+    const uint32_t remaining_ms = timeout_ms - elapsed_ms;
+    if (delay_ms > remaining_ms) {
+        delay_ms = remaining_ms;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    return check_activation_continue(me, activation_start_ms);
+}
+
+static esp_err_t classify_pdp_activation_invalid_state(core_t *me,
+                                                       uint32_t activation_start_ms)
+{
+    modem_sim_status_t sim_status = MODEM_SIM_UNKNOWN;
+    esp_err_t ret = modem_get_sim_status(me->modem, &sim_status);
     esp_err_t continue_ret = check_activation_continue(me, activation_start_ms);
     if (continue_ret != ESP_OK) {
         return continue_ret;
     }
+    if (ret == ESP_ERR_TIMEOUT) {
+        set_activation_step(me, NET_STEP_CHECK_SIM);
+        return ESP_ERR_NOT_FINISHED;
+    }
     if (ret != ESP_OK) {
         return ret;
     }
-    if (sim_status != MODEM_SIM_READY) {
+    if (sim_status_fatal(sim_status)) {
         return ESP_ERR_INVALID_STATE;
     }
-
-    me->net_mgr.current_step = NET_STEP_CHECK_SIGNAL;
-    me->net_mgr.step_start_time_ms = now_ms();
-    ret = modem_get_signal(me->modem, &signal);
-    continue_ret = check_activation_continue(me, activation_start_ms);
-    if (continue_ret != ESP_OK) {
-        return continue_ret;
-    }
-    if (ret != ESP_OK) {
-        return ret;
+    if (sim_status != MODEM_SIM_READY) {
+        set_activation_step(me, NET_STEP_CHECK_SIM);
+        return ESP_ERR_NOT_FINISHED;
     }
 
-    me->net_mgr.current_step = NET_STEP_CHECK_REGISTRATION;
-    me->net_mgr.step_start_time_ms = now_ms();
+    modem_reg_status_t reg_status = MODEM_REG_UNKNOWN;
     ret = modem_get_registration(me->modem, &reg_status);
     continue_ret = check_activation_continue(me, activation_start_ms);
     if (continue_ret != ESP_OK) {
@@ -606,26 +887,16 @@ static esp_err_t run_activation_once(core_t *me,
     if (ret != ESP_OK) {
         return ret;
     }
-    if (!registration_ready(reg_status)) {
+    if (registration_denied(reg_status)) {
         return ESP_ERR_INVALID_STATE;
     }
-
-    me->net_mgr.current_step = NET_STEP_SET_APN;
-    me->net_mgr.step_start_time_ms = now_ms();
-    if (me->config.apn[0] != '\0') {
-        ret = modem_set_apn(me->modem, me->config.primary_cid, me->config.apn);
-        continue_ret = check_activation_continue(me, activation_start_ms);
-        if (continue_ret != ESP_OK) {
-            return continue_ret;
-        }
-        if (ret != ESP_OK) {
-            return ret;
-        }
+    if (!registration_ready(reg_status)) {
+        set_activation_step(me, NET_STEP_WAIT_REGISTRATION);
+        return ESP_ERR_NOT_FINISHED;
     }
 
-    me->net_mgr.current_step = NET_STEP_ACTIVATE_PDP;
-    me->net_mgr.step_start_time_ms = now_ms();
-    ret = modem_activate_pdp(me->modem, me->config.primary_cid);
+    bool attached = false;
+    ret = modem_get_packet_attach_status(me->modem, &attached);
     continue_ret = check_activation_continue(me, activation_start_ms);
     if (continue_ret != ESP_OK) {
         return continue_ret;
@@ -633,24 +904,21 @@ static esp_err_t run_activation_once(core_t *me,
     if (ret != ESP_OK) {
         return ret;
     }
-
-    ret = modem_get_pdp_context(me->modem, me->config.primary_cid, &pdp);
-    continue_ret = check_activation_continue(me, activation_start_ms);
-    if (continue_ret != ESP_OK) {
-        return continue_ret;
-    }
-    if (ret != ESP_OK) {
-        return ret;
+    if (!attached) {
+        set_activation_step(me, NET_STEP_WAIT_PACKET_ATTACH);
+        return ESP_ERR_NOT_FINISHED;
     }
 
-    continue_ret = check_activation_continue(me, activation_start_ms);
-    if (continue_ret != ESP_OK) {
-        return continue_ret;
-    }
+    return ESP_ERR_INVALID_STATE;
+}
 
-    me->net_mgr.current_step = NET_STEP_DONE;
-    me->net_mgr.step_start_time_ms = now_ms();
-    ret = net_mgr_set_state(me, CORE_NET_STATE_ONLINE);
+static esp_err_t complete_activation(core_t *me,
+                                     const modem_pdp_context_t *pdp)
+{
+    ESP_RETURN_ON_FALSE(pdp && pdp->active && pdp->ip_addr[0] != '\0',
+                        ESP_ERR_INVALID_STATE, TAG, "PDP is not ready");
+
+    esp_err_t ret = net_mgr_set_state(me, CORE_NET_STATE_ONLINE);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -658,7 +926,9 @@ static esp_err_t run_activation_once(core_t *me,
     if (ret != ESP_OK) {
         return ret;
     }
-    pdp_mgr_update(&me->pdp_mgr, &pdp);
+
+    pdp_mgr_update(&me->pdp_mgr, pdp);
+    set_activation_step(me, NET_STEP_DONE);
     post_net_state(me, CORE_EVENT_NET_ONLINE, CORE_NET_STATE_ONLINE, 0);
 
     return ESP_OK;
@@ -688,6 +958,19 @@ static bool registration_ready(modem_reg_status_t status)
 {
     return status == MODEM_REG_REGISTERED_HOME ||
            status == MODEM_REG_REGISTERED_ROAMING;
+}
+
+static bool sim_status_fatal(modem_sim_status_t status)
+{
+    return status == MODEM_SIM_PIN_REQUIRED ||
+           status == MODEM_SIM_PUK_REQUIRED ||
+           status == MODEM_SIM_NOT_INSERTED ||
+           status == MODEM_SIM_ERROR;
+}
+
+static bool registration_denied(modem_reg_status_t status)
+{
+    return status == MODEM_REG_DENIED;
 }
 
 static bool is_primary_pdp(core_t *me, const modem_pdp_context_t *pdp)

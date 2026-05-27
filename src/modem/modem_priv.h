@@ -41,6 +41,7 @@ typedef struct modem_ops {
     esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);
     esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
     esp_err_t (*get_registration)(modem_t *me, modem_reg_status_t *status);
+    esp_err_t (*get_packet_attach_status)(modem_t *me, bool *attached);
     esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
     esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
     esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);

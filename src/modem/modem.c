@@ -424,6 +424,19 @@ esp_err_t modem_get_registration(modem_t *me, modem_reg_status_t *status)
     return me->ops->get_registration(me, status);
 }
 
+esp_err_t modem_get_packet_attach_status(modem_t *me, bool *attached)
+{
+    ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->get_packet_attach_status,
+                        ESP_ERR_NOT_SUPPORTED, TAG,
+                        "get_packet_attach_status not supported");
+
+    return me->ops->get_packet_attach_status(me, attached);
+}
+
 esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn)
 {
     ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
