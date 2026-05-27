@@ -90,6 +90,9 @@ typedef struct {
     SemaphoreHandle_t rdy_sema;
     bool rdy_seen;
     bool waiting_rdy;
+    SemaphoreHandle_t cpin_ready_sema;
+    bool cpin_ready_seen;
+    bool waiting_cpin_ready;
     bool urc_registered;
     bool initialized;
 } modem_air780ep_t;
@@ -813,6 +816,16 @@ modem_t *modem_air780ep_create(at_engine_t *at,
     self->rdy_sema = xSemaphoreCreateBinary();
     if (!self->rdy_sema) {
         ESP_LOGE(TAG, "create RDY semaphore failed");
+        modem_base_deinit(&self->base);
+        free(self);
+        return NULL;
+    }
+
+    self->cpin_ready_sema = xSemaphoreCreateBinary();
+    if (!self->cpin_ready_sema) {
+        ESP_LOGE(TAG, "create CPIN ready semaphore failed");
+        vSemaphoreDelete(self->rdy_sema);
+        self->rdy_sema = NULL;
         modem_base_deinit(&self->base);
         free(self);
         return NULL;
@@ -1998,6 +2011,13 @@ static esp_err_t air780ep_destroy(modem_t *me)
     self->rdy_seen = false;
     self->waiting_rdy = false;
 
+    if (self->cpin_ready_sema) {
+        vSemaphoreDelete(self->cpin_ready_sema);
+        self->cpin_ready_sema = NULL;
+    }
+    self->cpin_ready_seen = false;
+    self->waiting_cpin_ready = false;
+
     set_initialized(self, false);
     return ESP_OK;
 }
@@ -2190,9 +2210,26 @@ static esp_err_t air780ep_get_sim_status(modem_t *me, modem_sim_status_t *status
                     break;
                 }
 
-                ESP_LOGW(TAG, "AT+CPIN? returned SIM busy, retry in %u ms",
+                xSemaphoreTake(self->base.lock, portMAX_DELAY);
+                while (xSemaphoreTake(self->cpin_ready_sema, 0) == pdTRUE) {
+                }
+                self->cpin_ready_seen = false;
+                self->waiting_cpin_ready = true;
+                xSemaphoreGive(self->base.lock);
+
+                ESP_LOGW(TAG, "AT+CPIN? returned SIM busy, wait URC or %u ms",
                          (unsigned int)wait_ms);
-                vTaskDelay(timeout_ticks(wait_ms));
+
+                TickType_t ticks = timeout_ticks(wait_ms);
+                bool urc_received = xSemaphoreTake(self->cpin_ready_sema, ticks) == pdTRUE;
+
+                xSemaphoreTake(self->base.lock, portMAX_DELAY);
+                self->waiting_cpin_ready = false;
+                xSemaphoreGive(self->base.lock);
+
+                if (urc_received) {
+                    ESP_LOGI(TAG, "+CPIN: READY URC received, immediate retry");
+                }
                 continue;
             }
         }
@@ -2678,12 +2715,23 @@ static void cpin_urc_handler(const char *prefix, const char *line, void *user_ct
     modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
     modem_sim_status_t status = parse_sim_status_line(line);
 
-    if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "drop +CPIN URC, lock busy");
-        return;
+    bool signal_waiter = false;
+    SemaphoreHandle_t cpin_ready_sema = NULL;
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        self->last_sim_status = status;
+        if (self->waiting_cpin_ready && status == MODEM_SIM_READY) {
+            self->cpin_ready_seen = true;
+            signal_waiter = true;
+            cpin_ready_sema = self->cpin_ready_sema;
+        }
+        xSemaphoreGive(self->base.lock);
     }
-    self->last_sim_status = status;
-    xSemaphoreGive(self->base.lock);
+
+    if (signal_waiter && cpin_ready_sema) {
+        (void)xSemaphoreGive(cpin_ready_sema);
+    }
 
     const modem_event_t event = {
         .id = MODEM_EVENT_SIM_CHANGED,

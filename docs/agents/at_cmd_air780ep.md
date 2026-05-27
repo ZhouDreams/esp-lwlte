@@ -73,7 +73,7 @@
 
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
-| 查询 PIN/SIM 状态 | `AT+CPIN?` | `+CPIN: <code>` + `OK`；SIM 初始化忙时可能返回 `+CME ERROR: 14` | `READY` 可用；`SIM PIN` 等待 PIN；`SIM REMOVED` 未检出；`+CME ERROR: 14` 为 `SIM busy` | 9s | SIM-ready 初始化内部步骤 | 单次查询保持 9s；SIM-ready 等待应由上层轮询/重试总预算实现，而不是一次 `AT+CPIN?` 等待 180s。按合宙快速入门建议，遇到 SIM busy 应每 1 秒轮询，10 秒内仍未 ready 再按超时处理；也存在 URC `+CPIN:<code>` |
+| 查询 PIN/SIM 状态 | `AT+CPIN?` | `+CPIN: <code>` + `OK`；SIM 初始化忙时可能返回 `+CME ERROR: 14` | `READY` 可用；`SIM PIN` 等待 PIN；`SIM REMOVED` 未检出；`+CME ERROR: 14` 为 `SIM busy` | 9s | SIM-ready 初始化内部步骤 | 单次查询保持 9s；SIM-ready 等待应由上层轮询/重试总预算实现，而不是一次 `AT+CPIN?` 等待 180s。按合宙快速入门建议，遇到 SIM busy 应每 1 秒轮询，10 秒内仍未 ready 再按超时处理。手册列出 URC `+CPIN:<code>`，但示例只明确重启后 PIN 状态自动上报和 `AT+CSDT` SIM 在位检测触发；实测 Air780EP `AT+CPIN?` 返回 `+CME ERROR: 14` 后不保证主动上报 `+CPIN: READY`，必须保留轮询兜底。 |
 | 查询 ICCID | `AT+CCID` 或 `AT+ICCID` | `AT+CCID` 返回 `<iccid>` + `OK`；`AT+ICCID` 返回 `+ICCID:<iccid>` + `OK` | ICCID 通常 20 位数字 | 9s | `modem_info_t.iccid` | `AT+ICCID` 有前缀，解析更明确 |
 | 查询信号质量 | `AT+CSQ` | `+CSQ: <rssi>,<ber>` + `OK` | `rssi=0..31,99`；`ber=0..7,99` | 9s | `modem_get_signal()` | dBm 可按常见公式约算：`rssi <= 31` 时 `-113 + 2*rssi` |
 | 查询扩展信号 | `AT+CESQ` | `+CESQ: <rxlev>,<rxqual>,<rscp>,<ecno>,<rsrq>,<rsrp>` + `OK` | LTE 重点解析 `rsrq`、`rsrp`；`255` 表示未知 | 9s | 内部诊断/未来扩展；第一版可继续用基于 CSQ 的 `modem_get_signal()` | 可作为 `AT+CSQ` 的补充，不必第一版强依赖 |
@@ -129,7 +129,7 @@
 | 前缀/完整行 | 来源 | 触发条件 | 映射建议 | 注意事项 |
 |-------------|------|----------|----------|----------|
 | `RDY` | 模块启动 | 模块重启完成 | 释放初始化 RDY 等待；AT 初始化完成后再投递 `MODEM_EVENT_READY` | PDF 片段未系统列出，但旧实现已注册，实机常见 |
-| `+CPIN:` | SIM | SIM 状态变化 | 更新 SIM 状态，必要时触发重新注册流程 | 同时也是 `AT+CPIN?` 查询响应前缀 |
+| `+CPIN:` | SIM | 重启后 PIN 状态自动上报、`AT+CSDT` SIM 在位检测触发，或其他 SIM 状态变化 | 更新 SIM 状态，必要时触发重新注册流程 | 同时也是 `AT+CPIN?` 查询响应前缀；SIM busy 恢复为 READY 不保证主动上报，不能替代 `AT+CPIN?` 轮询兜底 |
 | `+CREG:` | 网络注册 | CREG URC 开启后注册状态变化 | 更新通用注册状态 | 同时也是 `AT+CREG?` 查询响应前缀 |
 | `+CEREG:` | EPS 注册 | CEREG URC 开启后 LTE 注册状态变化 | 优先用于 LTE 注册状态 | 同时也是 `AT+CEREG?` 查询响应前缀 |
 | `+CGREG:` | GPRS 注册 | CGREG URC 开启后分组域注册状态变化 | 更新分组域注册状态 | 同时也是 `AT+CGREG?` 查询响应前缀 |
