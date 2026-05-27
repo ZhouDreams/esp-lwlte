@@ -39,8 +39,23 @@ class Air780EpCpinPolicyTest(unittest.TestCase):
         self.assertIn("ctx.response.status == AT_RESP_CME_ERROR", self.src)
         self.assertIn("ctx.response.error_code == AIR780EP_CME_SIM_BUSY", self.src)
         self.assertIn("AIR780EP_SIM_READY_POLL_INTERVAL_MS", self.src)
-        self.assertIn("vTaskDelay(timeout_ticks(wait_ms))", self.src)
+        self.assertIn("xSemaphoreTake(self->cpin_ready_sema", self.src)
+        self.assertIn("wait URC or %u ms", self.src)
         self.assertIn("return ESP_ERR_TIMEOUT", self.src)
+
+    def test_cpin_ready_wait_drains_stale_signal_before_arming_waiter(self):
+        start = self.src.index("if (ctx.response.error_code == AIR780EP_CME_SIM_BUSY)")
+        end = self.src.index("ESP_LOGW(TAG, \"AT+CPIN? returned SIM busy")
+        setup = self.src[start:end]
+
+        lock_idx = setup.index("xSemaphoreTake(self->base.lock, portMAX_DELAY);")
+        drain_idx = setup.index("while (xSemaphoreTake(self->cpin_ready_sema, 0) == pdTRUE)")
+        arm_idx = setup.index("self->waiting_cpin_ready = true;")
+        unlock_idx = setup.index("xSemaphoreGive(self->base.lock);", arm_idx)
+
+        self.assertLess(lock_idx, drain_idx)
+        self.assertLess(drain_idx, arm_idx)
+        self.assertLess(arm_idx, unlock_idx)
 
     def test_cpin_documentation_mentions_sim_busy_policy(self):
         self.assertIn("+CME ERROR: 14", self.doc)
