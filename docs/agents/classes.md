@@ -1522,7 +1522,7 @@ typedef void (*mqtt_client_event_callback_t)(mqtt_client_t *client,
                                              void *user_ctx);
 ```
 
-`mqtt_client_msg_t` 中的指针只在 MQTT 事件回调期间有效；Facade 若要把数据继续传给用户异步保存，必须复制 topic 和 payload。
+`mqtt_client_msg_t` 中的指针只在 MQTT 事件回调期间有效；Facade 若要把数据继续传给用户异步保存，必须复制 topic 和 payload。MQTT 数据事件采用直接回调策略：MQTT_CLIENT_EVENT_DATA is dispatched only through mqtt_client_event_callback_t; signal-owned topic/payload are freed after the direct callback returns。因此在实现独立异步所有权模型前，DATA 不投递到 MQTT 的异步 `esp_event` loop。
 
 ### 4.5 `mqtt_fsm_sig_t` — MQTT FSM 信号
 

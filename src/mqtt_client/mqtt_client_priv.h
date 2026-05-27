@@ -96,6 +96,8 @@ struct mqtt_client {
     bool destroying;
     bool started;
     bool net_online;
+    bool stop_requested;
+    bool transport_open;
     SemaphoreHandle_t event_callback_done_sema;
     TaskHandle_t event_callback_task;
     int event_callback_active;

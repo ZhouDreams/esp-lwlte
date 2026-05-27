@@ -12,6 +12,7 @@ AIR780EP_H = ROOT / "src/include/lwlte_air780ep.h"
 LWLTE_PRIV = ROOT / "src/lwlte/lwlte_priv.h"
 LWLTE_C = ROOT / "src/lwlte/lwlte.c"
 LWLTE_AIR780EP_C = ROOT / "src/lwlte/lwlte_air780ep.c"
+CLASSES_MD = ROOT / "docs/agents/classes.md"
 
 AT_ENGINE_H = ROOT / "src/at_engine/at_engine.h"
 AT_ENGINE_C = ROOT / "src/at_engine/at_engine.c"
@@ -47,6 +48,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
         cls.lwlte_priv = read_optional(LWLTE_PRIV)
         cls.lwlte_c = read_optional(LWLTE_C)
         cls.lwlte_air780ep_c = read_optional(LWLTE_AIR780EP_C)
+        cls.classes_md = read_optional(CLASSES_MD)
 
         cls.at_engine_h = read_optional(AT_ENGINE_H)
         cls.at_engine_c = read_optional(AT_ENGINE_C)
@@ -167,6 +169,98 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "submit_core_cmd(me, CORE_CMD_MQTT_DISCONNECT",
         ]:
             self.assertIn(token, fsm_body)
+
+    def test_mqtt_stop_records_request_and_waits_for_disconnect_completion(self):
+        for token in [
+            "bool stop_requested;",
+            "bool transport_open;",
+            "static void complete_stop",
+            "static bool should_disconnect_for_stop",
+            "static void request_stop_disconnect",
+            "me->stop_requested = true;",
+            "if (me->pending_cmd.active) {",
+            "return;",
+            "submit_core_cmd(me, CORE_CMD_MQTT_DISCONNECT",
+            "MQTT_CLIENT_OPERATION_DISCONNECT",
+            "complete_stop(me);",
+        ]:
+            self.assertIn(token, self.mqtt_c + self.mqtt_priv)
+
+        stop_start = self.mqtt_c.rindex("static void handle_stop")
+        stop_body = self.mqtt_c[
+            stop_start:
+            self.mqtt_c.index("static void complete_stop", stop_start)
+        ]
+        self.assertIn("me->stop_requested = true;", stop_body)
+        self.assertIn("if (me->pending_cmd.active) {", stop_body)
+        self.assertLess(
+            stop_body.index("if (me->pending_cmd.active) {"),
+            stop_body.index("request_stop_disconnect(me);")
+        )
+        self.assertNotIn("me->pending_cmd.active = false;", stop_body)
+        self.assertNotIn("post_mqtt_event(me, MQTT_CLIENT_EVENT_STOPPED", stop_body)
+
+    def test_mqtt_stop_defers_runtime_events_and_completes_on_disconnect_or_close(self):
+        done_start = self.mqtt_c.rindex("static void handle_core_cmd_done")
+        done_body = self.mqtt_c[
+            done_start:
+            self.mqtt_c.index("static void handle_runtime_operation", done_start)
+        ]
+        for token in [
+            "if (me->stop_requested) {",
+            "if (operation == MQTT_CLIENT_OPERATION_DISCONNECT) {",
+            "complete_stop(me);",
+            "request_stop_disconnect(me);",
+            "return;",
+        ]:
+            self.assertIn(token, done_body)
+
+        self.assertLess(
+            done_body.index("if (me->stop_requested) {"),
+            done_body.index("if (sig->core_result != CORE_CMD_RESULT_OK)")
+        )
+        self.assertLess(
+            done_body.index("if (me->stop_requested) {"),
+            done_body.index("MQTT_CLIENT_EVENT_SUBSCRIBED")
+        )
+
+        signal_start = self.mqtt_c.rindex("static void handle_signal")
+        signal_body = self.mqtt_c[
+            signal_start:
+            self.mqtt_c.index("static void handle_start", signal_start)
+        ]
+        self.assertIn("if (me->stop_requested) {", signal_body)
+        self.assertIn("complete_stop(me);", signal_body)
+        self.assertLess(
+            signal_body.index("if (me->stop_requested) {"),
+            signal_body.index("MQTT_CLIENT_EVENT_DISCONNECTED")
+        )
+
+    def test_mqtt_data_event_uses_direct_callback_only_for_signal_owned_payloads(self):
+        post_start = self.mqtt_c.rindex("static esp_err_t post_mqtt_event")
+        post_body = self.mqtt_c[
+            post_start:
+            self.mqtt_c.index("static void post_error_event", post_start)
+        ]
+        self.assertIn("if (event_id != MQTT_CLIENT_EVENT_DATA) {", post_body)
+        self.assertIn("esp_event_post_to", post_body)
+        self.assertLess(
+            post_body.index("if (event_id != MQTT_CLIENT_EVENT_DATA) {"),
+            post_body.index("esp_event_post_to")
+        )
+
+        data_branch = post_body[post_body.index("if (event_id != MQTT_CLIENT_EVENT_DATA) {"):]
+        self.assertIn("callback(me, event_id, event_data, user_ctx);", data_branch)
+        self.assertNotIn(
+            "esp_event_post_to(me->event_loop, MQTT_CLIENT_EVENT, event_id",
+            data_branch[data_branch.index("callback(me, event_id, event_data, user_ctx);"):]
+        )
+
+        for token in [
+            "MQTT_CLIENT_EVENT_DATA is dispatched only through mqtt_client_event_callback_t",
+            "signal-owned topic/payload are freed after the direct callback returns",
+        ]:
+            self.assertIn(token, self.classes_md)
 
     def test_core_command_queue_contract_exists(self):
         for token in [

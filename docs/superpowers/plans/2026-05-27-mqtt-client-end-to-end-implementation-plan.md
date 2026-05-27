@@ -1368,7 +1368,7 @@ Only one `pending_cmd.active` may be true. If another operation signal arrives w
 
 - [ ] **Step 10: Implement MQTT event dispatch**
 
-Implement `post_mqtt_event()` so it posts to `me->event_loop` and invokes `me->event_callback` with callback-active tracking. For `MQTT_CLIENT_EVENT_DATA`, invoke the direct callback before freeing signal-owned topic/payload. Event data pointers are valid only during callback.
+Implement `post_mqtt_event()` so it posts non-DATA events to `me->event_loop` and invokes `me->event_callback` with callback-active tracking. For `MQTT_CLIENT_EVENT_DATA`, dispatch only through the direct callback before freeing signal-owned topic/payload. Event data pointers are valid only during callback.
 
 - [ ] **Step 11: Run MQTT service boundary regression**
 
