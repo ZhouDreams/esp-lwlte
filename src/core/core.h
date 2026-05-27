@@ -15,6 +15,7 @@ extern "C" {
  *      INCLUDES
  *********************/
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -99,7 +100,104 @@ typedef enum {
     CORE_EVENT_NET_ERROR,                /**< 网络错误； Network error */
     CORE_EVENT_STOPPED,                  /**< Core 已停止； Core stopped */
     CORE_EVENT_ERROR,                    /**< Core 错误； Core error */
+    CORE_EVENT_PROTOCOL_DATA,            /**< 协议数据； Protocol data */
+    CORE_EVENT_PROTOCOL_CLOSED,          /**< 协议关闭； Protocol closed */
 } core_event_id_t;
+
+/**
+ * @brief Core 协议类型
+ * @details Core protocol type
+ */
+typedef enum {
+    CORE_PROTOCOL_MQTT = 0,              /**< MQTT 协议； MQTT protocol */
+} core_protocol_t;
+
+/**
+ * @brief Core 协议数据
+ * @details Core protocol data
+ */
+typedef struct {
+    core_protocol_t protocol;            /**< 协议类型； Protocol type */
+    const char *topic;                   /**< 主题； Topic */
+    size_t topic_len;                    /**< 主题长度； Topic length */
+    const uint8_t *payload;              /**< 负载； Payload */
+    size_t payload_len;                  /**< 负载长度； Payload length */
+} core_protocol_data_t;
+
+/**
+ * @brief Core 服务命令类型
+ * @details Core service command type
+ */
+typedef enum {
+    CORE_CMD_MQTT_CONFIG = 0,            /**< 配置 MQTT； Configure MQTT */
+    CORE_CMD_MQTT_OPEN,                  /**< 打开 MQTT 连接； Open MQTT connection */
+    CORE_CMD_MQTT_LOGIN,                 /**< 登录 MQTT； Login MQTT */
+    CORE_CMD_MQTT_DISCONNECT,            /**< 断开 MQTT； Disconnect MQTT */
+    CORE_CMD_MQTT_SUBSCRIBE,             /**< 订阅 MQTT 主题； Subscribe MQTT topic */
+    CORE_CMD_MQTT_UNSUBSCRIBE,           /**< 退订 MQTT 主题； Unsubscribe MQTT topic */
+    CORE_CMD_MQTT_PUBLISH,               /**< 发布 MQTT 消息； Publish MQTT message */
+} core_cmd_type_t;
+
+/**
+ * @brief Core 服务命令结果
+ * @details Core service command result
+ */
+typedef enum {
+    CORE_CMD_RESULT_OK = 0,              /**< 成功； OK */
+    CORE_CMD_RESULT_ERROR,               /**< 错误； Error */
+    CORE_CMD_RESULT_TIMEOUT,             /**< 超时； Timeout */
+    CORE_CMD_RESULT_INVALID_RESPONSE,    /**< 响应无效； Invalid response */
+} core_cmd_result_t;
+
+/**
+ * @brief Core 服务命令完成回调
+ * @details Core service command done callback
+ */
+typedef void (*core_cmd_done_callback_t)(core_t *core,
+                                         core_cmd_type_t type,
+                                         core_cmd_result_t result,
+                                         const void *result_data,
+                                         void *user_ctx);
+
+/**
+ * @brief Core 服务命令
+ * @details Core service command
+ */
+typedef struct {
+    core_cmd_type_t type;                /**< 命令类型； Command type */
+    core_cmd_done_callback_t done_cb;    /**< 完成回调； Done callback */
+    void *user_ctx;                      /**< 用户上下文； User context */
+    uint32_t timeout_ms;                 /**< 超时时间； Timeout */
+    union {
+        struct {
+            const char *client_id;       /**< 客户端 ID； Client ID */
+            const char *username;        /**< 用户名； Username */
+            const char *password;        /**< 密码； Password */
+        } mqtt_config;                   /**< MQTT 配置； MQTT config */
+        struct {
+            const char *host;            /**< 主机； Host */
+            uint16_t port;               /**< 端口； Port */
+        } mqtt_open;                     /**< MQTT 打开参数； MQTT open args */
+        struct {
+            bool clean_session;          /**< 清理会话； Clean session */
+            uint16_t keepalive_s;        /**< 保活秒数； Keepalive seconds */
+        } mqtt_login;                    /**< MQTT 登录参数； MQTT login args */
+        struct {
+            const char *topic;           /**< 主题； Topic */
+            uint8_t qos;                 /**< QoS； QoS */
+        } mqtt_subscribe;                /**< MQTT 订阅参数； MQTT subscribe args */
+        struct {
+            const char *topic;           /**< 主题； Topic */
+        } mqtt_unsubscribe;              /**< MQTT 退订参数； MQTT unsubscribe args */
+        struct {
+            const char *topic;           /**< 主题； Topic */
+            const uint8_t *payload;      /**< 负载； Payload */
+            size_t payload_len;          /**< 负载长度； Payload length */
+            uint8_t qos;                 /**< QoS； QoS */
+            bool retain;                 /**< 保留消息； Retain */
+        } mqtt_publish;                  /**< MQTT 发布参数； MQTT publish args */
+    } data;                              /**< 命令数据； Command data */
+} core_cmd_t;
 
 /**
  * @brief LTE 核心服务事件数据
@@ -108,6 +206,7 @@ typedef enum {
 typedef struct {
     core_net_state_t net_state;          /**< 网络状态； Network state */
     int error_code;                      /**< 错误码； Error code */
+    core_protocol_data_t protocol_data;  /**< 协议数据； Protocol data */
 } core_event_data_t;
 
 /**
@@ -247,6 +346,21 @@ esp_err_t core_connect(core_t *me);
  *         - ESP_FAIL: 请求提交失败
  */
 esp_err_t core_disconnect(core_t *me);
+
+/**
+ * @brief 提交 Core 服务命令
+ * @details Submit Core service command
+ * @note 该函数异步提交服务命令，返回 ESP_OK 表示命令已入队。
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] cmd Core 服务命令
+ * @return
+ *         - ESP_OK: 请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_TIMEOUT: FSM 队列已满
+ */
+esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
 
 /**********************
  *      MACROS

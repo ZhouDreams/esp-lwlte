@@ -142,6 +142,83 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIn("modem_mqtt_config", self.core_fsm_c)
         self.assertIn("modem_mqtt_publish", self.core_fsm_c)
 
+    def test_core_protocol_event_ids_keep_stopped_error_stable(self):
+        event_enum = self.core_h[
+            self.core_h.index("CORE_EVENT_STARTED"):
+            self.core_h.index("} core_event_id_t;")
+        ]
+        event_ids = []
+        event_values = {}
+        next_event_value = 0
+        for line in event_enum.splitlines():
+            line = line.strip()
+            if line.startswith("CORE_EVENT_"):
+                token = line.split(",", 1)[0]
+                if "=" in token:
+                    name, value = token.split("=", 1)
+                    name = name.strip()
+                    next_event_value = int(value.strip(), 0)
+                else:
+                    name = token.strip()
+                event_ids.append(name)
+                event_values[name] = next_event_value
+                next_event_value += 1
+
+        self.assertEqual([
+            "CORE_EVENT_STARTED",
+            "CORE_EVENT_READY",
+            "CORE_EVENT_NET_CONNECTING",
+            "CORE_EVENT_NET_ONLINE",
+            "CORE_EVENT_NET_OFFLINE",
+            "CORE_EVENT_NET_ERROR",
+            "CORE_EVENT_STOPPED",
+            "CORE_EVENT_ERROR",
+        ], event_ids[:8])
+
+        self.assertIn("CORE_EVENT_PROTOCOL_DATA", event_enum)
+        self.assertIn("CORE_EVENT_PROTOCOL_CLOSED", event_enum)
+
+        error_pos = event_enum.index("CORE_EVENT_ERROR")
+        protocol_data_pos = event_enum.index("CORE_EVENT_PROTOCOL_DATA")
+        protocol_closed_pos = event_enum.index("CORE_EVENT_PROTOCOL_CLOSED")
+
+        self.assertLess(error_pos, protocol_data_pos)
+        self.assertLess(protocol_data_pos, protocol_closed_pos)
+        self.assertEqual(6, event_values["CORE_EVENT_STOPPED"])
+        self.assertEqual(7, event_values["CORE_EVENT_ERROR"])
+        self.assertEqual(8, event_values["CORE_EVENT_PROTOCOL_DATA"])
+        self.assertEqual(9, event_values["CORE_EVENT_PROTOCOL_CLOSED"])
+
+    def test_core_command_queue_ownership_and_cleanup_contract(self):
+        for token in [
+            "static char *clone_optional_string",
+            "static uint8_t *clone_payload",
+            "static bool core_cmd_valid",
+            "CORE_CMD_MQTT_PUBLISH",
+            "payload_len > 0",
+            "qos <= 2",
+            "core_free_cmd(cloned_cmd);",
+            "release_core_event_payload",
+            "static void release_modem_protocol_payload",
+            "core_post_protocol_data",
+        ]:
+            self.assertIn(token, self.core_c)
+
+        for token in [
+            "CORE_SIG_SERVICE_CMD",
+            "handle_service_cmd(me, sig->service_cmd);",
+            "finish_service_cmd",
+            "result_from_esp_err",
+            "CORE_CMD_RESULT_TIMEOUT",
+            "CORE_CMD_RESULT_INVALID_RESPONSE",
+            "core_free_cmd(cmd);",
+            "MODEM_EVENT_PROTOCOL_DATA",
+            "MODEM_EVENT_PROTOCOL_CLOSED",
+            "release_modem_protocol_payload(&sig->modem_event);",
+            "core_free_cmd(sig->service_cmd);",
+        ]:
+            self.assertIn(token, self.core_fsm_c)
+
     def test_modem_mqtt_ops_and_air780ep_commands_exist(self):
         for token in [
             "modem_mqtt_config_t",

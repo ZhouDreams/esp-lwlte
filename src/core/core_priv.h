@@ -51,6 +51,7 @@ typedef enum {
     CORE_SIG_STOP,
     CORE_SIG_NET_ACTIVATE,
     CORE_SIG_NET_DEACTIVATE,
+    CORE_SIG_SERVICE_CMD,
     CORE_SIG_NET_STEP_DONE,
     CORE_SIG_NET_STEP_TIMEOUT,
     CORE_SIG_RECONNECT,
@@ -59,6 +60,7 @@ typedef enum {
 typedef struct {
     core_fsm_sig_type_t type;
     modem_event_t modem_event;
+    core_cmd_t *service_cmd;
     int error_code;
 } core_fsm_sig_t;
 
@@ -161,6 +163,9 @@ core_state_t core_get_state_value(core_t *me);
 bool core_is_destroying(core_t *me);
 esp_err_t core_post_event(core_t *me, core_event_id_t event_id,
                           const core_event_data_t *data);
+void core_free_cmd(core_cmd_t *cmd);
+esp_err_t core_post_protocol_data(core_t *me,
+                                  const core_protocol_data_t *protocol_data);
 
 /**********************
  *      MACROS

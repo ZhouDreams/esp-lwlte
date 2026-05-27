@@ -677,7 +677,7 @@ Expected: FAIL with missing `core_cmd_t` or `core_submit_cmd`.
 
 Add `#include <stddef.h>` to `src/core/core.h`.
 
-Extend `core_event_id_t` by inserting before `CORE_EVENT_STOPPED`:
+Extend `core_event_id_t` by appending after `CORE_EVENT_ERROR` so existing event values stay stable (`CORE_EVENT_STOPPED == 6`, `CORE_EVENT_ERROR == 7`):
 
 ```c
 CORE_EVENT_PROTOCOL_DATA,            /**< 协议数据； Protocol data */

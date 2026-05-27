@@ -983,10 +983,10 @@ typedef enum {
     CORE_EVENT_NET_ONLINE,
     CORE_EVENT_NET_OFFLINE,
     CORE_EVENT_NET_ERROR,
-    CORE_EVENT_PROTOCOL_DATA,
-    CORE_EVENT_PROTOCOL_CLOSED,
     CORE_EVENT_STOPPED,
     CORE_EVENT_ERROR,
+    CORE_EVENT_PROTOCOL_DATA,
+    CORE_EVENT_PROTOCOL_CLOSED,
 } core_event_id_t;
 
 typedef enum {
@@ -1013,7 +1013,7 @@ typedef void (*core_event_callback_t)(core_t *core,
                                       void *user_ctx);
 ```
 
-**边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Facade 负责把这些层间状态翻译为 `lwlte_state_t`、`lwlte_net_state_t` 和用户事件。
+**边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Facade 负责把这些层间状态翻译为 `lwlte_state_t`、`lwlte_net_state_t` 和用户事件。协议事件追加在 `CORE_EVENT_ERROR` 之后以保持既有事件枚举 ABI：`CORE_EVENT_STOPPED == 6`、`CORE_EVENT_ERROR == 7`。
 
 `core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 Core event callback 执行期间有效；MQTT Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据。
 
