@@ -126,6 +126,7 @@ static esp_err_t validate_options(const at_cmd_options_t *options);
 static bool parse_error_result(at_response_t *response, const char *line);
 static bool match_custom_success(const at_cmd_ctx_t *ctx, const char *line);
 static bool match_success_rule(const at_cmd_success_match_t *rule, const char *line);
+static bool is_bare_payload_prompt(const at_cmd_ctx_t *ctx, char c);
 static bool is_payload_prompt(const at_cmd_ctx_t *ctx, const char *line);
 static bool is_intermediate_ok(const at_cmd_ctx_t *ctx, const char *line);
 static int parse_error_code(const char *line);
@@ -596,11 +597,32 @@ static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint
 static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
 {
     bool line_ready = false;
+    at_cmd_ctx_t *payload_ctx = NULL;
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0;
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
 
     if (epoch != me->rx_epoch) {
         xSemaphoreGive(me->lock);
+        return;
+    }
+
+    if (me->line_buf_pos == 0 && is_bare_payload_prompt(me->cmd_ctx, c)) {
+        payload_ctx = me->cmd_ctx;
+        payload = payload_ctx->payload;
+        payload_len = payload_ctx->payload_len;
+        payload_ctx->payload_sent = true;
+        xSemaphoreGive(me->lock);
+
+        esp_err_t payload_ret = write_payload(me, payload, payload_len);
+        if (payload_ret != ESP_OK) {
+            xSemaphoreTake(me->lock, portMAX_DELAY);
+            if (epoch == me->rx_epoch && me->cmd_ctx == payload_ctx) {
+                finish_cmd_locked(me, AT_RESP_ERROR, 0);
+            }
+            xSemaphoreGive(me->lock);
+        }
         return;
     }
 
@@ -676,13 +698,19 @@ static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
         }
 
         if (is_payload_prompt(ctx, line)) {
-            esp_err_t payload_ret = write_payload(me, ctx->payload, ctx->payload_len);
-            if (payload_ret != ESP_OK) {
-                finish_cmd_locked(me, AT_RESP_ERROR, 0);
-            } else {
-                ctx->payload_sent = true;
-            }
+            const uint8_t *payload = ctx->payload;
+            size_t payload_len = ctx->payload_len;
+            ctx->payload_sent = true;
             xSemaphoreGive(me->lock);
+
+            esp_err_t payload_ret = write_payload(me, payload, payload_len);
+            if (payload_ret != ESP_OK) {
+                xSemaphoreTake(me->lock, portMAX_DELAY);
+                if (epoch == me->rx_epoch && me->cmd_ctx == ctx) {
+                    finish_cmd_locked(me, AT_RESP_ERROR, 0);
+                }
+                xSemaphoreGive(me->lock);
+            }
             return;
         }
 
@@ -755,6 +783,12 @@ static bool is_payload_prompt(const at_cmd_ctx_t *ctx, const char *line)
 {
     return ctx && ctx->payload && !ctx->payload_sent && ctx->payload_prompt &&
            strcmp(line, ctx->payload_prompt) == 0;
+}
+
+static bool is_bare_payload_prompt(const at_cmd_ctx_t *ctx, char c)
+{
+    return ctx && ctx->payload && !ctx->payload_sent && ctx->payload_prompt &&
+           ctx->payload_prompt[0] == c && ctx->payload_prompt[1] == '\0';
 }
 
 static bool is_intermediate_ok(const at_cmd_ctx_t *ctx, const char *line)
