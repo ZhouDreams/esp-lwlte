@@ -13,8 +13,8 @@ App
   ↓ 只依赖 src/include/lwlte*.h
 LWLTE Facade
   ↓ 调用 Core/MQTT/TCP/HTTP 等 service API，并在模块 factory 中完成装配
-Service Layer: Core, future MQTT, future TCP, future HTTP
-  ↓
+Service Layer: MQTT → Core；Core 是访问 Modem 的 service；future TCP/HTTP 边界待设计
+  ↓ Core 调用
 Modem Adapter
   ↓
 AT Engine
@@ -24,7 +24,7 @@ AT Engine
 |----|------|
 | App | 用户业务逻辑只操作 `lwlte_t`；板级初始化代码可 include `lwlte_air780ep.h` 并填写 UART/GPIO 配置 |
 | LWLTE Facade | `lwlte_t` 用户门面、模块 factory、资源生命周期组合根、用户事件适配 |
-| Service Layer | Core 负责网络状态机、PDP 管理、连接/重连；MQTT/TCP/HTTP 后续作为并列 service 扩展 |
+| Service Layer | Core 负责网络状态机、PDP 管理、连接/重连和命令串行化；MQTT 是依赖 Core 的上层 service；TCP/HTTP 边界留待后续设计 |
 | Modem Adapter | `modem_t` 抽象、具体模块 factory 与 AT 指令/URC 语义翻译 |
 | AT Engine | 通用 AT 协议引擎 + UART 硬件操作，只做命令响应和 URC 前缀分发 |
 
@@ -54,7 +54,7 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 - 业务 App 代码只应 include `lwlte.h` 并调用 `lwlte_*` 操作；板级初始化或 App 自有配置代码可 include `lwlte_air780ep.h` 填写公开的 UART/GPIO 配置。
 - Facade 的通用文件只应调用 service 层 API。
 - Facade 的模块 factory 文件是 composition root，允许认识 AT Engine、Modem、具体 Modem factory 和 Core，用于创建并持有完整依赖树。
-- Service 层仍只能向下调用紧邻的 Modem Adapter，不能直接调用 AT Engine。
+- Core 可以调用紧邻的 Modem Adapter；MQTT 通过 Core command queue 投递模块命令，不直接调用 Modem 或 AT Engine；TCP/HTTP 边界尚未承诺。
 
 | 类别 | 规则 | 示例 |
 |------|------|------|
@@ -77,7 +77,9 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 | 板级初始化 / App 配置代码 | LWLTE Facade 模块 factory | 不限（用于准备公开配置） | `lwlte_air780ep_config_t` 中的 UART/GPIO 字段 |
 | Facade 通用文件 | Core/MQTT/TCP/HTTP 等 service API | 不限 | `lwlte_t`、`core_t`、service 层间类型 |
 | Facade 模块 factory | AT Engine、Modem、具体 Modem factory、Core | 不限（driver/gpio.h、driver/uart.h 等用于配置装配） | 完整装配 API，但不 include 任意 `_priv.h` |
-| Service: Core / future MQTT / future TCP / future HTTP | Modem `modem_*` 统一 API | 不限（FreeRTOS task/queue/timer、esp_event 等） | `modem_t`、service 自身定义的类型 |
+| Service: Core | Modem `modem_*` 统一 API | 不限（FreeRTOS task/queue/timer、esp_event 等） | `modem_t`、Core 自身定义的类型 |
+| Service: MQTT | Core 层间 API、Core command queue（`core_submit_cmd()`） | 不限（FreeRTOS task/queue/timer、esp_event 等） | `core_t`、MQTT 自身定义的类型 |
+| Service: future TCP / future HTTP | 后续边界设计 | 不限 | 后续边界设计 |
 | Modem | AT Engine API | 不限（driver/gpio.h 用于模块复位/电源控制等） | AT Engine 层间头文件、Modem 自身定义的类型 |
 | AT Engine | 无下层（最底层） | 不限（driver/uart.h、FreeRTOS task/queue 等，直接操作硬件） | AT Engine 自身类型 |
 
@@ -253,15 +255,27 @@ static esp_err_t sim800_get_signal(modem_t *me, modem_signal_t *signal)
 
 | 维度 | 说明 |
 |------|------|
-| **职责** | 网络状态机、PDP 激活/去激活管理、连接建立/重连/保活 |
+| **职责** | 网络状态机、PDP 激活/去激活管理、连接建立/重连/保活，并通过 `core_submit_cmd()` 串行化上层 service 协议命令 |
 | **知道什么** | 网络状态迁移规则、重试策略、保活机制、Modem 语义 API |
 | **不知道什么** | 用户门面配置、具体 AT 指令格式、模块型号、底层硬件 |
-| **层间接口** | `core_create()`、`core_start()`、`core_connect()`、`core_register_event_callback()`、`CORE_EVENT` |
+| **层间接口** | `core_create()`、`core_start()`、`core_connect()`、`core_register_event_callback()`、`core_submit_cmd()`、`CORE_EVENT` |
 | **OOP 角色** | 内部 service — 调用 modem 接口，不关心实现 |
 
-Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保活定时器，直接调 `xTaskCreate` 等 API。Core API 是给 Facade 和未来内部 service 使用的层间 API，不是 App 用户 API；App 只通过 `lwlte_*` 门面函数操作 LTE。
+Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保活定时器，直接调 `xTaskCreate` 等 API。Core API 是给 Facade 和上层内部 service 使用的层间 API，不是 App 用户 API；App 只通过 `lwlte_*` 门面函数操作 LTE。
 
-### 5.4 App 层（应用层）
+### 5.4 MQTT Client Service 层（MQTT 客户端服务层）
+
+| 维度 | 说明 |
+|------|------|
+| **职责** | MQTT 连接、订阅、取消订阅、发布和下行数据事件适配 |
+| **知道什么** | Core 层间 API、Core 网络事件、Core protocol event、MQTT 自身状态机 |
+| **不知道什么** | Modem Adapter、AT Engine、具体 AT 指令格式、模块型号 |
+| **层间接口** | `mqtt_client_create()`、`mqtt_client_start()`、`mqtt_client_register_event_callback()`、`mqtt_client_destroy()` |
+| **OOP 角色** | 依赖 Core 的上层 service — 拥有 MQTT FSM，不直接调用 Modem/AT Engine |
+
+MQTT Client Service 通过 Core event handler 接收网络和协议数据事件，通过 `core_submit_cmd()` 提交 MQTT 模块命令。它不 include Modem/AT Engine 头文件，也不直接调用 `modem_*`。
+
+### 5.5 App 层（应用层）
 
 | 维度 | 说明 |
 |------|------|
@@ -319,7 +333,10 @@ Facade factory
     ├─ 5. core_register_event_callback(core, facade_core_event_handler, lte)
     │       └─ Facade 把 CORE_EVENT 翻译为 LWLTE 用户事件
     │
-    └─ 6. core_start(core)                      → 启动内部 service
+    ├─ 6. 可选：mqtt_client_create(&mqtt_cfg, core)
+    │       └─ MQTT service 启用/编译进 Facade 时，在 Core start 前创建并注册事件回调
+    │
+    └─ 7. core_start(core)                      → 启动基础 LTE service
 ```
 
 ```c
@@ -329,6 +346,7 @@ typedef struct lwlte {
     at_engine_t *at;
     modem_t     *modem;
     core_t      *core;
+    mqtt_client_t *mqtt; /* MQTT service 启用/编译进 Facade 时存在 */
     lwlte_event_callback_t event_callback;
     void        *event_user_ctx;
 } lwlte_t;
@@ -372,6 +390,15 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     lte->core = core;
     core_register_event_callback(core, facade_core_event_handler, lte);
 
+#if CONFIG_LWLTE_MQTT_SERVICE
+    mqtt_client_config_t mqtt_cfg = {
+        .client_id = config->mqtt_client_id,
+    };
+    lte->mqtt = mqtt_client_create(&mqtt_cfg, core);
+    if (!lte->mqtt) goto err_core;
+    mqtt_client_register_event_callback(lte->mqtt, facade_mqtt_event_handler, lte);
+#endif
+
     if (core_start(core) != ESP_OK) goto err_core;
     if (lwlte_wait_ready(lte, config->init_ready_timeout_ms) != ESP_OK) goto err_core;
     if (config->auto_connect && lwlte_connect(lte) != ESP_OK) goto err_core;
@@ -380,6 +407,9 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     return ESP_OK;
 
 err_core:
+#if CONFIG_LWLTE_MQTT_SERVICE
+    mqtt_client_destroy(lte ? lte->mqtt : NULL);
+#endif
     core_destroy(core);
 
 err_modem:

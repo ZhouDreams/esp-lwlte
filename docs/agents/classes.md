@@ -7,11 +7,11 @@
 | 可见性 | 落入哪个头文件 | 谁能看到 | 命名前缀 |
 |--------|-------------|---------|---------|
 | 用户 API | `src/include/lwlte*.h` | App 开发者 | `lwlte_` |
-| 层间 API | `src/core/core.h`、`src/modem/modem.h`、`src/modem/modem_air780ep.h`、`src/at_engine/at_engine.h` | 组件内部相邻层；Facade factory 作为 composition root 可见全部装配 API | `core_`、`modem_`、`modem_air780ep_`、`at_engine_` |
+| 层间 API | `src/core/core.h`、`src/mqtt_client/mqtt_client.h`、`src/modem/modem.h`、`src/modem/modem_air780ep.h`、`src/at_engine/at_engine.h` | 组件内部相邻层；Facade factory 作为 composition root 可见全部装配 API | `core_`、`mqtt_client_`、`modem_`、`modem_air780ep_`、`at_engine_` |
 | 模块私有 API | `*_priv.h` | 当前模块自己的 `.c` 文件 | 模块内部命名 |
 | 文件内部 | `.c` 中 static | 当前 `.c` 文件 | 无限制 |
 
-**核心区别**：用户 API 是给 App 开发者用的，层间 API 是层与层之间、以及 Facade 模块 factory 装配时用的。AT Engine、Modem 和 Core 都没有任何用户 API——它们被 LWLTE Facade 封装，最终用户看不到它们的存在。
+**核心区别**：用户 API 是给 App 开发者用的，层间 API 是层与层之间、以及 Facade 模块 factory 装配时用的。AT Engine、Modem、Core 和 MQTT Client Service 都没有任何用户 API——它们被 LWLTE Facade 封装，最终用户看不到它们的存在。
 
 `*_priv.h` 虽然通过 `PRIV_INCLUDE_DIRS` 在编译上可见，但约束上只允许同模块源码 include。Core 不 include `modem_priv.h`，Modem 不 include `core_priv.h`，Facade 不 include 任意 `_priv.h`。
 
@@ -341,8 +341,15 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT 
 | `modem_info_t` | 层间 API | Core + Modem 层 | 值对象 | 模块和 SIM 卡静态信息 |
 | `modem_signal_t` | 层间 API | Core + Modem 层 | 值对象 | 信号质量查询结果 |
 | `modem_pdp_context_t` | 层间 API | Core + Modem 层 | 值对象 | PDP 上下文配置与激活结果 |
+| `modem_mqtt_config_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 配置命令参数，Core 执行 `CORE_CMD_MQTT_CONFIG` 时使用 |
+| `modem_mqtt_open_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT TCP 通道打开参数 |
+| `modem_mqtt_login_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 登录参数 |
+| `modem_mqtt_topic_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 订阅/取消订阅 topic 参数 |
+| `modem_mqtt_publish_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 发布参数，包含 topic 和 payload 指针 |
 | `modem_event_id_t` | 层间 API | Core + Modem 层 | 事件枚举 | URC 翻译后的事件类型 |
 | `modem_event_t` | 层间 API | Core + Modem 层 | 值对象 | Modem event task 上报给 Core 的事件 |
+| `modem_protocol_t` | 层间 API | Core + Modem 层 | 枚举 | Modem 上报的上层协议类型，第一版用于 MQTT 数据事件 |
+| `modem_protocol_data_t` | 层间 API | Core + Modem 层 | 值对象 | Modem 上报给 Core 的协议数据事件 |
 | `modem_event_callback_t` | 层间 API | Core + Modem 层 | 回调接口 | Core 注册，Modem event task 调用 |
 | `modem_air780ep_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Air780EP GPIO、事件任务、默认超时等参数 |
 | `modem_air780ep_t` | 内部 | Air780EP 实现自身 | 子类 | 继承 `modem_t`，实现 Air780EP AT 指令和 URC 翻译 |
@@ -385,6 +392,20 @@ esp_err_t modem_activate_pdp(modem_t *me, uint8_t cid);
 esp_err_t modem_deactivate_pdp(modem_t *me, uint8_t cid);
 esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
+
+esp_err_t modem_mqtt_config(modem_t *me,
+                            const modem_mqtt_config_t *config);
+esp_err_t modem_mqtt_open(modem_t *me,
+                          const modem_mqtt_open_t *open);
+esp_err_t modem_mqtt_login(modem_t *me,
+                           const modem_mqtt_login_t *login);
+esp_err_t modem_mqtt_disconnect(modem_t *me);
+esp_err_t modem_mqtt_subscribe(modem_t *me,
+                               const modem_mqtt_topic_t *topic);
+esp_err_t modem_mqtt_unsubscribe(modem_t *me,
+                                 const modem_mqtt_topic_t *topic);
+esp_err_t modem_mqtt_publish(modem_t *me,
+                             const modem_mqtt_publish_t *publish);
 ```
 
 **关键内部字段类别**（非完整代码快照，实际以 `src/modem/modem_priv.h` 为准）：
@@ -408,6 +429,41 @@ esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
 **可见性**：内部；只给 Modem 通用实现和具体子类使用，不放入 `src/modem/modem.h`
 **OOP 角色**：虚函数表
 
+**MQTT 命令值对象**（`src/modem/modem.h`）：
+
+```c
+typedef struct {
+    const char *client_id;
+    const char *username;
+    const char *password;
+} modem_mqtt_config_t;
+
+typedef struct {
+    const char *host;
+    uint16_t port;
+} modem_mqtt_open_t;
+
+typedef struct {
+    bool clean_session;
+    uint16_t keepalive_s;
+} modem_mqtt_login_t;
+
+typedef struct {
+    const char *topic;
+    uint8_t qos;
+} modem_mqtt_topic_t;
+
+typedef struct {
+    const char *topic;
+    const uint8_t *payload;
+    size_t payload_len;
+    uint8_t qos;
+    bool retain;
+} modem_mqtt_publish_t;
+```
+
+这些 MQTT 值对象属于 Modem Adapter 的模块命令语义，不是 MQTT Client Service API。Core 执行 `core_cmd_t` 时把 Core command 数据转换成这些值对象，再调用对应 `modem_mqtt_*` 包装 API；MQTT Client Service 不 include `modem.h`，也不直接调用这些函数。
+
 ```c
 typedef struct modem_ops {
     esp_err_t (*destroy)(modem_t *me);
@@ -423,6 +479,19 @@ typedef struct modem_ops {
     esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);
     esp_err_t (*get_pdp_context)(modem_t *me, uint8_t cid,
                                   modem_pdp_context_t *pdp);
+    esp_err_t (*mqtt_config)(modem_t *me,
+                             const modem_mqtt_config_t *config);
+    esp_err_t (*mqtt_open)(modem_t *me,
+                           const modem_mqtt_open_t *open);
+    esp_err_t (*mqtt_login)(modem_t *me,
+                            const modem_mqtt_login_t *login);
+    esp_err_t (*mqtt_disconnect)(modem_t *me);
+    esp_err_t (*mqtt_subscribe)(modem_t *me,
+                                const modem_mqtt_topic_t *topic);
+    esp_err_t (*mqtt_unsubscribe)(modem_t *me,
+                                  const modem_mqtt_topic_t *topic);
+    esp_err_t (*mqtt_publish)(modem_t *me,
+                              const modem_mqtt_publish_t *publish);
 } modem_ops_t;
 ```
 
@@ -461,6 +530,15 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
 | `activate_pdp` | 注册和附着已就绪后激活数据面并获得 IP | Air780EP TCPIP 路径使用 `AT+CSTT`、`AT+CIICR`、`AT+CIFSR`；Core 先通过 `get_sim_status`、`get_registration`、`get_packet_attach_status` 等阶段确认前置条件 |
 | `deactivate_pdp` | 关闭数据面并清理 Air780EP TCPIP 场景 | 优先 `AT+CIPSHUT`；标准 PDP 路径需要时可使用 `AT+CGACT=0,<cid>` |
 | `get_pdp_context` | 返回 APN、激活状态和 IP 地址快照 | 组合缓存值、`AT+CGDCONT?`、`AT+CGACT?`、`AT+CGPADDR=<cid>`；TCPIP 路径下也可使用最近一次 `AT+CIFSR` 结果 |
+| `mqtt_config` | 配置模块内置 MQTT client 参数，不建立网络连接 | `AT+MCONFIG` |
+| `mqtt_open` | 打开模块 MQTT TCP 通道 | `AT+MIPSTART`，成功接受 `CONNECT OK` / `ALREADY CONNECT`，失败识别 `CONNECT FAIL` |
+| `mqtt_login` | 执行 MQTT CONNECT 登录 broker | `AT+MCONNECT`，成功 `CONNACK OK` |
+| `mqtt_disconnect` | 断开 MQTT broker 连接 | `AT+MDISCONNECT` |
+| `mqtt_subscribe` | 订阅 MQTT topic | `AT+MSUB`，成功 `SUBACK` |
+| `mqtt_unsubscribe` | 取消订阅 MQTT topic | `AT+MUNSUB`，成功 `UNSUBACK` |
+| `mqtt_publish` | 发布定长 MQTT payload | `AT+MPUBEX` + payload prompt |
+
+MQTT command ops 是 Modem Adapter 暴露给 Core 的模块语义能力，用于执行 Core command queue 中的 MQTT 命令。它们不改变 MQTT Client Service 的依赖方向：MQTT service 仍只调用 Core，不调用 Modem。
 
 `AT+IPR`、`AT+IFC`、`AT&W` 属于板级串口/持久化配置，不进入 Modem ops。`AT+COPS?`、`AT^SYSINFO`、`AT+CIPPING` 属于诊断或联网自检，第一版可作为 Air780EP 内部 helper，不先扩大 Core 可见 API。`AT+CSCLK`、`AT+POWERMODE`、`AT+CFGRI` 等低功耗指令需要 Core 低功耗策略后再设计独立 ops。
 
@@ -598,8 +676,22 @@ typedef enum {
     MODEM_EVENT_PDP_ACTIVATED,      // PDP 激活
     MODEM_EVENT_PDP_DEACTIVATED,    // PDP 去激活
     MODEM_EVENT_SIGNAL_CHANGED,     // 信号质量变化
+    MODEM_EVENT_PROTOCOL_DATA,      // 上层协议数据事件，如 MQTT 下行消息
+    MODEM_EVENT_PROTOCOL_CLOSED,    // 上层协议连接关闭事件
     MODEM_EVENT_ERROR,              // 模块侧错误事件
 } modem_event_id_t;
+
+typedef enum {
+    MODEM_PROTOCOL_MQTT = 0,        // MQTT 协议事件
+} modem_protocol_t;
+
+typedef struct {
+    modem_protocol_t protocol;      // 协议类型
+    const char      *topic;         // MQTT topic，回调期间有效
+    size_t           topic_len;     // topic 长度
+    const uint8_t   *payload;       // MQTT payload，回调期间有效
+    size_t           payload_len;   // payload 长度
+} modem_protocol_data_t;
 
 typedef struct {
     modem_event_id_t id;
@@ -608,6 +700,7 @@ typedef struct {
         modem_reg_status_t   reg_status;
         modem_pdp_context_t  pdp;
         modem_signal_t       signal;
+        modem_protocol_data_t protocol_data;
         int                  error_code;
     } data;
 } modem_event_t;
@@ -618,6 +711,8 @@ typedef void (*modem_event_callback_t)(modem_t *modem,
 ```
 
 **硬约束**：Air780EP 的 AT Engine URC handler 不得直接调用 `modem_event_callback_t`。URC handler 只能把 `modem_event_t` 投递到 `modem_t.event_queue`，由 `modem_t.event_task` 调用 Core 注册的回调。
+
+`MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的内存中，由 Modem event task 在 Core 回调返回后释放。Core 若要通过 `CORE_EVENT_PROTOCOL_DATA` 继续上报给 MQTT service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
 
 ### 2.11 `modem_air780ep_config_t` — Air780EP 配置
 
@@ -776,7 +871,13 @@ Core Service
 | `core_net_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | 网络连接状态 |
 | `core_event_id_t` | 层间 API | Facade + esp_event | 事件枚举 | Core 上行事件类型，同时作为 esp_event event_id |
 | `core_event_data_t` | 层间 API | Facade + esp_event | 值对象 | 事件携带数据 |
+| `core_protocol_t` | 层间 API | MQTT Client Service + Core 内部 | 枚举 | Core protocol event 所属协议类型 |
+| `core_protocol_data_t` | 层间 API | MQTT Client Service + Core 内部 | 值对象 | Core 上报给上层 protocol service 的数据事件 |
 | `core_event_callback_t` | 层间 API | Facade | 回调接口 | Facade 接收 Core 事件的便捷回调签名 |
+| `core_cmd_type_t` | 层间 API | MQTT Client Service + Core 内部 | 命令枚举 | 上层 service 投递给 Core 的协议命令类型 |
+| `core_cmd_result_t` | 层间 API | MQTT Client Service + Core 内部 | 结果枚举 | Core command 执行结果 |
+| `core_cmd_t` | 层间 API | MQTT Client Service + Core 内部 | 值对象 | 上层 service 投递到 Core 的 typed command request |
+| `core_cmd_done_callback_t` | 层间 API | MQTT Client Service + Core 内部 | 回调接口 | Core command 完成后回调上层 service，用于投递上层 FSM 信号 |
 | `core_fsm_sig_type_t` | 模块私有 API | Core FSM | 信号枚举 | FSM 内部信号类型 |
 | `core_fsm_sig_t` | 模块私有 API | Core FSM | 值对象 | FSM 队列中的信号 |
 | `core_fsm_t` | 模块私有 API | Core | 组合成员 | FSM 线程 + 队列管理 |
@@ -829,6 +930,7 @@ esp_err_t core_get_net_state(core_t *me, core_net_state_t *state);
 
 esp_err_t core_connect(core_t *me);
 esp_err_t core_disconnect(core_t *me);
+esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
 ```
 
 **关键内部字段类别**（非完整代码快照，实际以 `src/core/core_priv.h` 为准）：
@@ -879,13 +981,28 @@ typedef enum {
     CORE_EVENT_NET_ONLINE,
     CORE_EVENT_NET_OFFLINE,
     CORE_EVENT_NET_ERROR,
+    CORE_EVENT_PROTOCOL_DATA,
+    CORE_EVENT_PROTOCOL_CLOSED,
     CORE_EVENT_STOPPED,
     CORE_EVENT_ERROR,
 } core_event_id_t;
 
+typedef enum {
+    CORE_PROTOCOL_MQTT = 0,
+} core_protocol_t;
+
+typedef struct {
+    core_protocol_t protocol;
+    const char *topic;
+    size_t topic_len;
+    const uint8_t *payload;
+    size_t payload_len;
+} core_protocol_data_t;
+
 typedef struct {
     core_net_state_t net_state;
     int              error_code;
+    core_protocol_data_t protocol_data;
 } core_event_data_t;
 
 typedef void (*core_event_callback_t)(core_t *core,
@@ -896,7 +1013,95 @@ typedef void (*core_event_callback_t)(core_t *core,
 
 **边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Facade 负责把这些层间状态翻译为 `lwlte_state_t`、`lwlte_net_state_t` 和用户事件。
 
-### 3.5 `core_fsm_t` — FSM 组件
+`core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 Core event callback 执行期间有效；MQTT Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据。
+
+### 3.5 Core command queue 类型
+
+**所属层**：Core Service
+**可见性**：层间 API — `src/core/core.h`，供 MQTT Client Service 使用
+**OOP 角色**：命令枚举 + 结果枚举 + 值对象 + 回调接口
+
+Core command queue 是本设计中 MQTT Client Service 使用的 typed command 入口。MQTT Client Service 通过 `core_submit_cmd()` 投递 MQTT 模块命令；Core FSM 串行执行这些 MQTT command，执行时调用 `modem_*` API，并在命令完成后通过 callback 把结果交还给 MQTT Client Service。MQTT 不直接调用 Modem 或 AT Engine。TCP/HTTP 后续可以复用这个 command 边界，但本节不承诺它们的具体跨层边界。
+
+```c
+typedef enum {
+    CORE_CMD_MQTT_CONFIG = 0,
+    CORE_CMD_MQTT_OPEN,
+    CORE_CMD_MQTT_LOGIN,
+    CORE_CMD_MQTT_DISCONNECT,
+    CORE_CMD_MQTT_SUBSCRIBE,
+    CORE_CMD_MQTT_UNSUBSCRIBE,
+    CORE_CMD_MQTT_PUBLISH,
+} core_cmd_type_t;
+
+typedef enum {
+    CORE_CMD_RESULT_OK = 0,
+    CORE_CMD_RESULT_ERROR,
+    CORE_CMD_RESULT_TIMEOUT,
+    CORE_CMD_RESULT_INVALID_RESPONSE,
+} core_cmd_result_t;
+
+typedef void (*core_cmd_done_callback_t)(core_t *core,
+                                         core_cmd_type_t type,
+                                         core_cmd_result_t result,
+                                         const void *result_data,
+                                         void *user_ctx);
+
+typedef struct {
+    core_cmd_type_t type;
+    core_cmd_done_callback_t done_cb;
+    void *user_ctx;
+    uint32_t timeout_ms;
+
+    union {
+        struct {
+            const char *client_id;
+            const char *username;
+            const char *password;
+        } mqtt_config;
+
+        struct {
+            const char *host;
+            uint16_t port;
+        } mqtt_open;
+
+        struct {
+            bool clean_session;
+            uint16_t keepalive_s;
+        } mqtt_login;
+
+        struct {
+            const char *topic;
+            uint8_t qos;
+        } mqtt_subscribe;
+
+        struct {
+            const char *topic;
+        } mqtt_unsubscribe;
+
+        struct {
+            const char *topic;
+            const uint8_t *payload;
+            size_t payload_len;
+            uint8_t qos;
+            bool retain;
+        } mqtt_publish;
+    } data;
+} core_cmd_t;
+```
+
+**关键设计决策**：
+- `core_submit_cmd()` 复制异步执行所需的字符串和 payload；调用方传入的指针只需在调用期间有效。
+- `core_submit_cmd()` 深拷贝 `core_cmd_t` 到 Core-owned heap object，然后发送 `CORE_SIG_SERVICE_CMD` 到 `core_fsm_t.queue`。
+- Core FSM 成功入队后拥有复制出的 command，执行 command 并调用 `done_cb` 后释放它。
+- 如果 enqueue 失败，`core_submit_cmd()` 在返回 `ESP_FAIL` 前释放复制出的 command。
+- Core FSM 是 command 的唯一执行位置，执行 command 时可以调用 `modem_*` API。
+- `done_cb` 必须短小非阻塞；MQTT 的 `done_cb` 只投递 `MQTT_SIG_CORE_CMD_DONE` 到 MQTT FSM 队列，不直接修改 MQTT 状态。
+- `result_data` 由 Core 拥有，只在 `done_cb` 调用期间有效；上层 service 如需在 callback 返回后继续使用，必须先复制数据再投递自己的 FSM 信号。第一版 MQTT command 可以传 `NULL`，直到后续 command 需要结构化结果数据。
+- Core 调用 `done_cb` 时不得持有 `core->lock`。
+- `core_cmd_t` 是内部 service 层命令对象，不是 App 用户 API；App 不 include `core.h`，也不直接调用 `core_submit_cmd()`。
+
+### 3.6 `core_fsm_t` — FSM 组件
 
 **所属层**：Core Service
 **可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
@@ -909,6 +1114,7 @@ typedef enum {
     CORE_SIG_STOP,
     CORE_SIG_NET_ACTIVATE,
     CORE_SIG_NET_DEACTIVATE,
+    CORE_SIG_SERVICE_CMD,
     CORE_SIG_NET_STEP_DONE,
     CORE_SIG_NET_STEP_TIMEOUT,
     CORE_SIG_RECONNECT,
@@ -917,6 +1123,7 @@ typedef enum {
 typedef struct {
     core_fsm_sig_type_t type;
     modem_event_t       modem_event;
+    core_cmd_t         *service_cmd;
     int                 error_code;
 } core_fsm_sig_t;
 
@@ -934,7 +1141,7 @@ typedef struct {
 - `CORE_SIG_MODEM_EVENT` 是 Modem 回调的唯一入口；Modem event task 回调中只投递信号，不直接推 Core 状态。
 - `CORE_SIG_RECONNECT` 由 FreeRTOS software timer 回调发送。
 
-### 3.6 `net_mgr_t` — 网络管理组件
+### 3.7 `net_mgr_t` — 网络管理组件
 
 **所属层**：Core Service
 **可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
@@ -989,7 +1196,7 @@ typedef struct {
 
 第一版只做固定延迟重连，不做指数退避。保活机制后续版本再加。
 
-### 3.7 `pdp_mgr_t` — PDP 管理组件
+### 3.8 `pdp_mgr_t` — PDP 管理组件
 
 **所属层**：Core Service
 **可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
@@ -1006,7 +1213,7 @@ typedef struct {
 
 第一版仅做 PDP context 缓存，提供 `pdp_mgr_get()` / `pdp_mgr_update()` 两个内部接口。后续加多 PDP 管理时在这里扩展。
 
-### 3.8 Core 线程模型
+### 3.9 Core 线程模型
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -1021,6 +1228,10 @@ typedef struct {
 │          │          ──→ 释放 lock → 返回                     │
 │          │          ★ Facade 调用不阻塞在 modem 操作上       │
 │          │                                                  │
+│  MQTT FSM task                                              │
+│  └─ core_submit_cmd(core, &cmd)                             │
+│       └─ 深拷贝 core_cmd_t → CORE_SIG_SERVICE_CMD → fsm.queue│
+│                                                             │
 │  Modem event task                                           │
 │  ┌────────────────┐                                         │
 │  │ event_callback │──→ 构造 core_fsm_sig_t                  │
@@ -1032,6 +1243,7 @@ typedef struct {
 │  │ fsm_task       │──→ xQueueReceive(fsm.queue)             │
 │  └───────┬────────┘    ──→ 根据 core->state 分发信号        │
 │          │          ──→ MODEM_EVENT? → 更新状态/推进 net_mgr │
+│          │          ──→ SERVICE_CMD? → 执行 Core-owned cmd   │
 │          │          ──→ NET_STEP_DONE? → 调 modem_* API     │
 │          │              (阻塞等待 AT 命令完成)               │
 │          │          ──→ 状态变化 → 构建 event_data          │
@@ -1045,6 +1257,8 @@ typedef struct {
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+Core FSM 处理 `CORE_SIG_SERVICE_CMD` 时执行 Core-owned `core_cmd_t`，按命令调用对应 `modem_*` API，随后调用 `done_cb` 并释放 command。
 
 **硬约束**：
 
@@ -1064,9 +1278,13 @@ typedef struct {
 | `MODEM_EVENT_REG_CHANGED` | 更新 net_mgr 可用的注册状态 |
 | `MODEM_EVENT_PDP_ACTIVATED` | net_state → ONLINE，发布 `CORE_EVENT_NET_ONLINE` |
 | `MODEM_EVENT_PDP_DEACTIVATED` | net_state → OFFLINE，发布 `CORE_EVENT_NET_OFFLINE`，启动重连定时器 |
+| `MODEM_EVENT_PROTOCOL_DATA` | Core 复制协议数据并发布 `CORE_EVENT_PROTOCOL_DATA`；MQTT service 再从 Core event handler 投递 MQTT FSM 信号 |
+| `MODEM_EVENT_PROTOCOL_CLOSED` | Core 发布 `CORE_EVENT_PROTOCOL_CLOSED`；MQTT service 视为协议连接关闭并回到等待网络或错误处理流程 |
 | `MODEM_EVENT_ERROR` | 根据 error_code 决定重试或进入 ERROR 状态 |
 
-### 3.9 初始化与装配
+`MODEM_EVENT_PROTOCOL_DATA` 中的指针只在 Modem callback 执行期间有效，Core 发布 `CORE_EVENT_PROTOCOL_DATA` 前必须复制数据。
+
+### 3.10 初始化与装配
 
 ```c
 /* Facade 模块 factory — Core 不依赖具体模块型号 */
@@ -1112,6 +1330,354 @@ if (user_config->auto_connect) {
 
 ---
 
-## 4. App（应用层）
+## 4. MQTT Client Service（MQTT 客户端服务层）
+
+MQTT Client Service 是 Core 之上的独立 service，负责 MQTT 连接、订阅、取消订阅、发布和下行数据事件。它拥有自己的 FSM task、FSM queue 和 MQTT 事件；它依赖 Core 的网络状态、Core event loop 和 Core command queue；它不直接调用 Modem Adapter 或 AT Engine。
+
+MQTT 可以直接使用 ESP-IDF / FreeRTOS API，例如 `xTaskCreate()`、`xQueueCreate()`、`xQueueSend()`、software timer 和 `esp_event`。这不改变层间调用规则：MQTT 运行期只能调用 Core 层间 API，不能 include `modem.h`、`modem_air780ep.h`、`at_engine.h` 或其他模块的 `_priv.h`。
+
+### 4.1 类总览
+
+| 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
+|----|--------|---------|---------|------|
+| `mqtt_client_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Broker、client_id、认证、keepalive、FSM 参数 |
+| `mqtt_client_t` | 层间 API (opaque) | Facade | service 句柄 | MQTT Client Service 实例 |
+| `mqtt_client_transport_t` | 层间 API | Facade + MQTT 内部 | 枚举 | MQTT 传输类型，第一版只支持 Plain TCP |
+| `mqtt_client_state_t` | 层间 API | Facade + MQTT 内部 | 状态枚举 | MQTT 生命周期和连接状态 |
+| `mqtt_client_event_id_t` | 层间 API | Facade + esp_event | 事件枚举 | MQTT 上行事件类型，同时作为 esp_event event_id |
+| `mqtt_client_event_data_t` | 层间 API | Facade | 值对象 | MQTT 事件数据 |
+| `mqtt_client_publish_t` | 层间 API | Facade | 值对象 | 发布请求 |
+| `mqtt_client_msg_t` | 层间 API | Facade | 值对象 | 收到的 MQTT 消息 |
+| `mqtt_client_operation_t` | 层间 API | Facade + MQTT 内部 | 枚举 | MQTT 操作类型，用于操作完成事件 |
+| `mqtt_fsm_sig_type_t` | 模块私有 API | MQTT FSM | 信号枚举 | MQTT FSM 内部信号类型 |
+| `mqtt_fsm_sig_t` | 模块私有 API | MQTT FSM | 值对象 | MQTT FSM 队列中的信号 |
+| `mqtt_connect_step_t` | 模块私有 API | MQTT FSM | 状态枚举 | MQTT 连接子状态机步骤 |
+| `mqtt_pending_cmd_t` | 模块私有 API | MQTT FSM | 工作上下文 | 正在等待 Core command 结果的命令上下文 |
+
+### 4.2 `mqtt_client_config_t` — MQTT 配置
+
+**所属层**：MQTT Client Service
+**可见性**：层间 API — Facade 模块 factory 创建 MQTT service 时填充并传入
+**OOP 角色**：配置结构体
+
+```c
+typedef enum {
+    MQTT_CLIENT_TRANSPORT_PLAIN_TCP = 0,
+    MQTT_CLIENT_TRANSPORT_TLS,
+} mqtt_client_transport_t;
+
+typedef struct {
+    mqtt_client_transport_t transport;   // 传输类型；第一版只支持 PLAIN_TCP
+    const char *host;                    // Broker 主机名
+    uint16_t port;                       // Broker 端口
+    const char *client_id;               // MQTT client id
+    const char *username;                // 用户名，可为 NULL
+    const char *password;                // 密码，可为 NULL
+    uint16_t keepalive_s;                // keepalive 秒数，0 使用默认值
+    bool clean_session;                  // clean session 标志
+    int fsm_queue_size;                  // MQTT FSM 队列长度
+    int fsm_task_stack;                  // MQTT FSM task 栈大小
+    int fsm_task_priority;               // MQTT FSM task 优先级
+} mqtt_client_config_t;
+```
+
+`mqtt_client_create()` 会复制需要长期保存的字符串。`MQTT_CLIENT_TRANSPORT_TLS` 作为类型预留，第一版返回 `ESP_ERR_NOT_SUPPORTED`。
+
+### 4.3 `mqtt_client_t` — MQTT 客户端句柄
+
+**所属层**：MQTT Client Service
+**可见性**：层间 API (opaque) — Facade 持有句柄；struct 定义在 `src/mqtt_client/mqtt_client_priv.h` 或 `.c` 中
+**OOP 角色**：service 对象，组合持有 MQTT FSM、事件和 Core 依赖
+
+**层间方法**（`src/mqtt_client/mqtt_client.h`）：
+
+```c
+mqtt_client_t *mqtt_client_create(const mqtt_client_config_t *config,
+                                  core_t *core);
+esp_err_t mqtt_client_destroy(mqtt_client_t *me);
+esp_err_t mqtt_client_start(mqtt_client_t *me);
+esp_err_t mqtt_client_stop(mqtt_client_t *me);
+
+esp_err_t mqtt_client_register_event_callback(mqtt_client_t *me,
+                                              mqtt_client_event_callback_t callback,
+                                              void *user_ctx);
+esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_t *me);
+
+esp_err_t mqtt_client_get_state(mqtt_client_t *me,
+                                mqtt_client_state_t *state);
+esp_err_t mqtt_client_subscribe(mqtt_client_t *me,
+                                const char *topic,
+                                uint8_t qos);
+esp_err_t mqtt_client_unsubscribe(mqtt_client_t *me,
+                                  const char *topic);
+esp_err_t mqtt_client_publish(mqtt_client_t *me,
+                              const mqtt_client_publish_t *request);
+```
+
+**关键内部字段类别**：
+- `config`：配置快照，包含复制后的 host、client_id、username、password。
+- `core`：Facade factory 注入的 `core_t` 句柄，MQTT 借用但不拥有生命周期。
+- `event_loop`、`event_callback`、`event_user_ctx`：MQTT 事件分发和 Facade 桥接回调。
+- `fsm_task`、`fsm_queue`、`fsm_task_done_sema`：MQTT 独立状态机线程和信号队列。
+- `state`、`connect_step`、`pending_cmd`：MQTT 生命周期、连接子步骤和等待中的 Core command。
+- `lock`、`destroying`、`started`、`net_online`：短状态字段和销毁保护。
+
+**关键设计决策**：
+- MQTT 没有 ops 多态；第一版只有一个 MQTT service 实现。
+- MQTT 不是 Core 的子类，不能向上转型为 `core_t *`。
+- MQTT 不保存 `modem_t *`、`at_engine_t *` 或具体模块句柄。
+- `lock` 只保护短字段，MQTT FSM 调用 `core_submit_cmd()` 时不持锁。
+
+### 4.4 MQTT 状态、事件和消息类型
+
+**所属层**：MQTT Client Service
+**可见性**：层间 API
+**OOP 角色**：状态枚举 + 事件枚举 + 值对象 + 回调接口
+
+```c
+typedef enum {
+    MQTT_CLIENT_STATE_STOPPED = 0,
+    MQTT_CLIENT_STATE_WAITING_NET,
+    MQTT_CLIENT_STATE_CONNECTING,
+    MQTT_CLIENT_STATE_CONNECTED,
+    MQTT_CLIENT_STATE_DISCONNECTING,
+    MQTT_CLIENT_STATE_ERROR,
+    MQTT_CLIENT_STATE_DESTROYING,
+} mqtt_client_state_t;
+
+ESP_EVENT_DECLARE_BASE(MQTT_CLIENT_EVENT);
+
+typedef enum {
+    MQTT_CLIENT_EVENT_STARTED = 0,
+    MQTT_CLIENT_EVENT_STOPPED,
+    MQTT_CLIENT_EVENT_CONNECTING,
+    MQTT_CLIENT_EVENT_CONNECTED,
+    MQTT_CLIENT_EVENT_DISCONNECTED,
+    MQTT_CLIENT_EVENT_SUBSCRIBED,
+    MQTT_CLIENT_EVENT_UNSUBSCRIBED,
+    MQTT_CLIENT_EVENT_PUBLISHED,
+    MQTT_CLIENT_EVENT_DATA,
+    MQTT_CLIENT_EVENT_ERROR,
+} mqtt_client_event_id_t;
+
+typedef enum {
+    MQTT_CLIENT_OPERATION_CONNECT = 0,
+    MQTT_CLIENT_OPERATION_DISCONNECT,
+    MQTT_CLIENT_OPERATION_SUBSCRIBE,
+    MQTT_CLIENT_OPERATION_UNSUBSCRIBE,
+    MQTT_CLIENT_OPERATION_PUBLISH,
+} mqtt_client_operation_t;
+
+typedef struct {
+    const char *topic;
+    const uint8_t *payload;
+    size_t payload_len;
+    uint8_t qos;
+    bool retain;
+} mqtt_client_publish_t;
+
+typedef struct {
+    const char *topic;
+    size_t topic_len;
+    const uint8_t *payload;
+    size_t payload_len;
+} mqtt_client_msg_t;
+
+typedef struct {
+    mqtt_client_state_t state;
+    int error_code;
+    union {
+        mqtt_client_operation_t operation;
+        mqtt_client_msg_t msg;
+    } data;
+} mqtt_client_event_data_t;
+
+typedef void (*mqtt_client_event_callback_t)(mqtt_client_t *client,
+                                             mqtt_client_event_id_t event_id,
+                                             const mqtt_client_event_data_t *data,
+                                             void *user_ctx);
+```
+
+`mqtt_client_msg_t` 中的指针只在 MQTT 事件回调期间有效；Facade 若要把数据继续传给用户异步保存，必须复制 topic 和 payload。
+
+### 4.5 `mqtt_fsm_sig_t` — MQTT FSM 信号
+
+**所属层**：MQTT Client Service
+**可见性**：模块私有 API — `src/mqtt_client/mqtt_client_priv.h`，只允许 MQTT 源码 include
+**OOP 角色**：信号枚举 + 值对象
+
+```c
+typedef enum {
+    MQTT_SIG_START = 0,
+    MQTT_SIG_STOP,
+    MQTT_SIG_NET_ONLINE,
+    MQTT_SIG_NET_OFFLINE,
+    MQTT_SIG_CORE_CMD_DONE,
+    MQTT_SIG_SUBSCRIBE,
+    MQTT_SIG_UNSUBSCRIBE,
+    MQTT_SIG_PUBLISH,
+    MQTT_SIG_PROTOCOL_DATA,
+    MQTT_SIG_PROTOCOL_CLOSED,
+} mqtt_fsm_sig_type_t;
+
+typedef struct {
+    mqtt_fsm_sig_type_t type;
+    core_cmd_type_t core_cmd_type;
+    core_cmd_result_t core_result;
+    int error_code;
+    void *data;
+    size_t data_size;
+} mqtt_fsm_sig_t;
+```
+
+App/Facade API、Core event handler 和 Core command done callback 都只投递 `mqtt_fsm_sig_t`，不直接推进 MQTT 状态。
+
+### 4.6 `mqtt_pending_cmd_t` — Core 命令等待上下文
+
+**所属层**：MQTT Client Service
+**可见性**：模块私有 API
+**OOP 角色**：工作上下文
+
+```c
+typedef enum {
+    MQTT_CONNECT_STEP_IDLE = 0,
+    MQTT_CONNECT_STEP_CONFIG,
+    MQTT_CONNECT_STEP_OPEN,
+    MQTT_CONNECT_STEP_LOGIN,
+    MQTT_CONNECT_STEP_DONE,
+    MQTT_CONNECT_STEP_ERROR,
+} mqtt_connect_step_t;
+
+typedef struct {
+    bool active;
+    core_cmd_type_t type;
+    mqtt_client_operation_t operation;
+    uint32_t started_ms;
+    uint32_t timeout_ms;
+} mqtt_pending_cmd_t;
+```
+
+`mqtt_pending_cmd_t` 只描述 MQTT 当前等待的 Core command，不保存 Core command 内部深拷贝数据。Core command 数据由 Core 拥有并在 command 完成后释放。
+
+### 4.7 Core command queue 边界
+
+MQTT 所有模块命令都通过 `core_submit_cmd()` 投递给 Core。MQTT 不生成 AT 字符串，不调用 `modem_*`，也不注册 AT Engine URC。Core command queue 的作用是把 MQTT Client Service 的业务命令串行化到 Core FSM，再由 Core 调用 Modem Adapter。TCP/HTTP 后续可以复用这个命令边界，但具体边界不在本节承诺。
+
+| MQTT 操作 | Core command | Air780EP 第一版底层命令 |
+|-----------|--------------|--------------------------|
+| 配置 MQTT 参数 | `CORE_CMD_MQTT_CONFIG` | `AT+MCONFIG` |
+| 打开 MQTT TCP 通道 | `CORE_CMD_MQTT_OPEN` | `AT+MIPSTART`，成功接受 `CONNECT OK` / `ALREADY CONNECT` |
+| MQTT 登录 | `CORE_CMD_MQTT_LOGIN` | `AT+MCONNECT`，成功接受 `CONNACK OK` |
+| 断开 MQTT | `CORE_CMD_MQTT_DISCONNECT` | `AT+MDISCONNECT` |
+| 订阅 | `CORE_CMD_MQTT_SUBSCRIBE` | `AT+MSUB`，成功 `SUBACK` |
+| 取消订阅 | `CORE_CMD_MQTT_UNSUBSCRIBE` | `AT+MUNSUB`，成功 `UNSUBACK` |
+| 发布 | `CORE_CMD_MQTT_PUBLISH` | `AT+MPUBEX` + payload prompt |
+
+表中的 Air780EP 命令只是 Core/Modem 第一版实现映射，不属于 MQTT service 的实现细节。
+
+### 4.8 MQTT 连接与操作流程
+
+```text
+STOPPED
+  └─ mqtt_client_start()
+      ├─ Core net offline → WAITING_NET
+      └─ Core net online  → CONNECTING
+            └─ CONFIG → OPEN → LOGIN → CONNECTED
+```
+
+```text
+CONNECTED
+  └─ CORE_EVENT_NET_OFFLINE
+      ├─ 清除 connected 状态
+      ├─ 发布 MQTT_CLIENT_EVENT_DISCONNECTED
+      └─ WAITING_NET
+```
+
+```text
+CONNECTED 或 transport 已打开
+  └─ mqtt_client_stop()
+      ├─ 提交 CORE_CMD_MQTT_DISCONNECT
+      ├─ 等待 command 完成或 stop 超时
+      ├─ 注销 Core event handler
+      ├─ 停止 MQTT FSM task
+      └─ 发布 MQTT_CLIENT_EVENT_STOPPED
+```
+
+第一版不隐藏缓存 publish/subscribe/unsubscribe 请求。MQTT 未连接时，这些 API 返回 `ESP_ERR_INVALID_STATE`。
+
+### 4.9 MQTT URC / 数据上行路径
+
+Air780EP 第一版使用 `+MSUB:` 作为 MQTT 下行数据 URC。新的依赖方向不允许 MQTT 直接注册 AT Engine URC handler，数据上行路径如下：
+
+```text
+AT Engine RX task
+  └─ Modem Air780EP URC handler
+       └─ 解析 +MSUB: 为 modem_event_t
+            └─ Modem event_task 调用 Core 回调
+                 └─ Core FSM 发布 CORE_EVENT_PROTOCOL_DATA
+                      └─ MQTT core_event_handler 深拷贝 topic/payload
+                           └─ xQueueSend(mqtt.fsm_queue)
+                                └─ MQTT FSM 发布 MQTT_CLIENT_EVENT_DATA
+```
+
+Core protocol event 数据使用回调期间有效的指针，MQTT service 入队前必须复制 topic 和 payload。
+
+### 4.10 MQTT 线程模型
+
+```text
+Facade/App task
+  └─ mqtt_client_start/publish/subscribe
+       └─ 参数检查 + 请求深拷贝
+            └─ xQueueSend(mqtt.fsm_queue)
+
+Core event loop task
+  └─ CORE_EVENT_NET_ONLINE / OFFLINE / PROTOCOL_DATA
+       └─ MQTT core_event_handler
+            └─ 深拷贝必要数据
+                 └─ xQueueSend(mqtt.fsm_queue)
+
+MQTT FSM task
+  └─ 串行处理 MQTT 信号
+       ├─ CONNECTING: submit CORE_CMD_MQTT_CONFIG/OPEN/LOGIN
+       ├─ CONNECTED: submit publish/subscribe/unsubscribe
+       └─ 状态变化后 post MQTT_CLIENT_EVENT
+
+Core FSM task
+  └─ 串行处理 core_cmd_t
+       └─ 调 modem_* API
+            └─ Air780EP 子类发送 AT 命令
+```
+
+**硬约束**：
+- MQTT FSM 可以阻塞等待自身队列，但 App task 不阻塞等待 MQTT 连接完成。
+- MQTT FSM 调用 `core_submit_cmd()` 时不持有 `mqtt->lock`。
+- Core command done callback 不直接修改 MQTT 状态，只投递 `MQTT_SIG_CORE_CMD_DONE`。
+- Core event handler 只做校验、深拷贝和入队。
+- MQTT destroy 先停止 FSM，再注销 Core event handler，再释放已排队信号和配置副本。
+- `mqtt_client_stop()` 在连接已建立或 transport 已打开时提交 `CORE_CMD_MQTT_DISCONNECT`，并且必须有超时兜底。
+
+### 4.11 错误处理规则
+
+- MQTT 层间 API 统一返回 `esp_err_t` 或 NULL 句柄。
+- 参数错误返回 `ESP_ERR_INVALID_ARG`。
+- 生命周期错误、未连接时发布/订阅/取消订阅返回 `ESP_ERR_INVALID_STATE`。
+- 队列提交失败返回 `ESP_FAIL`。
+- Core command 超时映射为 `ESP_ERR_TIMEOUT`。
+- 第一版 TLS 返回 `ESP_ERR_NOT_SUPPORTED`。
+- 协议数据或响应格式异常返回 `ESP_ERR_INVALID_RESPONSE`。
+- MQTT 保存最近一次错误码，并通过 `MQTT_CLIENT_EVENT_ERROR` 上报。
+
+### 4.12 与 Core / Modem / AT Engine 的边界
+
+- MQTT 可以调用 `core_get_event_loop()`、`core_get_net_state()` 和 `core_submit_cmd()`，因为 Core 是 MQTT 的直接依赖。
+- MQTT 不 include `modem.h`、`modem_air780ep.h`、`at_engine.h` 或其他模块的 `_priv.h`。
+- MQTT 不直接调用 `modem_*`、`at_engine_*` 或具体 Air780EP helper。
+- MQTT 不注册 AT Engine URC handler；MQTT 数据 URC 经 Modem → Core → MQTT 上行。
+- Core 仍只负责网络状态机、PDP、重连和命令串行化，不持有 MQTT 业务状态机。
+- Facade 是 composition root，负责创建 Core 和 MQTT，并把 MQTT 事件翻译为用户 API 事件。
+
+---
+
+## 5. App（应用层）
 
 > App 层不定义框架类，只有用户自己的业务类型。此处不展开。
