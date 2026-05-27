@@ -115,6 +115,59 @@ class MqttEndToEndContractTest(unittest.TestCase):
             self.assertNotIn(include, self.mqtt_h)
             self.assertNotIn(include, self.mqtt_priv)
 
+    def test_mqtt_service_owns_signal_payloads_and_callback_lifecycle(self):
+        for token in [
+            "typedef struct mqtt_protocol_data_owned",
+            "event_callback_active",
+            "event_callback_task",
+            "event_callback_done_sema",
+            "event_callback_waiting",
+            "static void free_mqtt_fsm_sig_payload",
+            "wait_event_callbacks_idle",
+            "mqtt_client_destroy",
+            "mqtt_fsm_task",
+            "me->fsm_task == xTaskGetCurrentTaskHandle()",
+            "me->event_callback_task == xTaskGetCurrentTaskHandle()",
+            "core_release_event_payload((core_event_data_t *)data);",
+            "MQTT_CLIENT_EVENT_DATA",
+        ]:
+            self.assertIn(token, self.mqtt_c + self.mqtt_priv)
+
+        for token in [
+            "clone_string",
+            "clone_payload",
+            "xQueueSend(me->fsm_queue, &sig, 0)",
+            "ESP_ERR_TIMEOUT",
+        ]:
+            self.assertIn(token, self.mqtt_c)
+
+    def test_mqtt_service_submits_core_commands_without_holding_lock(self):
+        self.assertIn("static esp_err_t submit_core_cmd", self.mqtt_c)
+        submit_start = self.mqtt_c.rindex("static esp_err_t submit_core_cmd")
+        submit_body = self.mqtt_c[
+            submit_start:
+            self.mqtt_c.index("static esp_err_t begin_connect", submit_start)
+        ]
+        self.assertIn("core_submit_cmd(me->core, &cmd);", submit_body)
+        before_submit = submit_body[:submit_body.index("core_submit_cmd(me->core, &cmd);")]
+        self.assertNotIn("xSemaphoreTake(me->lock", before_submit)
+        self.assertNotIn("xSemaphoreGive(me->lock", before_submit)
+
+        fsm_body = self.mqtt_c[
+            self.mqtt_c.index("static void mqtt_fsm_task"):
+            self.mqtt_c.index("esp_err_t mqtt_client_register_event_callback")
+        ]
+        for token in [
+            "submit_core_cmd(me, CORE_CMD_MQTT_CONFIG",
+            "submit_core_cmd(me, CORE_CMD_MQTT_OPEN",
+            "submit_core_cmd(me, CORE_CMD_MQTT_LOGIN",
+            "submit_core_cmd(me, CORE_CMD_MQTT_SUBSCRIBE",
+            "submit_core_cmd(me, CORE_CMD_MQTT_UNSUBSCRIBE",
+            "submit_core_cmd(me, CORE_CMD_MQTT_PUBLISH",
+            "submit_core_cmd(me, CORE_CMD_MQTT_DISCONNECT",
+        ]:
+            self.assertIn(token, fsm_body)
+
     def test_core_command_queue_contract_exists(self):
         for token in [
             "CORE_EVENT_PROTOCOL_DATA",
