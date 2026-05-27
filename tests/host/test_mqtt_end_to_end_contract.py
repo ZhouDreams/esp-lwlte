@@ -190,6 +190,104 @@ class MqttEndToEndContractTest(unittest.TestCase):
         ]:
             self.assertIn(token, self.air780ep_c)
 
+    def test_modem_protocol_data_event_cleanup_contract(self):
+        self.assertIn("static void drain_event_queue_payloads", self.modem_c)
+        self.assertIn("drain_event_queue_payloads(me);", self.modem_c)
+        self.assertIn("xQueueReceive(me->event_queue, &event, 0)", self.modem_c)
+        self.assertIn("release_event_payload(&event);", self.modem_c)
+
+        deinit_body = self.modem_c[
+            self.modem_c.index("void modem_base_deinit"):
+            self.modem_c.index("esp_err_t modem_base_stop_event_task")
+        ]
+        for token in [
+            "QueueHandle_t event_queue = me->event_queue;",
+            "drain_event_queue_payloads(me);",
+            "me->event_queue = NULL;",
+            "vQueueDelete(event_queue);",
+        ]:
+            self.assertIn(token, deinit_body)
+        self.assertLess(
+            deinit_body.index("drain_event_queue_payloads(me);"),
+            deinit_body.index("me->event_queue = NULL;"),
+        )
+        self.assertLess(
+            deinit_body.index("me->event_queue = NULL;"),
+            deinit_body.index("vQueueDelete(event_queue);"),
+        )
+
+    def test_modem_post_event_rejects_stopped_event_task(self):
+        post_event_body = self.modem_c[
+            self.modem_c.index("esp_err_t modem_post_event"):
+            self.modem_c.index("esp_err_t modem_set_state")
+        ]
+
+        for token in [
+            "me->event_task_stop_requested",
+            "!me->event_task",
+            "!me->event_queue",
+            "xQueueSend(me->event_queue, event, 0)",
+        ]:
+            self.assertIn(token, post_event_body)
+
+        self.assertLess(
+            post_event_body.index("me->event_task_stop_requested"),
+            post_event_body.index("xQueueSend(me->event_queue, event, 0)"),
+        )
+
+    def test_modem_protocol_event_ids_keep_error_stable(self):
+        event_enum = self.modem_h[
+            self.modem_h.index("MODEM_EVENT_READY"):
+            self.modem_h.index("} modem_event_id_t;")
+        ]
+        event_ids = []
+        event_values = {}
+        next_event_value = 0
+        for line in event_enum.splitlines():
+            line = line.strip()
+            if line.startswith("MODEM_EVENT_"):
+                token = line.split(",", 1)[0]
+                if "=" in token:
+                    name, value = token.split("=", 1)
+                    name = name.strip()
+                    next_event_value = int(value.strip(), 0)
+                else:
+                    name = token.strip()
+                event_ids.append(name)
+                event_values[name] = next_event_value
+                next_event_value += 1
+
+        self.assertEqual([
+            "MODEM_EVENT_READY",
+            "MODEM_EVENT_SIM_CHANGED",
+            "MODEM_EVENT_REG_CHANGED",
+            "MODEM_EVENT_PDP_ACTIVATED",
+            "MODEM_EVENT_PDP_DEACTIVATED",
+            "MODEM_EVENT_SIGNAL_CHANGED",
+            "MODEM_EVENT_ERROR",
+        ], event_ids[:7])
+
+        error_pos = event_enum.index("MODEM_EVENT_ERROR")
+        protocol_data_pos = event_enum.index("MODEM_EVENT_PROTOCOL_DATA")
+        protocol_closed_pos = event_enum.index("MODEM_EVENT_PROTOCOL_CLOSED")
+
+        self.assertLess(error_pos, protocol_data_pos)
+        self.assertLess(protocol_data_pos, protocol_closed_pos)
+        self.assertEqual(6, event_values["MODEM_EVENT_ERROR"])
+        self.assertEqual(7, event_values["MODEM_EVENT_PROTOCOL_DATA"])
+        self.assertEqual(8, event_values["MODEM_EVENT_PROTOCOL_CLOSED"])
+
+    def test_modem_protocol_data_lifetime_contract_is_documented(self):
+        for token in [
+            "MODEM_EVENT_PROTOCOL_DATA",
+            "heap-owned",
+            "modem_post_event() succeeds",
+            "caller keeps ownership",
+            "valid only during modem_event_callback_t",
+            "copy topic/payload",
+        ]:
+            self.assertIn(token, self.modem_h)
+
     def test_at_engine_payload_prompt_support_exists(self):
         self.assertIn("at_engine_send_cmd_with_payload", self.at_engine_h)
         self.assertIn("const uint8_t *payload", self.at_engine_h)

@@ -156,6 +156,14 @@ typedef enum {
     MODEM_PROTOCOL_MQTT = 0,
 } modem_protocol_t;
 
+/**
+ * @brief 协议数据事件负载
+ * @details For MODEM_EVENT_PROTOCOL_DATA, topic and payload must be heap-owned
+ * buffers when passed to modem_post_event(). If modem_post_event() succeeds,
+ * Modem owns and frees them after the callback returns; on failure, caller keeps ownership.
+ * Callback pointers are valid only during modem_event_callback_t;
+ * consumers must copy topic/payload if they need to retain them.
+ */
 typedef struct {
     modem_protocol_t protocol;
     const char *topic;
@@ -175,9 +183,9 @@ typedef enum {
     MODEM_EVENT_PDP_ACTIVATED,      /**< PDP 已激活； PDP activated */
     MODEM_EVENT_PDP_DEACTIVATED,    /**< PDP 已去激活； PDP deactivated */
     MODEM_EVENT_SIGNAL_CHANGED,     /**< 信号变化； Signal changed */
+    MODEM_EVENT_ERROR,              /**< 错误事件； Error event */
     MODEM_EVENT_PROTOCOL_DATA,      /**< 协议数据事件； Protocol data event */
     MODEM_EVENT_PROTOCOL_CLOSED,    /**< 协议连接关闭； Protocol connection closed */
-    MODEM_EVENT_ERROR,              /**< 错误事件； Error event */
 } modem_event_id_t;
 
 /**

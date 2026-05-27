@@ -277,6 +277,7 @@ AT Engine RX task
 
 - Air780EP URC handler 不直接调用 Core 回调，只投递 Modem event。
 - `MODEM_EVENT_PROTOCOL_DATA` 的指针只在 Modem callback 期间有效。
+- `MODEM_EVENT_PROTOCOL_DATA` 的 topic/payload 必须来自堆内存；`modem_post_event()` 成功后所有权转移给 Modem event task，失败时仍由调用者释放。
 - `CORE_EVENT_PROTOCOL_DATA` 的指针只在 Core event callback 期间有效。
 - `MQTT_CLIENT_EVENT_DATA` 的指针只在 MQTT event callback 期间有效。
 - `LWLTE_EVENT_MQTT_DATA` 的指针只在用户回调期间有效。

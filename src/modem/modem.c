@@ -76,6 +76,7 @@ static esp_err_t check_ready(modem_t *me, bool allow_created);
 static esp_err_t call_no_arg(modem_t *me, esp_err_t (*fn)(modem_t *me));
 
 static void release_event_payload(modem_event_t *event);
+static void drain_event_queue_payloads(modem_t *me);
 
 /**********************
  *  STATIC VARIABLES
@@ -166,8 +167,18 @@ void modem_base_deinit(modem_t *me)
     }
 
     if (me->event_queue) {
-        vQueueDelete(me->event_queue);
-        me->event_queue = NULL;
+        QueueHandle_t event_queue = me->event_queue;
+        if (me->lock) {
+            xSemaphoreTake(me->lock, portMAX_DELAY);
+            event_queue = me->event_queue;
+            drain_event_queue_payloads(me);
+            me->event_queue = NULL;
+            xSemaphoreGive(me->lock);
+        } else {
+            drain_event_queue_payloads(me);
+            me->event_queue = NULL;
+        }
+        vQueueDelete(event_queue);
     }
     if (me->event_task_done_sema) {
         vSemaphoreDelete(me->event_task_done_sema);
@@ -215,11 +226,12 @@ esp_err_t modem_base_stop_event_task(modem_t *me)
 
 esp_err_t modem_post_event(modem_t *me, const modem_event_t *event)
 {
-    ESP_RETURN_ON_FALSE(me && event && me->lock && me->event_queue,
+    ESP_RETURN_ON_FALSE(me && event && me->lock,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying || me->state == MODEM_STATE_DESTROYING) {
+    if (me->destroying || me->state == MODEM_STATE_DESTROYING ||
+        me->event_task_stop_requested || !me->event_task || !me->event_queue) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -635,6 +647,8 @@ static void event_task(void *arg)
         }
     }
 
+    drain_event_queue_payloads(me);
+
     xSemaphoreGive(me->event_task_done_sema);
     vTaskDelete(NULL);
 }
@@ -678,6 +692,18 @@ static esp_err_t call_no_arg(modem_t *me, esp_err_t (*fn)(modem_t *me))
 {
     ESP_RETURN_ON_FALSE(me && fn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     return fn(me);
+}
+
+static void drain_event_queue_payloads(modem_t *me)
+{
+    if (!me || !me->event_queue) {
+        return;
+    }
+
+    modem_event_t event = {0};
+    while (xQueueReceive(me->event_queue, &event, 0) == pdTRUE) {
+        release_event_payload(&event);
+    }
 }
 
 static void release_event_payload(modem_event_t *event)

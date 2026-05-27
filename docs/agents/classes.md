@@ -676,9 +676,9 @@ typedef enum {
     MODEM_EVENT_PDP_ACTIVATED,      // PDP 激活
     MODEM_EVENT_PDP_DEACTIVATED,    // PDP 去激活
     MODEM_EVENT_SIGNAL_CHANGED,     // 信号质量变化
+    MODEM_EVENT_ERROR,              // 模块侧错误事件
     MODEM_EVENT_PROTOCOL_DATA,      // 上层协议数据事件，如 MQTT 下行消息
     MODEM_EVENT_PROTOCOL_CLOSED,    // 上层协议连接关闭事件
-    MODEM_EVENT_ERROR,              // 模块侧错误事件
 } modem_event_id_t;
 
 typedef enum {
@@ -712,7 +712,9 @@ typedef void (*modem_event_callback_t)(modem_t *modem,
 
 **硬约束**：Air780EP 的 AT Engine URC handler 不得直接调用 `modem_event_callback_t`。URC handler 只能把 `modem_event_t` 投递到 `modem_t.event_queue`，由 `modem_t.event_task` 调用 Core 注册的回调。
 
-`MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的内存中，由 Modem event task 在 Core 回调返回后释放。Core 若要通过 `CORE_EVENT_PROTOCOL_DATA` 继续上报给 MQTT service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
+`MODEM_EVENT_PROTOCOL_DATA` 和 `MODEM_EVENT_PROTOCOL_CLOSED` 追加在 `MODEM_EVENT_ERROR` 之后，避免改变既有事件 ID 的数值。
+
+`MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的堆内存中；`modem_post_event()` 成功后由 Modem event task 在 Core 回调返回后释放，`modem_post_event()` 失败时仍由调用者释放。Core 若要通过 `CORE_EVENT_PROTOCOL_DATA` 继续上报给 MQTT service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
 
 ### 2.11 `modem_air780ep_config_t` — Air780EP 配置
 

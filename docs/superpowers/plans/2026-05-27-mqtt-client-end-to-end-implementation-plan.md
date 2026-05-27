@@ -512,7 +512,7 @@ typedef struct {
 } modem_protocol_data_t;
 ```
 
-Extend `modem_event_id_t` by inserting before `MODEM_EVENT_ERROR`:
+Extend `modem_event_id_t` by appending after `MODEM_EVENT_ERROR` to keep existing event ID values stable:
 
 ```c
 MODEM_EVENT_PROTOCOL_DATA,      /**< 协议数据事件； Protocol data event */
@@ -578,6 +578,8 @@ release_event_payload(&event);
 ```
 
 If `modem_post_event()` fails to enqueue a `MODEM_EVENT_PROTOCOL_DATA` event, it must not take ownership. The caller remains responsible for freeing allocations on failure.
+
+`modem_post_event()` must reject events after the event task is stopping or stopped. When the event task exits, and before `modem_base_deinit()` deletes `event_queue`, drain any queued `MODEM_EVENT_PROTOCOL_DATA` entries with `release_event_payload()` so heap-owned protocol payloads are not orphaned.
 
 Add this helper in the static functions section:
 
