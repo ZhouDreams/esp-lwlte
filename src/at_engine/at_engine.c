@@ -60,6 +60,7 @@ typedef struct {
     size_t payload_len;
     const char *payload_prompt;
     uint32_t timeout_ms;
+    esp_err_t io_error;
     at_response_t *response;
     at_cmd_options_t options;
     int echo_consumed;
@@ -485,6 +486,7 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         .payload_len = payload_len,
         .payload_prompt = payload_prompt,
         .timeout_ms = wait_ms,
+        .io_error = ESP_OK,
         .response = response,
         .options = *options,
         .echo_consumed = 0,
@@ -529,7 +531,10 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         return ESP_ERR_TIMEOUT;
     }
 
+    esp_err_t io_error = ESP_OK;
+
     xSemaphoreTake(me->lock, portMAX_DELAY);
+    io_error = ctx->io_error;
     if (me->cmd_ctx == ctx) {
         me->cmd_ctx = NULL;
         me->state = AT_STATE_IDLE;
@@ -538,6 +543,9 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
 
     xSemaphoreGive(me->cmd_mutex);
     end_send_call(me);
+    if (io_error != ESP_OK) {
+        return io_error;
+    }
     return ESP_OK;
 }
 
@@ -619,6 +627,7 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
         if (payload_ret != ESP_OK) {
             xSemaphoreTake(me->lock, portMAX_DELAY);
             if (epoch == me->rx_epoch && me->cmd_ctx == payload_ctx) {
+                payload_ctx->io_error = payload_ret;
                 finish_cmd_locked(me, AT_RESP_ERROR, 0);
             }
             xSemaphoreGive(me->lock);
@@ -707,6 +716,7 @@ static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
             if (payload_ret != ESP_OK) {
                 xSemaphoreTake(me->lock, portMAX_DELAY);
                 if (epoch == me->rx_epoch && me->cmd_ctx == ctx) {
+                    ctx->io_error = payload_ret;
                     finish_cmd_locked(me, AT_RESP_ERROR, 0);
                 }
                 xSemaphoreGive(me->lock);
