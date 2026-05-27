@@ -53,6 +53,10 @@
 #define AIR780EP_URC_CGEV                "+CGEV:"
 #define AIR780EP_URC_PDP_DEACT           "+PDP DEACT"
 #define AIR780EP_URC_PDP_COLON_DEACT     "+PDP:DEACT"
+#define AIR780EP_URC_MSUB                "+MSUB:"
+#define AIR780EP_MQTT_CMD_TIMEOUT_MS     9000
+#define AIR780EP_MQTT_CONNECT_TIMEOUT_MS 60000
+#define AIR780EP_MQTT_PAYLOAD_PROMPT     ">"
 
 /**********************
  *      TYPEDEFS
@@ -82,6 +86,7 @@ typedef struct {
     at_urc_handler_t cgev_handler;
     at_urc_handler_t pdp_deact_handler;
     at_urc_handler_t pdp_colon_deact_handler;
+    at_urc_handler_t msub_handler;
     modem_info_t cached_info;
     modem_sim_status_t last_sim_status;
     modem_reg_status_t last_reg_status;
@@ -249,6 +254,19 @@ static esp_err_t air780ep_deactivate_pdp(modem_t *me, uint8_t cid);
  */
 static esp_err_t air780ep_get_pdp_context(modem_t *me, uint8_t cid,
                                            modem_pdp_context_t *pdp);
+static esp_err_t air780ep_mqtt_config(modem_t *me,
+                                       const modem_mqtt_config_t *config);
+static esp_err_t air780ep_mqtt_open(modem_t *me,
+                                     const modem_mqtt_open_t *open);
+static esp_err_t air780ep_mqtt_login(modem_t *me,
+                                      const modem_mqtt_login_t *login);
+static esp_err_t air780ep_mqtt_disconnect(modem_t *me);
+static esp_err_t air780ep_mqtt_subscribe(modem_t *me,
+                                          const modem_mqtt_topic_t *topic);
+static esp_err_t air780ep_mqtt_unsubscribe(modem_t *me,
+                                            const modem_mqtt_topic_t *topic);
+static esp_err_t air780ep_mqtt_publish(modem_t *me,
+                                        const modem_mqtt_publish_t *publish);
 
 /**
  * @brief 转换为 Air780EP 实例
@@ -741,6 +759,13 @@ static void cgev_urc_handler(const char *prefix, const char *line, void *user_ct
  */
 static void pdp_deact_urc_handler(const char *prefix, const char *line,
                                   void *user_ctx);
+static void handle_msub_urc(const char *prefix, const char *line, void *user_ctx);
+static esp_err_t post_mqtt_data_event(modem_air780ep_t *self, char *topic,
+                                       size_t topic_len, uint8_t *payload,
+                                       size_t payload_len);
+static char *escape_at_string(const char *value);
+static bool parse_msub_direct(const char *line, char **topic, size_t *topic_len,
+                              uint8_t **payload, size_t *payload_len);
 
 /**********************
  *  STATIC VARIABLES
@@ -759,6 +784,13 @@ static const modem_ops_t s_air780ep_ops = {
     .activate_pdp = air780ep_activate_pdp,
     .deactivate_pdp = air780ep_deactivate_pdp,
     .get_pdp_context = air780ep_get_pdp_context,
+    .mqtt_config = air780ep_mqtt_config,
+    .mqtt_open = air780ep_mqtt_open,
+    .mqtt_login = air780ep_mqtt_login,
+    .mqtt_disconnect = air780ep_mqtt_disconnect,
+    .mqtt_subscribe = air780ep_mqtt_subscribe,
+    .mqtt_unsubscribe = air780ep_mqtt_unsubscribe,
+    .mqtt_publish = air780ep_mqtt_publish,
 };
 
 /**********************
@@ -1937,6 +1969,7 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
         { AIR780EP_URC_PDP_DEACT, &self->pdp_deact_handler, pdp_deact_urc_handler },
         { AIR780EP_URC_PDP_COLON_DEACT, &self->pdp_colon_deact_handler,
           pdp_deact_urc_handler },
+        { AIR780EP_URC_MSUB, &self->msub_handler, handle_msub_urc },
     };
 
     size_t urc_count = sizeof(urcs) / sizeof(urcs[0]);
@@ -2636,6 +2669,468 @@ static esp_err_t air780ep_get_pdp_context(modem_t *me, uint8_t cid,
     return ESP_OK;
 }
 
+static esp_err_t air780ep_mqtt_config(modem_t *me,
+                                       const modem_mqtt_config_t *config)
+{
+    ESP_RETURN_ON_FALSE(me && config && config->client_id,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    char *client_id = escape_at_string(config->client_id);
+    char *username = escape_at_string(config->username ? config->username : "");
+    char *password = escape_at_string(config->password ? config->password : "");
+    if (!client_id || !username || !password) {
+        free(client_id);
+        free(username);
+        free(password);
+        return ESP_ERR_NO_MEM;
+    }
+
+    int needed = snprintf(NULL, 0, "AT+MCONFIG=\"%s\",\"%s\",\"%s\"",
+                          client_id, username, password);
+    if (needed < 0) {
+        free(client_id);
+        free(username);
+        free(password);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(client_id);
+        free(username);
+        free(password);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MCONFIG=\"%s\",\"%s\",\"%s\"",
+             client_id, username, password);
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, AIR780EP_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MCONFIG");
+    }
+
+    free(cmd);
+    free(client_id);
+    free(username);
+    free(password);
+    return ret;
+}
+
+static esp_err_t air780ep_mqtt_open(modem_t *me,
+                                     const modem_mqtt_open_t *open)
+{
+    ESP_RETURN_ON_FALSE(me && open && open->host && open->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    char *host = escape_at_string(open->host);
+    ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape host failed");
+
+    int needed = snprintf(NULL, 0, "AT+MIPSTART=\"%s\",%u",
+                          host, (unsigned int)open->port);
+    if (needed < 0) {
+        free(host);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(host);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MIPSTART=\"%s\",%u",
+             host, (unsigned int)open->port);
+
+    const at_cmd_success_match_t matches[] = {
+        { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "CONNECT OK" },
+        { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "ALREADY CONNECT" },
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = AIR780EP_MQTT_CONNECT_TIMEOUT_MS,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = matches,
+        .success_match_count = sizeof(matches) / sizeof(matches[0]),
+    };
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MIPSTART");
+    }
+
+    free(cmd);
+    free(host);
+    return ret;
+}
+
+static esp_err_t air780ep_mqtt_login(modem_t *me,
+                                      const modem_mqtt_login_t *login)
+{
+    ESP_RETURN_ON_FALSE(me && login, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    char cmd[48];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MCONNECT=%u,%u",
+                           login->clean_session ? 1U : 0U,
+                           (unsigned int)login->keepalive_s);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MCONNECT command truncated");
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_EXACT,
+        .value = "CONNACK OK",
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = AIR780EP_MQTT_CONNECT_TIMEOUT_MS,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MCONNECT");
+    }
+    return ret;
+}
+
+static esp_err_t air780ep_mqtt_disconnect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+MDISCONNECT", &ctx,
+                             AIR780EP_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MDISCONNECT");
+    }
+    return ret;
+}
+
+static esp_err_t air780ep_mqtt_subscribe(modem_t *me,
+                                          const modem_mqtt_topic_t *topic)
+{
+    ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->qos <= 1,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    char *escaped_topic = escape_at_string(topic->topic);
+    ESP_RETURN_ON_FALSE(escaped_topic, ESP_ERR_NO_MEM, TAG, "escape topic failed");
+
+    int needed = snprintf(NULL, 0, "AT+MSUB=\"%s\",%u",
+                          escaped_topic, (unsigned int)topic->qos);
+    if (needed < 0) {
+        free(escaped_topic);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(escaped_topic);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MSUB=\"%s\",%u",
+             escaped_topic, (unsigned int)topic->qos);
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_EXACT,
+        .value = "SUBACK",
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = AIR780EP_MQTT_CMD_TIMEOUT_MS,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MSUB");
+    }
+
+    free(cmd);
+    free(escaped_topic);
+    return ret;
+}
+
+static esp_err_t air780ep_mqtt_unsubscribe(modem_t *me,
+                                            const modem_mqtt_topic_t *topic)
+{
+    ESP_RETURN_ON_FALSE(me && topic && topic->topic,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    char *escaped_topic = escape_at_string(topic->topic);
+    ESP_RETURN_ON_FALSE(escaped_topic, ESP_ERR_NO_MEM, TAG, "escape topic failed");
+
+    int needed = snprintf(NULL, 0, "AT+MUNSUB=\"%s\"", escaped_topic);
+    if (needed < 0) {
+        free(escaped_topic);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(escaped_topic);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MUNSUB=\"%s\"", escaped_topic);
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_EXACT,
+        .value = "UNSUBACK",
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = AIR780EP_MQTT_CMD_TIMEOUT_MS,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MUNSUB");
+    }
+
+    free(cmd);
+    free(escaped_topic);
+    return ret;
+}
+
+static esp_err_t air780ep_mqtt_publish(modem_t *me,
+                                        const modem_mqtt_publish_t *publish)
+{
+    ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
+                        publish->payload_len > 0, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(publish->qos <= 1, ESP_ERR_NOT_SUPPORTED,
+                        TAG, "MQTT QoS %u not supported", (unsigned int)publish->qos);
+
+    char *escaped_topic = escape_at_string(publish->topic);
+    ESP_RETURN_ON_FALSE(escaped_topic, ESP_ERR_NO_MEM, TAG, "escape topic failed");
+
+    int needed = snprintf(NULL, 0, "AT+MPUBEX=\"%s\",%u,%u,%u",
+                          escaped_topic, (unsigned int)publish->qos,
+                          publish->retain ? 1U : 0U,
+                          (unsigned int)publish->payload_len);
+    if (needed < 0) {
+        free(escaped_topic);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(escaped_topic);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MPUBEX=\"%s\",%u,%u,%u",
+             escaped_topic, (unsigned int)publish->qos, publish->retain ? 1U : 0U,
+             (unsigned int)publish->payload_len);
+
+    const at_cmd_success_match_t puback_match = {
+        .type = AT_CMD_SUCCESS_MATCH_EXACT,
+        .value = "PUBACK",
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = AIR780EP_MQTT_CMD_TIMEOUT_MS,
+        .flags = publish->qos == 1 ?
+                 AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK : 0,
+        .success_matches = publish->qos == 1 ? &puback_match : NULL,
+        .success_match_count = publish->qos == 1 ? 1 : 0,
+    };
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    init_cmd_ctx(&ctx);
+    esp_err_t ret = at_engine_send_cmd_with_payload(self->base.at, cmd,
+                                                    publish->payload,
+                                                    publish->payload_len,
+                                                    AIR780EP_MQTT_PAYLOAD_PROMPT,
+                                                    &ctx.response, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MPUBEX");
+    }
+
+    free(cmd);
+    free(escaped_topic);
+    return ret;
+}
+
+static esp_err_t post_mqtt_data_event(modem_air780ep_t *self, char *topic,
+                                       size_t topic_len, uint8_t *payload,
+                                       size_t payload_len)
+{
+    ESP_RETURN_ON_FALSE(self && topic && payload, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_PROTOCOL_DATA,
+        .data.protocol_data = {
+            .protocol = MODEM_PROTOCOL_MQTT,
+            .topic = topic,
+            .topic_len = topic_len,
+            .payload = payload,
+            .payload_len = payload_len,
+        },
+    };
+
+    return modem_post_event(&self->base, &event);
+}
+
+static char *escape_at_string(const char *value)
+{
+    if (!value) {
+        return NULL;
+    }
+
+    size_t escaped_len = 0;
+    for (const char *cursor = value; *cursor; cursor++) {
+        switch (*cursor) {
+        case '"':
+        case '\\':
+        case '\r':
+        case '\n':
+            escaped_len += 3;
+            break;
+        default:
+            escaped_len++;
+            break;
+        }
+    }
+
+    char *escaped = malloc(escaped_len + 1U);
+    if (!escaped) {
+        return NULL;
+    }
+
+    char *out = escaped;
+    for (const char *cursor = value; *cursor; cursor++) {
+        switch (*cursor) {
+        case '"':
+            memcpy(out, "\\22", 3);
+            out += 3;
+            break;
+        case '\\':
+            memcpy(out, "\\5C", 3);
+            out += 3;
+            break;
+        case '\r':
+            memcpy(out, "\\0D", 3);
+            out += 3;
+            break;
+        case '\n':
+            memcpy(out, "\\0A", 3);
+            out += 3;
+            break;
+        default:
+            *out++ = *cursor;
+            break;
+        }
+    }
+    *out = '\0';
+    return escaped;
+}
+
+static bool parse_msub_direct(const char *line, char **topic, size_t *topic_len,
+                              uint8_t **payload, size_t *payload_len)
+{
+    if (!line || !topic || !topic_len || !payload || !payload_len) {
+        return false;
+    }
+
+    *topic = NULL;
+    *topic_len = 0;
+    *payload = NULL;
+    *payload_len = 0;
+
+    const char *cursor = skip_prefix_value(line, AIR780EP_URC_MSUB);
+    if (!cursor) {
+        return false;
+    }
+
+    const char *topic_start = cursor;
+    const char *topic_end = NULL;
+    if (*cursor == '"') {
+        topic_start = ++cursor;
+        topic_end = strchr(topic_start, '"');
+        if (!topic_end) {
+            return false;
+        }
+        cursor = topic_end + 1;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (*cursor != ',') {
+            return false;
+        }
+    } else {
+        topic_end = strchr(cursor, ',');
+        if (!topic_end) {
+            return false;
+        }
+        while (topic_end > topic_start && isspace((unsigned char)*(topic_end - 1))) {
+            topic_end--;
+        }
+    }
+
+    if (topic_end == topic_start) {
+        return false;
+    }
+
+    cursor = strchr(cursor, ',');
+    if (!cursor) {
+        return false;
+    }
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed_len = strtoul(cursor, &end, 10);
+    if (end == cursor || errno == ERANGE || parsed_len > SIZE_MAX) {
+        return false;
+    }
+    cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return false;
+    }
+    cursor++;
+
+    size_t parsed_payload_len = (size_t)parsed_len;
+    if (strlen(cursor) < parsed_payload_len) {
+        return false;
+    }
+
+    size_t parsed_topic_len = (size_t)(topic_end - topic_start);
+    char *topic_buf = malloc(parsed_topic_len + 1U);
+    if (!topic_buf) {
+        return false;
+    }
+    uint8_t *payload_buf = malloc(parsed_payload_len > 0 ? parsed_payload_len : 1U);
+    if (!payload_buf) {
+        free(topic_buf);
+        return false;
+    }
+
+    memcpy(topic_buf, topic_start, parsed_topic_len);
+    topic_buf[parsed_topic_len] = '\0';
+    if (parsed_payload_len > 0) {
+        memcpy(payload_buf, cursor, parsed_payload_len);
+    }
+
+    *topic = topic_buf;
+    *topic_len = parsed_topic_len;
+    *payload = payload_buf;
+    *payload_len = parsed_payload_len;
+    return true;
+}
+
 static esp_err_t air780ep_unregister_urcs(modem_air780ep_t *self)
 {
     ESP_RETURN_ON_FALSE(self && self->base.at, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -2652,6 +3147,7 @@ static esp_err_t air780ep_unregister_urcs(modem_air780ep_t *self)
         { AIR780EP_URC_CGEV, &self->cgev_handler },
         { AIR780EP_URC_PDP_DEACT, &self->pdp_deact_handler },
         { AIR780EP_URC_PDP_COLON_DEACT, &self->pdp_colon_deact_handler },
+        { AIR780EP_URC_MSUB, &self->msub_handler },
     };
 
     esp_err_t ret = ESP_OK;
@@ -2871,4 +3367,29 @@ static void pdp_deact_urc_handler(const char *prefix, const char *line,
 
     set_state_nonblocking(self, MODEM_STATE_READY);
     post_pdp_deactivated_events(self, affected, affected_count);
+}
+
+static void handle_msub_urc(const char *prefix, const char *line, void *user_ctx)
+{
+    (void)prefix;
+
+    if (!user_ctx || !line) {
+        return;
+    }
+
+    char *topic = NULL;
+    size_t topic_len = 0;
+    uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    if (!parse_msub_direct(line, &topic, &topic_len, &payload, &payload_len)) {
+        return;
+    }
+
+    modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
+    esp_err_t ret = post_mqtt_data_event(self, topic, topic_len, payload, payload_len);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post MQTT data event failed: %s", esp_err_to_name(ret));
+        free(topic);
+        free(payload);
+    }
 }

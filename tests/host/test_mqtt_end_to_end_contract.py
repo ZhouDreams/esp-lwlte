@@ -435,6 +435,35 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIn("lwlte_handle_mqtt_event", self.lwlte_priv)
         self.assertIn("mqtt_client_register_event_callback", self.lwlte_air780ep_c)
 
+    def test_air780ep_mqtt_command_and_urc_ownership_contract(self):
+        for token in [
+            "AIR780EP_MQTT_PAYLOAD_PROMPT",
+            "AT+MCONFIG=\\\"%s\\\",\\\"%s\\\",\\\"%s\\\"",
+            "AT+MIPSTART=\\\"%s\\\",%u",
+            "AT+MCONNECT=%u,%u",
+            "AT+MDISCONNECT",
+            "AT+MSUB=\\\"%s\\\",%u",
+            "AT+MUNSUB=\\\"%s\\\"",
+            "AT+MPUBEX=\\\"%s\\\",%u,%u,%u",
+            "CONNECT OK",
+            "ALREADY CONNECT",
+            "CONNACK OK",
+            "SUBACK",
+            "UNSUBACK",
+            "PUBACK",
+            "AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK",
+            "at_engine_send_cmd_with_payload",
+            "AIR780EP_MQTT_PAYLOAD_PROMPT",
+            "MODEM_EVENT_PROTOCOL_DATA",
+            "MODEM_PROTOCOL_MQTT",
+            "modem_post_event",
+            "free(topic)",
+            "free(payload)",
+            "parse_msub_direct",
+            "post_mqtt_data_event",
+        ]:
+            self.assertIn(token, self.air780ep_c)
+
 
 if __name__ == "__main__":
     unittest.main()
