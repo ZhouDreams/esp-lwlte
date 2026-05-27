@@ -2405,24 +2405,7 @@ static esp_err_t air780ep_activate_pdp(modem_t *me, uint8_t cid)
     strlcpy(apn, pdp->apn, sizeof(apn));
     xSemaphoreGive(self->base.lock);
 
-    modem_sim_status_t sim_status = MODEM_SIM_UNKNOWN;
-    esp_err_t ret = air780ep_get_sim_status(me, &sim_status);
-    ESP_RETURN_ON_ERROR(ret, TAG, "get SIM status failed");
-    ESP_RETURN_ON_FALSE(sim_status == MODEM_SIM_READY, ESP_ERR_INVALID_STATE,
-                        TAG, "SIM not ready");
-
-    modem_reg_status_t reg_status = MODEM_REG_UNKNOWN;
-    ret = air780ep_get_registration(me, &reg_status);
-    ESP_RETURN_ON_ERROR(ret, TAG, "get registration failed");
-    ESP_RETURN_ON_FALSE(reg_status == MODEM_REG_REGISTERED_HOME ||
-                        reg_status == MODEM_REG_REGISTERED_ROAMING,
-                        ESP_ERR_INVALID_STATE, TAG, "network not registered");
-
-    bool attached = false;
-    ret = query_cgatt(self, &attached);
-    ESP_RETURN_ON_ERROR(ret, TAG, "query CGATT failed");
-    ESP_RETURN_ON_FALSE(attached, ESP_ERR_INVALID_STATE, TAG,
-                        "packet domain not attached");
+    esp_err_t ret;
 
     char cstt_cmd_buf[96];
     const char *cstt_cmd = "AT+CSTT";
