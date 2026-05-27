@@ -100,6 +100,7 @@ typedef struct {
     bool waiting_cpin_ready;
     bool urc_registered;
     bool initialized;
+    bool mqtt_data_enabled;
 } modem_air780ep_t;
 
 /**********************
@@ -613,6 +614,10 @@ static TickType_t timeout_ticks(uint32_t timeout_ms);
  * @param[in] initialized 初始化状态
  */
 static void set_initialized(modem_air780ep_t *self, bool initialized);
+
+static void set_mqtt_data_enabled(modem_air780ep_t *self, bool enabled);
+
+static bool mqtt_data_is_enabled(modem_air780ep_t *self);
 
 /**
  * @brief 清除 RDY 等待状态
@@ -1762,6 +1767,39 @@ static void set_initialized(modem_air780ep_t *self, bool initialized)
     xSemaphoreGive(self->base.lock);
 }
 
+static void set_mqtt_data_enabled(modem_air780ep_t *self, bool enabled)
+{
+    if (!self) {
+        return;
+    }
+
+    if (!self->base.lock) {
+        self->mqtt_data_enabled = enabled;
+        return;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->mqtt_data_enabled = enabled;
+    xSemaphoreGive(self->base.lock);
+}
+
+static bool mqtt_data_is_enabled(modem_air780ep_t *self)
+{
+    if (!self) {
+        return false;
+    }
+
+    if (!self->base.lock) {
+        return self->mqtt_data_enabled;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    bool enabled = self->mqtt_data_enabled;
+    xSemaphoreGive(self->base.lock);
+
+    return enabled;
+}
+
 static void clear_rdy_state(modem_air780ep_t *self)
 {
     if (!self) {
@@ -2030,6 +2068,8 @@ static esp_err_t air780ep_destroy(modem_t *me)
     modem_air780ep_t *self = to_air780ep(me);
     esp_err_t ret = ESP_OK;
 
+    set_mqtt_data_enabled(self, false);
+
     if (self->urc_registered) {
         ret = air780ep_unregister_urcs(self);
         if (ret != ESP_OK) {
@@ -2063,6 +2103,7 @@ static esp_err_t air780ep_init(modem_t *me)
     bool urc_registered_before = self->urc_registered;
     esp_err_t ret = ESP_OK;
 
+    set_mqtt_data_enabled(self, false);
     set_initialized(self, false);
 
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
@@ -2103,6 +2144,7 @@ static esp_err_t air780ep_reset(modem_t *me)
     bool urc_registered_before = self->urc_registered;
     esp_err_t ret = ESP_OK;
 
+    set_mqtt_data_enabled(self, false);
     set_initialized(self, false);
 
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
@@ -2563,6 +2605,7 @@ static esp_err_t air780ep_deactivate_pdp(modem_t *me, uint8_t cid)
                         "Air780EP TCPIP deactivation supports cid 1 only");
 
     modem_air780ep_t *self = to_air780ep(me);
+    set_mqtt_data_enabled(self, false);
 
     const at_cmd_success_match_t cipshut_match = {
         .type = AT_CMD_SUCCESS_MATCH_EXACT,
@@ -2792,6 +2835,9 @@ static esp_err_t air780ep_mqtt_login(modem_t *me,
     if (ret == ESP_OK) {
         ret = ensure_at_ok(&ctx.response, "AT+MCONNECT");
     }
+    if (ret == ESP_OK) {
+        set_mqtt_data_enabled(self, true);
+    }
     return ret;
 }
 
@@ -2801,6 +2847,7 @@ static esp_err_t air780ep_mqtt_disconnect(modem_t *me)
 
     modem_air780ep_t *self = to_air780ep(me);
     air780ep_cmd_ctx_t ctx;
+    set_mqtt_data_enabled(self, false);
     esp_err_t ret = send_cmd(self, "AT+MDISCONNECT", &ctx,
                              AIR780EP_MQTT_CMD_TIMEOUT_MS);
     if (ret == ESP_OK) {
@@ -3314,6 +3361,10 @@ static void cgev_urc_handler(const char *prefix, const char *line, void *user_ct
         return;
     }
 
+    if (!active) {
+        set_mqtt_data_enabled(self, false);
+    }
+
     if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
         ESP_LOGW(TAG, "drop +CGEV URC, lock busy");
         return;
@@ -3356,6 +3407,8 @@ static void pdp_deact_urc_handler(const char *prefix, const char *line,
     }
 
     modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
+    set_mqtt_data_enabled(self, false);
+
     modem_pdp_context_t affected[AIR780EP_MAX_PDP_CONTEXTS];
     if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
         ESP_LOGW(TAG, "drop PDP deactivation URC, lock busy");
@@ -3386,6 +3439,12 @@ static void handle_msub_urc(const char *prefix, const char *line, void *user_ctx
     }
 
     modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
+    if (!mqtt_data_is_enabled(self)) {
+        free(topic);
+        free(payload);
+        return;
+    }
+
     esp_err_t ret = post_mqtt_data_event(self, topic, topic_len, payload, payload_len);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "post MQTT data event failed: %s", esp_err_to_name(ret));

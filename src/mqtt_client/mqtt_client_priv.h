@@ -30,6 +30,7 @@ extern "C" {
 #define MQTT_CLIENT_DEFAULT_FSM_PRIORITY     8
 #define MQTT_CLIENT_FSM_WAIT_MS              100
 #define MQTT_CLIENT_CMD_TIMEOUT_MS           60000
+#define MQTT_CLIENT_STOP_WAIT_MS             (MQTT_CLIENT_CMD_TIMEOUT_MS * 2)
 
 /**********************
  *      TYPEDEFS
@@ -89,6 +90,7 @@ struct mqtt_client {
     TaskHandle_t fsm_task;
     QueueHandle_t fsm_queue;
     SemaphoreHandle_t fsm_task_done_sema;
+    SemaphoreHandle_t stop_done_sema;
     SemaphoreHandle_t lock;
     mqtt_client_state_t state;
     mqtt_connect_step_t connect_step;

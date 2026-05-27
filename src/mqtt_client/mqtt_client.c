@@ -49,6 +49,7 @@ static void free_mqtt_fsm_sig_payload(mqtt_fsm_sig_t *sig);
 static void drain_fsm_queue_payloads(mqtt_client_t *me, QueueHandle_t queue);
 static void cleanup_partial_client(mqtt_client_t *me);
 static esp_err_t wait_event_callbacks_idle(mqtt_client_t *me);
+static esp_err_t wait_stop_before_destroy(mqtt_client_t *me);
 static esp_err_t post_mqtt_event(mqtt_client_t *me,
                                  mqtt_client_event_id_t event_id,
                                  const mqtt_client_event_data_t *event_data);
@@ -214,10 +215,12 @@ static esp_err_t set_state(mqtt_client_t *me, mqtt_client_state_t state)
     return ESP_OK;
 }
 
-static esp_err_t send_fsm_sig(mqtt_client_t *me, const mqtt_fsm_sig_t *sig)
+static esp_err_t send_fsm_sig(mqtt_client_t *me, const mqtt_fsm_sig_t *sig_ptr)
 {
-    ESP_RETURN_ON_FALSE(me && sig && me->lock, ESP_ERR_INVALID_ARG, TAG,
+    ESP_RETURN_ON_FALSE(me && sig_ptr && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
+
+    mqtt_fsm_sig_t sig = *sig_ptr;
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
     bool can_send = !me->destroying && me->state != MQTT_CLIENT_STATE_DESTROYING &&
@@ -225,7 +228,7 @@ static esp_err_t send_fsm_sig(mqtt_client_t *me, const mqtt_fsm_sig_t *sig)
     QueueHandle_t queue = me->fsm_queue;
     BaseType_t send_ret = pdFALSE;
     if (can_send) {
-        send_ret = xQueueSend(me->fsm_queue, sig, 0);
+        send_ret = xQueueSend(me->fsm_queue, &sig, 0);
     }
     xSemaphoreGive(me->lock);
 
@@ -400,6 +403,10 @@ static void cleanup_partial_client(mqtt_client_t *me)
         vSemaphoreDelete(me->fsm_task_done_sema);
         me->fsm_task_done_sema = NULL;
     }
+    if (me->stop_done_sema) {
+        vSemaphoreDelete(me->stop_done_sema);
+        me->stop_done_sema = NULL;
+    }
     if (me->event_callback_done_sema) {
         vSemaphoreDelete(me->event_callback_done_sema);
         me->event_callback_done_sema = NULL;
@@ -452,6 +459,31 @@ static esp_err_t wait_event_callbacks_idle(mqtt_client_t *me)
     xSemaphoreGive(me->lock);
 
     return ESP_OK;
+}
+
+static esp_err_t wait_stop_before_destroy(mqtt_client_t *me)
+{
+    ESP_RETURN_ON_FALSE(me && me->lock && me->stop_done_sema,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    if (state_is(me, MQTT_CLIENT_STATE_STOPPED)) {
+        return ESP_OK;
+    }
+
+    SemaphoreHandle_t done_sema = me->stop_done_sema;
+    while (xSemaphoreTake(done_sema, 0) == pdTRUE) {
+    }
+
+    esp_err_t ret = send_simple_sig(me, MQTT_SIG_STOP);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (xSemaphoreTake(done_sema,
+                       pdMS_TO_TICKS(MQTT_CLIENT_STOP_WAIT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    return state_is(me, MQTT_CLIENT_STATE_STOPPED) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 static esp_err_t post_mqtt_event(mqtt_client_t *me,
@@ -722,6 +754,9 @@ static void complete_stop(mqtt_client_t *me)
     me->connect_step = MQTT_CONNECT_STEP_IDLE;
     set_state(me, MQTT_CLIENT_STATE_STOPPED);
     (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_STOPPED, NULL);
+    if (me->stop_done_sema) {
+        xSemaphoreGive(me->stop_done_sema);
+    }
 }
 
 static bool should_disconnect_for_stop(mqtt_client_t *me)
@@ -881,9 +916,10 @@ mqtt_client_t *mqtt_client_create(const mqtt_client_config_t *config,
     me->lock = xSemaphoreCreateMutex();
     me->fsm_queue = xQueueCreate(me->config.fsm_queue_size, sizeof(mqtt_fsm_sig_t));
     me->fsm_task_done_sema = xSemaphoreCreateBinary();
+    me->stop_done_sema = xSemaphoreCreateBinary();
     me->event_callback_done_sema = xSemaphoreCreateBinary();
     if (!me->lock || !me->fsm_queue || !me->fsm_task_done_sema ||
-        !me->event_callback_done_sema) {
+        !me->stop_done_sema || !me->event_callback_done_sema) {
         cleanup_partial_client(me);
         return NULL;
     }
@@ -924,6 +960,11 @@ esp_err_t mqtt_client_destroy(mqtt_client_t *me)
                         ESP_ERR_INVALID_STATE, TAG,
                         "destroy from MQTT callback task is not allowed");
 
+    esp_err_t ret = wait_stop_before_destroy(me);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     xSemaphoreTake(me->lock, portMAX_DELAY);
     me->destroying = true;
     me->state = MQTT_CLIENT_STATE_DESTROYING;
@@ -935,12 +976,6 @@ esp_err_t mqtt_client_destroy(mqtt_client_t *me)
                                                 ESP_EVENT_ANY_ID, handle_core_event);
     }
 
-    if (me->fsm_queue) {
-        mqtt_fsm_sig_t sig = {
-            .type = MQTT_SIG_STOP,
-        };
-        (void)xQueueSend(me->fsm_queue, &sig, 0);
-    }
     if (me->fsm_task && me->fsm_task_done_sema) {
         xSemaphoreTake(me->fsm_task_done_sema, portMAX_DELAY);
         me->fsm_task = NULL;
@@ -957,6 +992,10 @@ esp_err_t mqtt_client_destroy(mqtt_client_t *me)
     if (me->fsm_task_done_sema) {
         vSemaphoreDelete(me->fsm_task_done_sema);
         me->fsm_task_done_sema = NULL;
+    }
+    if (me->stop_done_sema) {
+        vSemaphoreDelete(me->stop_done_sema);
+        me->stop_done_sema = NULL;
     }
     if (me->event_callback_done_sema) {
         vSemaphoreDelete(me->event_callback_done_sema);

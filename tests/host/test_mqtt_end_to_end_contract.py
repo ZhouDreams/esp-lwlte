@@ -830,6 +830,135 @@ class MqttEndToEndContractTest(unittest.TestCase):
         ]:
             self.assertIn(token, self.air780ep_c)
 
+    def test_mqtt_destroy_waits_for_graceful_stop_before_freeing_client(self):
+        for token in [
+            "SemaphoreHandle_t stop_done_sema;",
+            "#define MQTT_CLIENT_STOP_WAIT_MS",
+            "static esp_err_t wait_stop_before_destroy",
+            "wait_stop_before_destroy(me)",
+            "xSemaphoreGive(me->stop_done_sema);",
+            "ESP_ERR_TIMEOUT",
+        ]:
+            self.assertIn(token, self.mqtt_c + self.mqtt_priv)
+
+        destroy_start = self.mqtt_c.rindex("esp_err_t mqtt_client_destroy")
+        destroy_body = self.mqtt_c[
+            destroy_start:
+            self.mqtt_c.index("esp_err_t mqtt_client_start", destroy_start)
+        ]
+        self.assertIn("wait_stop_before_destroy(me)", destroy_body)
+        self.assertIn("return ret;", destroy_body)
+        self.assertIn("me->destroying = true;", destroy_body)
+        self.assertIn("me->state = MQTT_CLIENT_STATE_DESTROYING;", destroy_body)
+        self.assertIn("free(me);", destroy_body)
+        self.assertLess(
+            destroy_body.index("wait_stop_before_destroy(me)"),
+            destroy_body.index("me->destroying = true;")
+        )
+        self.assertLess(
+            destroy_body.index("if (ret != ESP_OK)"),
+            destroy_body.index("me->destroying = true;")
+        )
+        self.assertLess(
+            destroy_body.index("me->destroying = true;"),
+            destroy_body.index("free(me);")
+        )
+
+        wait_start = self.mqtt_c.rindex("static esp_err_t wait_stop_before_destroy")
+        wait_body = self.mqtt_c[
+            wait_start:
+            self.mqtt_c.index("static esp_err_t post_mqtt_event", wait_start)
+        ]
+        self.assertIn("send_simple_sig(me, MQTT_SIG_STOP)", wait_body)
+        self.assertIn("xSemaphoreTake(done_sema", wait_body)
+        self.assertIn("pdMS_TO_TICKS(MQTT_CLIENT_STOP_WAIT_MS)", wait_body)
+        self.assertNotIn("core_submit_cmd", wait_body)
+
+    def test_air780ep_drops_mqtt_urc_payloads_unless_mqtt_data_enabled(self):
+        for token in [
+            "bool mqtt_data_enabled;",
+            "static void set_mqtt_data_enabled",
+            "static bool mqtt_data_is_enabled",
+            "set_mqtt_data_enabled(self, true);",
+            "set_mqtt_data_enabled(self, false);",
+            "mqtt_data_is_enabled(self)",
+        ]:
+            self.assertIn(token, self.air780ep_c)
+
+        login_body = self.air780ep_c[
+            self.air780ep_c.rindex("static esp_err_t air780ep_mqtt_login"):
+            self.air780ep_c.rindex("static esp_err_t air780ep_mqtt_disconnect")
+        ]
+        self.assertIn("set_mqtt_data_enabled(self, true);", login_body)
+        self.assertLess(
+            login_body.index("if (ret == ESP_OK)"),
+            login_body.index("set_mqtt_data_enabled(self, true);")
+        )
+
+        disconnect_body = self.air780ep_c[
+            self.air780ep_c.rindex("static esp_err_t air780ep_mqtt_disconnect"):
+            self.air780ep_c.rindex("static esp_err_t air780ep_mqtt_subscribe")
+        ]
+        self.assertIn("set_mqtt_data_enabled(self, false);", disconnect_body)
+        self.assertLess(
+            disconnect_body.index("set_mqtt_data_enabled(self, false);"),
+            disconnect_body.index("send_cmd(self, \"AT+MDISCONNECT\"")
+        )
+
+        inactive_paths = [
+            (
+                "destroy",
+                "static esp_err_t air780ep_destroy",
+                "static esp_err_t air780ep_init",
+            ),
+            (
+                "init",
+                "static esp_err_t air780ep_init",
+                "static esp_err_t air780ep_reset",
+            ),
+            (
+                "reset",
+                "static esp_err_t air780ep_reset",
+                "static esp_err_t air780ep_get_info",
+            ),
+            (
+                "PDP deactivate",
+                "static esp_err_t air780ep_deactivate_pdp",
+                "static esp_err_t air780ep_get_pdp_context",
+            ),
+            (
+                "+CGEV PDP deactivation URC",
+                "static void cgev_urc_handler",
+                "static void pdp_deact_urc_handler",
+            ),
+            (
+                "PDP deactivation URC",
+                "static void pdp_deact_urc_handler",
+                "static void handle_msub_urc",
+            ),
+        ]
+        for name, start_token, end_token in inactive_paths:
+            body = self.air780ep_c[
+                self.air780ep_c.rindex(start_token):
+                self.air780ep_c.rindex(end_token)
+            ]
+            self.assertIn(
+                "set_mqtt_data_enabled(self, false);",
+                body,
+                f"{name} must disable MQTT data forwarding",
+            )
+
+        msub_body = self.air780ep_c[
+            self.air780ep_c.rindex("static void handle_msub_urc"):
+        ]
+        self.assertIn("if (!mqtt_data_is_enabled(self))", msub_body)
+        self.assertIn("free(topic);", msub_body)
+        self.assertIn("free(payload);", msub_body)
+        self.assertLess(
+            msub_body.index("if (!mqtt_data_is_enabled(self))"),
+            msub_body.index("post_mqtt_data_event")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
