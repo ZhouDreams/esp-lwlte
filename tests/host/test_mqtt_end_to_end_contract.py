@@ -32,32 +32,39 @@ MQTT_C = ROOT / "src/mqtt_client/mqtt_client.c"
 SRC_CMAKE = ROOT / "src/CMakeLists.txt"
 
 
+def read_optional(path: Path) -> str:
+    """Read a source file, returning empty text for planned future files."""
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
 class MqttEndToEndContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.lwlte_h = LWLTE_H.read_text(encoding="utf-8")
-        cls.air780ep_h = AIR780EP_H.read_text(encoding="utf-8")
-        cls.lwlte_priv = LWLTE_PRIV.read_text(encoding="utf-8")
-        cls.lwlte_c = LWLTE_C.read_text(encoding="utf-8")
-        cls.lwlte_air780ep_c = LWLTE_AIR780EP_C.read_text(encoding="utf-8")
+        cls.lwlte_h = read_optional(LWLTE_H)
+        cls.air780ep_h = read_optional(AIR780EP_H)
+        cls.lwlte_priv = read_optional(LWLTE_PRIV)
+        cls.lwlte_c = read_optional(LWLTE_C)
+        cls.lwlte_air780ep_c = read_optional(LWLTE_AIR780EP_C)
 
-        cls.at_engine_h = AT_ENGINE_H.read_text(encoding="utf-8")
-        cls.at_engine_c = AT_ENGINE_C.read_text(encoding="utf-8")
+        cls.at_engine_h = read_optional(AT_ENGINE_H)
+        cls.at_engine_c = read_optional(AT_ENGINE_C)
 
-        cls.modem_h = MODEM_H.read_text(encoding="utf-8")
-        cls.modem_priv = MODEM_PRIV.read_text(encoding="utf-8")
-        cls.modem_c = MODEM_C.read_text(encoding="utf-8")
-        cls.air780ep_c = AIR780EP_C.read_text(encoding="utf-8")
+        cls.modem_h = read_optional(MODEM_H)
+        cls.modem_priv = read_optional(MODEM_PRIV)
+        cls.modem_c = read_optional(MODEM_C)
+        cls.air780ep_c = read_optional(AIR780EP_C)
 
-        cls.core_h = CORE_H.read_text(encoding="utf-8")
-        cls.core_priv = CORE_PRIV.read_text(encoding="utf-8")
-        cls.core_c = CORE_C.read_text(encoding="utf-8")
-        cls.core_fsm_c = CORE_FSM_C.read_text(encoding="utf-8")
+        cls.core_h = read_optional(CORE_H)
+        cls.core_priv = read_optional(CORE_PRIV)
+        cls.core_c = read_optional(CORE_C)
+        cls.core_fsm_c = read_optional(CORE_FSM_C)
 
-        cls.mqtt_h = MQTT_H.read_text(encoding="utf-8")
-        cls.mqtt_priv = MQTT_PRIV.read_text(encoding="utf-8")
-        cls.mqtt_c = MQTT_C.read_text(encoding="utf-8")
-        cls.src_cmake = SRC_CMAKE.read_text(encoding="utf-8")
+        cls.mqtt_h = read_optional(MQTT_H)
+        cls.mqtt_priv = read_optional(MQTT_PRIV)
+        cls.mqtt_c = read_optional(MQTT_C)
+        cls.src_cmake = read_optional(SRC_CMAKE)
 
     def test_public_api_and_air780ep_mqtt_config_exist(self):
         for token in [

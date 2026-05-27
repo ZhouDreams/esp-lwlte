@@ -257,7 +257,7 @@ if __name__ == "__main__":
 
 Run: `python3 -m unittest tests.host.test_mqtt_end_to_end_contract -v`
 
-Expected: FAIL with `FileNotFoundError` for `src/mqtt_client/mqtt_client.h`, because the MQTT service module does not exist yet.
+Expected: FAIL with an assertion for a missing MQTT contract token. The test harness uses `read_optional()` so planned future files read as empty text instead of aborting `setUpClass()`.
 
 - [ ] **Step 3: Commit the failing contract test**
 
