@@ -15,6 +15,7 @@ extern "C" {
  *      INCLUDES
  *********************/
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -122,6 +123,47 @@ typedef struct {
     char ip_addr[MODEM_IP_ADDR_MAX_LEN];       /**< IP 地址； IP address */
 } modem_pdp_context_t;
 
+typedef struct {
+    const char *client_id;
+    const char *username;
+    const char *password;
+} modem_mqtt_config_t;
+
+typedef struct {
+    const char *host;
+    uint16_t port;
+} modem_mqtt_open_t;
+
+typedef struct {
+    bool clean_session;
+    uint16_t keepalive_s;
+} modem_mqtt_login_t;
+
+typedef struct {
+    const char *topic;
+    uint8_t qos;
+} modem_mqtt_topic_t;
+
+typedef struct {
+    const char *topic;
+    const uint8_t *payload;
+    size_t payload_len;
+    uint8_t qos;
+    bool retain;
+} modem_mqtt_publish_t;
+
+typedef enum {
+    MODEM_PROTOCOL_MQTT = 0,
+} modem_protocol_t;
+
+typedef struct {
+    modem_protocol_t protocol;
+    const char *topic;
+    size_t topic_len;
+    const uint8_t *payload;
+    size_t payload_len;
+} modem_protocol_data_t;
+
 /**
  * @brief 调制解调器事件 ID
  * @details Modem event ID
@@ -133,6 +175,8 @@ typedef enum {
     MODEM_EVENT_PDP_ACTIVATED,      /**< PDP 已激活； PDP activated */
     MODEM_EVENT_PDP_DEACTIVATED,    /**< PDP 已去激活； PDP deactivated */
     MODEM_EVENT_SIGNAL_CHANGED,     /**< 信号变化； Signal changed */
+    MODEM_EVENT_PROTOCOL_DATA,      /**< 协议数据事件； Protocol data event */
+    MODEM_EVENT_PROTOCOL_CLOSED,    /**< 协议连接关闭； Protocol connection closed */
     MODEM_EVENT_ERROR,              /**< 错误事件； Error event */
 } modem_event_id_t;
 
@@ -147,6 +191,7 @@ typedef struct {
         modem_reg_status_t reg_status;      /**< 注册状态； Registration status */
         modem_pdp_context_t pdp;            /**< PDP 上下文； PDP context */
         modem_signal_t signal;              /**< 信号质量； Signal quality */
+        modem_protocol_data_t protocol_data;     /**< 协议数据； Protocol data */
         int error_code;                     /**< 错误码； Error code */
     } data;                         /**< 事件数据； Event data */
 } modem_event_t;
@@ -345,6 +390,20 @@ esp_err_t modem_deactivate_pdp(modem_t *me, uint8_t cid);
  */
 esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
+
+esp_err_t modem_mqtt_config(modem_t *me,
+                            const modem_mqtt_config_t *config);
+esp_err_t modem_mqtt_open(modem_t *me,
+                          const modem_mqtt_open_t *open);
+esp_err_t modem_mqtt_login(modem_t *me,
+                           const modem_mqtt_login_t *login);
+esp_err_t modem_mqtt_disconnect(modem_t *me);
+esp_err_t modem_mqtt_subscribe(modem_t *me,
+                               const modem_mqtt_topic_t *topic);
+esp_err_t modem_mqtt_unsubscribe(modem_t *me,
+                                 const modem_mqtt_topic_t *topic);
+esp_err_t modem_mqtt_publish(modem_t *me,
+                             const modem_mqtt_publish_t *publish);
 
 /**********************
  *      MACROS

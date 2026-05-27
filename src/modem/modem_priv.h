@@ -47,6 +47,19 @@ typedef struct modem_ops {
     esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);
     esp_err_t (*get_pdp_context)(modem_t *me, uint8_t cid,
                                   modem_pdp_context_t *pdp);
+    esp_err_t (*mqtt_config)(modem_t *me,
+                             const modem_mqtt_config_t *config);
+    esp_err_t (*mqtt_open)(modem_t *me,
+                           const modem_mqtt_open_t *open);
+    esp_err_t (*mqtt_login)(modem_t *me,
+                            const modem_mqtt_login_t *login);
+    esp_err_t (*mqtt_disconnect)(modem_t *me);
+    esp_err_t (*mqtt_subscribe)(modem_t *me,
+                                const modem_mqtt_topic_t *topic);
+    esp_err_t (*mqtt_unsubscribe)(modem_t *me,
+                                  const modem_mqtt_topic_t *topic);
+    esp_err_t (*mqtt_publish)(modem_t *me,
+                              const modem_mqtt_publish_t *publish);
 } modem_ops_t;
 
 struct modem {

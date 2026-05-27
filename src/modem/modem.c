@@ -75,6 +75,8 @@ static esp_err_t check_ready(modem_t *me, bool allow_created);
  */
 static esp_err_t call_no_arg(modem_t *me, esp_err_t (*fn)(modem_t *me));
 
+static void release_event_payload(modem_event_t *event);
+
 /**********************
  *  STATIC VARIABLES
  **********************/
@@ -486,6 +488,101 @@ esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
     return me->ops->get_pdp_context(me, cid, pdp);
 }
 
+esp_err_t modem_mqtt_config(modem_t *me,
+                            const modem_mqtt_config_t *config)
+{
+    ESP_RETURN_ON_FALSE(me && config && config->client_id,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_config,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_config not supported");
+    return me->ops->mqtt_config(me, config);
+}
+
+esp_err_t modem_mqtt_open(modem_t *me,
+                          const modem_mqtt_open_t *open)
+{
+    ESP_RETURN_ON_FALSE(me && open && open->host && open->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_open,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_open not supported");
+
+    return me->ops->mqtt_open(me, open);
+}
+
+esp_err_t modem_mqtt_login(modem_t *me,
+                           const modem_mqtt_login_t *login)
+{
+    ESP_RETURN_ON_FALSE(me && login, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_login,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_login not supported");
+
+    return me->ops->mqtt_login(me, login);
+}
+
+esp_err_t modem_mqtt_disconnect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_disconnect,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_disconnect not supported");
+
+    return me->ops->mqtt_disconnect(me);
+}
+
+esp_err_t modem_mqtt_subscribe(modem_t *me,
+                               const modem_mqtt_topic_t *topic)
+{
+    ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->qos <= 2,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_subscribe,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_subscribe not supported");
+
+    return me->ops->mqtt_subscribe(me, topic);
+}
+
+esp_err_t modem_mqtt_unsubscribe(modem_t *me,
+                                 const modem_mqtt_topic_t *topic)
+{
+    ESP_RETURN_ON_FALSE(me && topic && topic->topic,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_unsubscribe,
+                        ESP_ERR_NOT_SUPPORTED, TAG,
+                        "mqtt_unsubscribe not supported");
+
+    return me->ops->mqtt_unsubscribe(me, topic);
+}
+
+esp_err_t modem_mqtt_publish(modem_t *me,
+                             const modem_mqtt_publish_t *publish)
+{
+    ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
+                        publish->payload_len > 0 && publish->qos <= 2,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_publish,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_publish not supported");
+
+    return me->ops->mqtt_publish(me, publish);
+}
+
 /**********************
  *   STATIC FUNCTIONS
  **********************/
@@ -501,12 +598,14 @@ static void event_task(void *arg)
             continue;
         }
         if (event_task_should_stop(me)) {
+            release_event_payload(&event);
             break;
         }
 
         xSemaphoreTake(me->lock, portMAX_DELAY);
         if (me->destroying || me->state == MODEM_STATE_DESTROYING) {
             xSemaphoreGive(me->lock);
+            release_event_payload(&event);
             break;
         }
         modem_event_callback_t cb = me->event_cb;
@@ -518,6 +617,7 @@ static void event_task(void *arg)
 
         if (cb) {
             cb(me, &event, user_ctx);
+            release_event_payload(&event);
 
             xSemaphoreTake(me->lock, portMAX_DELAY);
             if (me->event_cb_active > 0) {
@@ -530,6 +630,8 @@ static void event_task(void *arg)
             if (cb_done && done_sema) {
                 xSemaphoreGive(done_sema);
             }
+        } else {
+            release_event_payload(&event);
         }
     }
 
@@ -576,4 +678,18 @@ static esp_err_t call_no_arg(modem_t *me, esp_err_t (*fn)(modem_t *me))
 {
     ESP_RETURN_ON_FALSE(me && fn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     return fn(me);
+}
+
+static void release_event_payload(modem_event_t *event)
+{
+    if (!event || event->id != MODEM_EVENT_PROTOCOL_DATA) {
+        return;
+    }
+
+    free((void *)event->data.protocol_data.topic);
+    free((void *)event->data.protocol_data.payload);
+    event->data.protocol_data.topic = NULL;
+    event->data.protocol_data.payload = NULL;
+    event->data.protocol_data.topic_len = 0;
+    event->data.protocol_data.payload_len = 0;
 }
