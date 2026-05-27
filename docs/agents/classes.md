@@ -1383,6 +1383,26 @@ typedef struct {
 
 `mqtt_client_create()` 会复制需要长期保存的字符串。`MQTT_CLIENT_TRANSPORT_TLS` 作为类型预留，第一版返回 `ESP_ERR_NOT_SUPPORTED`。
 
+Facade factory 从用户公共 `lwlte_air780ep_config_t.mqtt_client` 子配置生成本结构。用户公共配置使用嵌套类型，避免 Air780EP 顶层配置继续平铺膨胀：
+
+```c
+typedef struct {
+    bool enabled;                  // 是否启用 MQTT service
+    const char *host;              // Broker 主机名
+    uint16_t port;                 // Broker 端口
+    const char *client_id;         // MQTT client id
+    const char *username;          // 用户名，可为 NULL
+    const char *password;          // 密码，可为 NULL
+    uint16_t keepalive_s;          // keepalive 秒数，0 使用默认值
+    bool clean_session;            // clean session 标志
+    int fsm_queue_size;            // MQTT FSM 队列长度，0 使用默认值
+    int fsm_task_stack;            // MQTT FSM task 栈大小，0 使用默认值
+    int fsm_task_priority;         // MQTT FSM task 优先级，0 使用默认值
+} lwlte_air780ep_config_mqtt_client_t;
+```
+
+`config->mqtt_client.enabled == false` 时 Facade 不创建 MQTT service，用户调用 `lwlte_mqtt_*` 返回 `ESP_ERR_INVALID_STATE`。`enabled == true` 时，`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t` 时按空字符串处理。
+
 ### 4.3 `mqtt_client_t` — MQTT 客户端句柄
 
 **所属层**：MQTT Client Service
@@ -1427,6 +1447,7 @@ esp_err_t mqtt_client_publish(mqtt_client_t *me,
 - MQTT 不是 Core 的子类，不能向上转型为 `core_t *`。
 - MQTT 不保存 `modem_t *`、`at_engine_t *` 或具体模块句柄。
 - `lock` 只保护短字段，MQTT FSM 调用 `core_submit_cmd()` 时不持锁。
+- Facade 通过 public `lwlte_mqtt_*` API 包装本层 `mqtt_client_*` 方法，App 不直接 include `mqtt_client.h`。
 
 ### 4.4 MQTT 状态、事件和消息类型
 
@@ -1680,4 +1701,13 @@ Core FSM task
 
 ## 5. App（应用层）
 
-> App 层不定义框架类，只有用户自己的业务类型。此处不展开。
+> App 层不定义内部框架类，只有用户自己的业务类型。LWLTE Facade 暴露的用户 API 类型位于 `src/include/lwlte*.h`，用于把 App 请求映射到内部 service。
+
+MQTT 第一版会增加这些用户可见类型和函数：
+
+- `lwlte_air780ep_config_mqtt_client_t`：嵌套在 `lwlte_air780ep_config_t.mqtt_client` 中，控制是否创建 MQTT service 以及 Broker/client_id/认证/keepalive/FSM 参数。
+- `lwlte_mqtt_state_t`：用户可查询的 MQTT 状态，由 Facade 从内部 `mqtt_client_state_t` 映射而来。
+- `lwlte_mqtt_msg_t`：用户 MQTT 数据事件的值对象，`topic/payload` 指针只在用户事件回调期间有效。
+- `lwlte_mqtt_start()`、`lwlte_mqtt_stop()`、`lwlte_mqtt_get_state()`、`lwlte_mqtt_subscribe()`、`lwlte_mqtt_unsubscribe()`、`lwlte_mqtt_publish()`：Facade 用户 API，内部只调用 `mqtt_client_*`，不直接操作 Core command 或 Modem。
+
+App 仍不 include `src/mqtt_client/mqtt_client.h`、`src/core/core.h`、`src/modem/modem.h` 或任何 `_priv.h`。

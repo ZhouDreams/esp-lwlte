@@ -301,6 +301,12 @@ lwlte_air780ep_config_t config = {
     .apn            = CONFIG_LWLTE_APN,
     .primary_cid    = 1,
     .auto_connect   = true,
+    .mqtt_client = {
+        .enabled   = true,
+        .host      = CONFIG_LWLTE_MQTT_HOST,
+        .port      = CONFIG_LWLTE_MQTT_PORT,
+        .client_id = CONFIG_LWLTE_MQTT_CLIENT_ID,
+    },
 };
 
 lwlte_t *lte = NULL;
@@ -391,12 +397,23 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     core_register_event_callback(core, facade_core_event_handler, lte);
 
 #if CONFIG_LWLTE_MQTT_SERVICE
-    mqtt_client_config_t mqtt_cfg = {
-        .client_id = config->mqtt_client_id,
-    };
-    lte->mqtt = mqtt_client_create(&mqtt_cfg, core);
-    if (!lte->mqtt) goto err_core;
-    mqtt_client_register_event_callback(lte->mqtt, facade_mqtt_event_handler, lte);
+    if (config->mqtt_client.enabled) {
+        mqtt_client_config_t mqtt_cfg = {
+            .host = config->mqtt_client.host,
+            .port = config->mqtt_client.port,
+            .client_id = config->mqtt_client.client_id,
+            .username = config->mqtt_client.username,
+            .password = config->mqtt_client.password,
+            .keepalive_s = config->mqtt_client.keepalive_s,
+            .clean_session = config->mqtt_client.clean_session,
+            .fsm_queue_size = config->mqtt_client.fsm_queue_size,
+            .fsm_task_stack = config->mqtt_client.fsm_task_stack,
+            .fsm_task_priority = config->mqtt_client.fsm_task_priority,
+        };
+        lte->mqtt = mqtt_client_create(&mqtt_cfg, core);
+        if (!lte->mqtt) goto err_core;
+        mqtt_client_register_event_callback(lte->mqtt, facade_mqtt_event_handler, lte);
+    }
 #endif
 
     if (core_start(core) != ESP_OK) goto err_core;
