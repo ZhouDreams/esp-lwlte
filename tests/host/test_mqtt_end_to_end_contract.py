@@ -583,6 +583,224 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIn("lwlte_handle_mqtt_event", self.lwlte_priv)
         self.assertIn("mqtt_client_register_event_callback", self.lwlte_air780ep_c)
 
+    def test_facade_mqtt_wrappers_use_mqtt_client_layer_only(self):
+        self.assertIn("esp_err_t lwlte_mqtt_start", self.lwlte_c)
+        self.assertIn("void lwlte_handle_core_event", self.lwlte_c)
+        api_start = self.lwlte_c.index("esp_err_t lwlte_mqtt_start")
+        api_body = self.lwlte_c[
+            api_start:
+            self.lwlte_c.index("void lwlte_handle_core_event", api_start)
+        ]
+
+        for token in [
+            "static esp_err_t begin_mqtt_api_call",
+            "mqtt_client_start(mqtt)",
+            "mqtt_client_stop(mqtt)",
+            "mqtt_client_get_state(mqtt, &mqtt_state)",
+            "mqtt_client_subscribe(mqtt, topic, qos)",
+            "mqtt_client_unsubscribe(mqtt, topic)",
+            "mqtt_client_publish(mqtt, &request)",
+            "map_mqtt_state(mqtt_state)",
+        ]:
+            self.assertIn(token, self.lwlte_c)
+
+        for forbidden in [
+            "core_submit_cmd",
+            "CORE_CMD_MQTT_CONFIG",
+            "CORE_CMD_MQTT_OPEN",
+            "CORE_CMD_MQTT_LOGIN",
+            "CORE_CMD_MQTT_SUBSCRIBE",
+            "CORE_CMD_MQTT_UNSUBSCRIBE",
+            "CORE_CMD_MQTT_PUBLISH",
+            "CORE_CMD_MQTT_DISCONNECT",
+        ]:
+            self.assertNotIn(forbidden, api_body)
+
+    def test_facade_mqtt_destroyed_before_core(self):
+        destroy_body = self.lwlte_c[
+            self.lwlte_c.rindex("static esp_err_t destroy_owned_resources"):
+        ]
+
+        self.assertIn("mqtt_client_destroy(me->mqtt)", destroy_body)
+        self.assertIn("me->mqtt = NULL;", destroy_body)
+        self.assertLess(
+            destroy_body.index("mqtt_client_destroy(me->mqtt)"),
+            destroy_body.index("core_destroy(me->core)")
+        )
+
+    def test_facade_tracks_active_callback_tasks_individually(self):
+        self.assertIn("TaskHandle_t callback_tasks[", self.lwlte_priv)
+        self.assertIn("static bool callback_task_active_locked", self.lwlte_c)
+        self.assertIn("static bool add_callback_task_locked", self.lwlte_c)
+        self.assertIn("static void remove_callback_task_locked", self.lwlte_c)
+
+        for function_name, next_function in [
+            ("esp_err_t lwlte_destroy", "esp_err_t lwlte_register_event_callback"),
+            ("esp_err_t lwlte_register_event_callback", "esp_err_t lwlte_connect"),
+            ("static esp_err_t wait_callbacks_idle", "static bool callback_task_active_locked"),
+        ]:
+            function_start = self.lwlte_c.rindex(function_name)
+            function_body = self.lwlte_c[
+                function_start:
+                self.lwlte_c.index(next_function, function_start)
+            ]
+            self.assertIn("callback_task_active_locked(me, xTaskGetCurrentTaskHandle())", function_body)
+            self.assertNotIn("me->callback_task == xTaskGetCurrentTaskHandle()", function_body)
+
+        for function_name, next_function in [
+            ("void lwlte_handle_core_event", "void lwlte_handle_mqtt_event"),
+            ("void lwlte_handle_mqtt_event", "/**********************\n *   STATIC FUNCTIONS"),
+        ]:
+            function_body = self.lwlte_c[
+                self.lwlte_c.index(function_name):
+                self.lwlte_c.index(next_function, self.lwlte_c.index(function_name))
+            ]
+            self.assertIn("add_callback_task_locked(me, xTaskGetCurrentTaskHandle())", function_body)
+            self.assertIn("remove_callback_task_locked(me, xTaskGetCurrentTaskHandle())", function_body)
+            self.assertNotIn("callback_task = xTaskGetCurrentTaskHandle()", function_body)
+
+    def test_mqtt_null_event_data_carries_current_state_before_dispatch(self):
+        post_start = self.mqtt_c.rindex("static esp_err_t post_mqtt_event")
+        post_body = self.mqtt_c[
+            post_start:
+            self.mqtt_c.index("static void post_error_event", post_start)
+        ]
+        null_data_body = post_body[
+            post_body.index("if (!event_data) {"):
+            post_body.index("if (event_id != MQTT_CLIENT_EVENT_DATA)")
+        ]
+
+        for token in [
+            "xSemaphoreTake(me->lock, portMAX_DELAY);",
+            "empty_data.state = me->state;",
+            "xSemaphoreGive(me->lock);",
+            "event_data = &empty_data;",
+        ]:
+            self.assertIn(token, null_data_body)
+
+        self.assertLess(
+            null_data_body.index("xSemaphoreTake(me->lock, portMAX_DELAY);"),
+            null_data_body.index("empty_data.state = me->state;")
+        )
+        self.assertLess(
+            null_data_body.index("empty_data.state = me->state;"),
+            null_data_body.index("xSemaphoreGive(me->lock);")
+        )
+        self.assertLess(
+            null_data_body.index("xSemaphoreGive(me->lock);"),
+            null_data_body.index("event_data = &empty_data;")
+        )
+
+    def test_facade_callback_task_tracking_counts_nested_same_task(self):
+        self.assertIn("TaskHandle_t callback_tasks[LWLTE_CALLBACK_TASKS_MAX];", self.lwlte_priv)
+        self.assertIn("int callback_task_counts[LWLTE_CALLBACK_TASKS_MAX];", self.lwlte_priv)
+
+        add_start = self.lwlte_c.rindex("static bool add_callback_task_locked")
+        add_body = self.lwlte_c[
+            add_start:
+            self.lwlte_c.index("static void remove_callback_task_locked", add_start)
+        ]
+        remove_start = self.lwlte_c.rindex("static void remove_callback_task_locked")
+        remove_body = self.lwlte_c[
+            remove_start:
+            self.lwlte_c.index("static void wake_ready_waiters_locked", remove_start)
+        ]
+
+        for token in [
+            "me->callback_tasks[i] == task",
+            "me->callback_task_counts[i]++;",
+            "me->callback_task_counts[i] = 1;",
+            "me->callback_task_overflow++;",
+        ]:
+            self.assertIn(token, add_body)
+
+        self.assertLess(
+            add_body.index("me->callback_tasks[i] == task"),
+            add_body.index("!me->callback_tasks[i]")
+        )
+
+        for token in [
+            "me->callback_task_counts[i] > 1",
+            "me->callback_task_counts[i]--;",
+            "me->callback_task_counts[i] = 0;",
+            "me->callback_tasks[i] = NULL;",
+            "me->callback_task_overflow--",
+        ]:
+            self.assertIn(token, remove_body)
+
+    def test_facade_mqtt_null_event_data_queries_current_state(self):
+        event_body = self.lwlte_c[
+            self.lwlte_c.index("void lwlte_handle_mqtt_event"):
+            self.lwlte_c.index("/**********************\n *   STATIC FUNCTIONS")
+        ]
+        null_data_body = event_body[
+            event_body.index("} else {"):
+            event_body.index("xSemaphoreTake(me->lock", event_body.index("} else {"))
+        ]
+
+        self.assertIn("mqtt_client_state_t mqtt_state = MQTT_CLIENT_STATE_STOPPED;", null_data_body)
+        self.assertIn("mqtt_client_get_state(mqtt, &mqtt_state)", null_data_body)
+        self.assertIn("lwlte_data.mqtt_state = map_mqtt_state(mqtt_state);", null_data_body)
+        self.assertNotIn("lwlte_data.mqtt_state = LWLTE_MQTT_STATE_STOPPED;", null_data_body)
+
+    def test_air780ep_mqtt_config_validation_and_factory_wiring(self):
+        validate_body = self.lwlte_air780ep_c[
+            self.lwlte_air780ep_c.rindex("static esp_err_t validate_config"):
+            self.lwlte_air780ep_c.rindex("static bool gpio_required_valid")
+        ]
+        for token in [
+            "config->mqtt_client.enabled",
+            "config->mqtt_client.host && config->mqtt_client.host[0]",
+            "config->mqtt_client.port > 0",
+            "config->mqtt_client.client_id && config->mqtt_client.client_id[0]",
+            "non_negative_int(config->mqtt_client.fsm_queue_size)",
+            "non_negative_int(config->mqtt_client.fsm_task_stack)",
+            "non_negative_int(config->mqtt_client.fsm_task_priority)",
+        ]:
+            self.assertIn(token, validate_body)
+
+        init_body = self.lwlte_air780ep_c[
+            self.lwlte_air780ep_c.index("core_register_event_callback"):
+            self.lwlte_air780ep_c.index("core_start(me->core)")
+        ]
+        for token in [
+            "if (config->mqtt_client.enabled) {",
+            "MQTT_CLIENT_TRANSPORT_PLAIN_TCP",
+            "mqtt_client_create(&mqtt_config, me->core)",
+            "mqtt_client_register_event_callback(me->mqtt, lwlte_handle_mqtt_event, me)",
+            "cleanup_after_failure(me, ret)",
+        ]:
+            self.assertIn(token, init_body)
+
+    def test_facade_mqtt_event_mapping_and_data_pointer_scope(self):
+        self.assertIn("void lwlte_handle_mqtt_event", self.lwlte_c)
+        event_body = self.lwlte_c[
+            self.lwlte_c.index("void lwlte_handle_mqtt_event"):
+            self.lwlte_c.index("/**********************\n *   STATIC FUNCTIONS")
+        ]
+
+        for token in [
+            "MQTT_CLIENT_EVENT_DATA",
+            "lwlte_data.data.mqtt_msg.topic = data->data.msg.topic;",
+            "lwlte_data.data.mqtt_msg.topic_len = data->data.msg.topic_len;",
+            "lwlte_data.data.mqtt_msg.payload = data->data.msg.payload;",
+            "lwlte_data.data.mqtt_msg.payload_len = data->data.msg.payload_len;",
+            "lwlte_data.mqtt_state = map_mqtt_state(data->state);",
+            "lwlte_data.error_code = data->error_code;",
+            "callback(me, map_mqtt_event(event_id), &lwlte_data, callback_ctx);",
+        ]:
+            self.assertIn(token, event_body)
+
+        self.assertNotIn("malloc", event_body)
+        self.assertNotIn("clone", event_body)
+
+        map_body = self.lwlte_c[
+            self.lwlte_c.rindex("static lwlte_event_id_t map_mqtt_event"):
+            self.lwlte_c.rindex("static void map_core_event_data")
+        ]
+        self.assertIn("MQTT_CLIENT_EVENT_DATA", map_body)
+        self.assertIn("LWLTE_EVENT_MQTT_DATA", map_body)
+
     def test_air780ep_mqtt_command_and_urc_ownership_contract(self):
         for token in [
             "AIR780EP_MQTT_PAYLOAD_PROMPT",

@@ -32,6 +32,26 @@ extern "C" {
  **********************/
 
 /**
+ * @brief Air780EP MQTT 客户端配置
+ * @details Air780EP MQTT client configuration
+ * @note enabled 为 false 时 MQTT 服务禁用，其余字段被忽略。
+ * @note enabled 为 true 时 host、port 和 client_id 为必填字段；任务字段为 0 时使用下层默认值，非 0 值必须大于 0。
+ */
+typedef struct {
+    bool enabled;                         /**< 是否启用 MQTT 服务； Whether to enable MQTT service */
+    const char *host;                     /**< 必填 MQTT 服务器地址； Required MQTT broker host */
+    uint16_t port;                        /**< 必填 MQTT 服务器端口； Required MQTT broker port */
+    const char *client_id;                /**< 必填 MQTT 客户端 ID； Required MQTT client ID */
+    const char *username;                 /**< 可选用户名； Optional username */
+    const char *password;                 /**< 可选密码； Optional password */
+    uint16_t keepalive_s;                 /**< keepalive 秒数，0 使用下层默认值； Keepalive seconds, 0 uses default */
+    bool clean_session;                   /**< clean session 标志； Clean session flag */
+    int fsm_queue_size;                   /**< MQTT FSM 队列长度，0 使用默认值； MQTT FSM queue size, 0 uses default */
+    int fsm_task_stack;                   /**< MQTT FSM 任务栈大小，0 使用默认值； MQTT FSM task stack, 0 uses default */
+    int fsm_task_priority;                /**< MQTT FSM 任务优先级，0 使用默认值； MQTT FSM task priority, 0 uses default */
+} lwlte_air780ep_config_mqtt_client_t;
+
+/**
  * @brief Air780EP LTE 初始化配置
  * @details Air780EP LTE initialization configuration
  * @note uart_num、uart_tx_pin、uart_rx_pin、uart_baud_rate 和 primary_cid 为必填字段。
@@ -39,6 +59,7 @@ extern "C" {
  * @note 超时、任务和缓冲区字段为 0 时使用下层默认值；init_ready_timeout_ms 为 0 时使用门面默认值。
  * @note init_ready_timeout_ms 覆盖 Air780EP RDY 等待和 Core ready 等待的初始化总超时。
  * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
+ * @note mqtt_client.enabled 为 false 时 MQTT 服务禁用；为 true 时 host、port 和 client_id 为必填字段。
  * @note UART 端口必须满足 UART_NUM_0 <= uart_num < UART_NUM_MAX；UART TX/RX 必须是有效 GPIO 且不能为 GPIO_NUM_NC。
  * @note uart_baud_rate 必须大于 0；Air780EP 门面当前仅支持 primary_cid 为 1。
  * @note 有符号的队列、任务和缓冲区字段允许 0 表示默认值，非 0 值必须大于 0。
@@ -69,6 +90,7 @@ typedef struct {
     int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
     int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
     int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
+    lwlte_air780ep_config_mqtt_client_t mqtt_client; /**< MQTT 客户端配置； MQTT client configuration */
 } lwlte_air780ep_config_t;
 
 /**********************
@@ -82,7 +104,7 @@ typedef struct {
  * @note ESP_OK 返回时 *out_lte 为可用句柄，所有权转移给调用方，必须通过 lwlte_destroy() 释放。
  * @note 非 ESP_OK 返回时不会转移句柄所有权，门面会尽力释放已创建的内部资源。
  * @note ESP_OK 不保证网络在线；auto_connect 为 true 时仅在 ready 后提交连接请求，不等待网络上线。
- * @note config 及其 apn 指针由调用方拥有，在函数返回前必须保持有效。
+ * @note config 及其 apn、mqtt_client 字符串指针由调用方拥有，在函数返回前必须保持有效。
  * @param[in] config Air780EP LTE 初始化配置
  * @param[out] out_lte LTE 用户门面句柄输出指针
  * @return

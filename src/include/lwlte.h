@@ -14,6 +14,10 @@ extern "C" {
 /*********************
  *      INCLUDES
  *********************/
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 
 /*********************
@@ -56,6 +60,30 @@ typedef enum {
 } lwlte_net_state_t;
 
 /**
+ * @brief LTE MQTT 状态
+ * @details LTE MQTT state
+ */
+typedef enum {
+    LWLTE_MQTT_STATE_STOPPED = 0,    /**< 已停止； Stopped */
+    LWLTE_MQTT_STATE_WAITING_NET,    /**< 等待网络； Waiting network */
+    LWLTE_MQTT_STATE_CONNECTING,     /**< 连接中； Connecting */
+    LWLTE_MQTT_STATE_CONNECTED,      /**< 已连接； Connected */
+    LWLTE_MQTT_STATE_DISCONNECTING,  /**< 断开中； Disconnecting */
+    LWLTE_MQTT_STATE_ERROR,          /**< 错误； Error */
+} lwlte_mqtt_state_t;
+
+/**
+ * @brief LTE MQTT 消息
+ * @details LTE MQTT message
+ */
+typedef struct {
+    const char *topic;               /**< 主题指针； Topic pointer */
+    size_t topic_len;                /**< 主题长度； Topic length */
+    const uint8_t *payload;          /**< 载荷指针； Payload pointer */
+    size_t payload_len;              /**< 载荷长度； Payload length */
+} lwlte_mqtt_msg_t;
+
+/**
  * @brief LTE 用户事件 ID
  * @details LTE user event ID
  */
@@ -68,6 +96,16 @@ typedef enum {
     LWLTE_EVENT_NET_ERROR,          /**< 网络错误； Network error */
     LWLTE_EVENT_STOPPED,            /**< 已停止； Stopped */
     LWLTE_EVENT_ERROR,              /**< 错误； Error */
+    LWLTE_EVENT_MQTT_STARTED,        /**< MQTT 已启动； MQTT started */
+    LWLTE_EVENT_MQTT_STOPPED,        /**< MQTT 已停止； MQTT stopped */
+    LWLTE_EVENT_MQTT_CONNECTING,     /**< MQTT 连接中； MQTT connecting */
+    LWLTE_EVENT_MQTT_CONNECTED,      /**< MQTT 已连接； MQTT connected */
+    LWLTE_EVENT_MQTT_DISCONNECTED,   /**< MQTT 已断开； MQTT disconnected */
+    LWLTE_EVENT_MQTT_SUBSCRIBED,     /**< MQTT 已订阅； MQTT subscribed */
+    LWLTE_EVENT_MQTT_UNSUBSCRIBED,   /**< MQTT 已取消订阅； MQTT unsubscribed */
+    LWLTE_EVENT_MQTT_PUBLISHED,      /**< MQTT 已发布； MQTT published */
+    LWLTE_EVENT_MQTT_DATA,           /**< MQTT 数据； MQTT data */
+    LWLTE_EVENT_MQTT_ERROR,          /**< MQTT 错误； MQTT error */
 } lwlte_event_id_t;
 
 /**
@@ -76,7 +114,11 @@ typedef enum {
  */
 typedef struct {
     lwlte_net_state_t net_state;    /**< 网络状态； Network state */
+    lwlte_mqtt_state_t mqtt_state;  /**< MQTT 状态； MQTT state */
     int error_code;                 /**< 错误码； Error code */
+    union {
+        lwlte_mqtt_msg_t mqtt_msg;  /**< MQTT 消息，仅在回调期间有效； MQTT message, callback-scoped */
+    } data;
 } lwlte_event_data_t;
 
 /**
@@ -181,6 +223,91 @@ esp_err_t lwlte_get_state(lwlte_t *me, lwlte_state_t *state);
  *         - ESP_ERR_INVALID_STATE: 门面正在销毁
  */
 esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state);
+
+/**
+ * @brief 启动 MQTT 客户端
+ * @details Start MQTT client
+ * @note 该函数异步提交 MQTT 启动请求，ESP_OK 仅表示请求已提交。
+ * @param[in] me LTE 用户门面句柄
+ * @return
+ *         - ESP_OK: 请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用或门面正在销毁
+ *         - 其他 esp_err_t: 下层 MQTT 服务错误
+ */
+esp_err_t lwlte_mqtt_start(lwlte_t *me);
+
+/**
+ * @brief 停止 MQTT 客户端
+ * @details Stop MQTT client
+ * @note 该函数异步提交 MQTT 停止请求，ESP_OK 仅表示请求已提交。
+ * @param[in] me LTE 用户门面句柄
+ * @return
+ *         - ESP_OK: 请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用或门面正在销毁
+ *         - 其他 esp_err_t: 下层 MQTT 服务错误
+ */
+esp_err_t lwlte_mqtt_stop(lwlte_t *me);
+
+/**
+ * @brief 获取 MQTT 状态
+ * @details Get MQTT state
+ * @param[in] me LTE 用户门面句柄
+ * @param[out] state MQTT 状态输出指针
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用或门面正在销毁
+ *         - 其他 esp_err_t: 下层 MQTT 服务错误
+ */
+esp_err_t lwlte_mqtt_get_state(lwlte_t *me, lwlte_mqtt_state_t *state);
+
+/**
+ * @brief 订阅 MQTT 主题
+ * @details Subscribe MQTT topic
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] topic MQTT 主题
+ * @param[in] qos QoS 等级
+ * @return
+ *         - ESP_OK: 请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用、未连接或门面正在销毁
+ *         - 其他 esp_err_t: 下层 MQTT 服务错误
+ */
+esp_err_t lwlte_mqtt_subscribe(lwlte_t *me, const char *topic, uint8_t qos);
+
+/**
+ * @brief 取消订阅 MQTT 主题
+ * @details Unsubscribe MQTT topic
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] topic MQTT 主题
+ * @return
+ *         - ESP_OK: 请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用、未连接或门面正在销毁
+ *         - 其他 esp_err_t: 下层 MQTT 服务错误
+ */
+esp_err_t lwlte_mqtt_unsubscribe(lwlte_t *me, const char *topic);
+
+/**
+ * @brief 发布 MQTT 消息
+ * @details Publish MQTT message
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] topic MQTT 主题
+ * @param[in] payload 消息载荷
+ * @param[in] payload_len 消息载荷长度
+ * @param[in] qos QoS 等级
+ * @param[in] retain retain 标志
+ * @return
+ *         - ESP_OK: 请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用、未连接或门面正在销毁
+ *         - 其他 esp_err_t: 下层 MQTT 服务错误
+ */
+esp_err_t lwlte_mqtt_publish(lwlte_t *me, const char *topic,
+                             const uint8_t *payload, size_t payload_len,
+                             uint8_t qos, bool retain);
 
 /**********************
  *      MACROS

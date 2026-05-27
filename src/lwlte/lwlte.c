@@ -55,6 +55,22 @@ static lwlte_net_state_t map_core_net_state(core_net_state_t state);
 static lwlte_event_id_t map_core_event(core_event_id_t event_id);
 
 /**
+ * @brief 映射 MQTT 状态
+ * @details Map MQTT state
+ * @param[in] state MQTT 状态
+ * @return LTE MQTT 状态
+ */
+static lwlte_mqtt_state_t map_mqtt_state(mqtt_client_state_t state);
+
+/**
+ * @brief 映射 MQTT 事件
+ * @details Map MQTT event
+ * @param[in] event_id MQTT 事件 ID
+ * @return LTE 用户事件 ID
+ */
+static lwlte_event_id_t map_mqtt_event(mqtt_client_event_id_t event_id);
+
+/**
  * @brief 映射 Core 事件数据
  * @details Map Core event data
  * @param[in] core_data Core 事件数据，可能为 NULL
@@ -76,6 +92,15 @@ static void map_core_event_data(const core_event_data_t *core_data,
  */
 static esp_err_t begin_api_call(lwlte_t *me, bool require_core,
                                 core_t **out_core);
+
+/**
+ * @brief 进入 MQTT 门面 API 调用
+ * @details Begin MQTT facade API call
+ * @param[in] me LTE 用户门面句柄
+ * @param[out] out_mqtt MQTT 客户端输出指针
+ * @return esp_err_t
+ */
+static esp_err_t begin_mqtt_api_call(lwlte_t *me, mqtt_client_t **out_mqtt);
 
 /**
  * @brief 退出门面 API 调用
@@ -106,6 +131,35 @@ static esp_err_t wait_api_calls_idle(lwlte_t *me);
  *         - ESP_ERR_INVALID_STATE: 当前任务正在执行回调或内部状态无效
  */
 static esp_err_t wait_callbacks_idle(lwlte_t *me, bool claim_waiter);
+
+/**
+ * @brief 检查任务是否正在执行用户回调
+ * @details Check whether a task is executing a user callback
+ * @note 调用方必须持有 me->lock。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] task 任务句柄
+ * @return true: 任务可能正在执行回调； false: 任务未执行回调
+ */
+static bool callback_task_active_locked(const lwlte_t *me, TaskHandle_t task);
+
+/**
+ * @brief 登记正在执行用户回调的任务
+ * @details Add a task executing a user callback
+ * @note 调用方必须持有 me->lock。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] task 任务句柄
+ * @return true: 已精确登记； false: 使用溢出保守登记
+ */
+static bool add_callback_task_locked(lwlte_t *me, TaskHandle_t task);
+
+/**
+ * @brief 移除正在执行用户回调的任务
+ * @details Remove a task executing a user callback
+ * @note 调用方必须持有 me->lock。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] task 任务句柄
+ */
+static void remove_callback_task_locked(lwlte_t *me, TaskHandle_t task);
 
 /**
  * @brief 唤醒所有 ready 等待者
@@ -196,7 +250,7 @@ esp_err_t lwlte_destroy(lwlte_t *me)
         return ESP_ERR_INVALID_STATE;
     }
     if (me->callback_active > 0 &&
-        me->callback_task == xTaskGetCurrentTaskHandle()) {
+        callback_task_active_locked(me, xTaskGetCurrentTaskHandle())) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -284,7 +338,7 @@ esp_err_t lwlte_register_event_callback(lwlte_t *me,
             ret = ESP_OK;
             break;
         }
-        if (me->callback_task == xTaskGetCurrentTaskHandle()) {
+        if (callback_task_active_locked(me, xTaskGetCurrentTaskHandle())) {
             if (claimed_callback_waiter) {
                 me->callback_waiting = false;
             }
@@ -371,6 +425,96 @@ esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state)
     return ESP_OK;
 }
 
+esp_err_t lwlte_mqtt_start(lwlte_t *me)
+{
+    mqtt_client_t *mqtt = NULL;
+    esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
+    ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
+
+    ret = mqtt_client_start(mqtt);
+    end_api_call(me);
+
+    return ret;
+}
+
+esp_err_t lwlte_mqtt_stop(lwlte_t *me)
+{
+    mqtt_client_t *mqtt = NULL;
+    esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
+    ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
+
+    ret = mqtt_client_stop(mqtt);
+    end_api_call(me);
+
+    return ret;
+}
+
+esp_err_t lwlte_mqtt_get_state(lwlte_t *me, lwlte_mqtt_state_t *state)
+{
+    ESP_RETURN_ON_FALSE(state, ESP_ERR_INVALID_ARG, TAG, "state is NULL");
+    mqtt_client_t *mqtt = NULL;
+    esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
+    ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
+
+    mqtt_client_state_t mqtt_state = MQTT_CLIENT_STATE_STOPPED;
+    ret = mqtt_client_get_state(mqtt, &mqtt_state);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "get MQTT state failed: %s", esp_err_to_name(ret));
+        end_api_call(me);
+        return ret;
+    }
+    *state = map_mqtt_state(mqtt_state);
+
+    end_api_call(me);
+
+    return ESP_OK;
+}
+
+esp_err_t lwlte_mqtt_subscribe(lwlte_t *me, const char *topic, uint8_t qos)
+{
+    mqtt_client_t *mqtt = NULL;
+    esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
+    ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
+
+    ret = mqtt_client_subscribe(mqtt, topic, qos);
+    end_api_call(me);
+
+    return ret;
+}
+
+esp_err_t lwlte_mqtt_unsubscribe(lwlte_t *me, const char *topic)
+{
+    mqtt_client_t *mqtt = NULL;
+    esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
+    ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
+
+    ret = mqtt_client_unsubscribe(mqtt, topic);
+    end_api_call(me);
+
+    return ret;
+}
+
+esp_err_t lwlte_mqtt_publish(lwlte_t *me, const char *topic,
+                             const uint8_t *payload, size_t payload_len,
+                             uint8_t qos, bool retain)
+{
+    mqtt_client_t *mqtt = NULL;
+    esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
+    ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
+
+    const mqtt_client_publish_t request = {
+        .topic = topic,
+        .payload = payload,
+        .payload_len = payload_len,
+        .qos = qos,
+        .retain = retain,
+    };
+    ret = mqtt_client_publish(mqtt, &request);
+    end_api_call(me);
+
+    return ret;
+}
+
 esp_err_t lwlte_wait_ready(lwlte_t *me, uint32_t timeout_ms)
 {
     esp_err_t ret = begin_api_call(me, false, NULL);
@@ -452,7 +596,7 @@ void lwlte_handle_core_event(core_t *core, core_event_id_t event_id,
     }
     if (callback) {
         me->callback_active++;
-        me->callback_task = xTaskGetCurrentTaskHandle();
+        add_callback_task_locked(me, xTaskGetCurrentTaskHandle());
     }
     xSemaphoreGive(me->lock);
 
@@ -463,11 +607,73 @@ void lwlte_handle_core_event(core_t *core, core_event_id_t event_id,
         if (me->callback_active > 0) {
             me->callback_active--;
         }
+        remove_callback_task_locked(me, xTaskGetCurrentTaskHandle());
         bool callback_idle = me->callback_active == 0;
         SemaphoreHandle_t done_sema = me->callback_done_sema;
-        if (callback_idle) {
-            me->callback_task = NULL;
+        xSemaphoreGive(me->lock);
+
+        if (callback_idle && done_sema) {
+            xSemaphoreGive(done_sema);
         }
+    }
+}
+
+void lwlte_handle_mqtt_event(mqtt_client_t *mqtt,
+                             mqtt_client_event_id_t event_id,
+                             const mqtt_client_event_data_t *data,
+                             void *user_ctx)
+{
+    lwlte_t *me = (lwlte_t *)user_ctx;
+    if (!me || !me->lock) {
+        return;
+    }
+
+    lwlte_event_callback_t callback = NULL;
+    void *callback_ctx = NULL;
+    lwlte_event_data_t lwlte_data = {0};
+    if (data) {
+        lwlte_data.mqtt_state = map_mqtt_state(data->state);
+        lwlte_data.error_code = data->error_code;
+        if (event_id == MQTT_CLIENT_EVENT_DATA) {
+            lwlte_data.data.mqtt_msg.topic = data->data.msg.topic;
+            lwlte_data.data.mqtt_msg.topic_len = data->data.msg.topic_len;
+            lwlte_data.data.mqtt_msg.payload = data->data.msg.payload;
+            lwlte_data.data.mqtt_msg.payload_len = data->data.msg.payload_len;
+        }
+    } else {
+        mqtt_client_state_t mqtt_state = MQTT_CLIENT_STATE_STOPPED;
+        if (mqtt) {
+            (void)mqtt_client_get_state(mqtt, &mqtt_state);
+        }
+        lwlte_data.mqtt_state = map_mqtt_state(mqtt_state);
+        lwlte_data.error_code = 0;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying) {
+        xSemaphoreGive(me->lock);
+        return;
+    }
+    if (!me->callback_waiting) {
+        callback = me->event_callback;
+        callback_ctx = me->event_user_ctx;
+    }
+    if (callback) {
+        me->callback_active++;
+        add_callback_task_locked(me, xTaskGetCurrentTaskHandle());
+    }
+    xSemaphoreGive(me->lock);
+
+    if (callback) {
+        callback(me, map_mqtt_event(event_id), &lwlte_data, callback_ctx);
+
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        if (me->callback_active > 0) {
+            me->callback_active--;
+        }
+        remove_callback_task_locked(me, xTaskGetCurrentTaskHandle());
+        bool callback_idle = me->callback_active == 0;
+        SemaphoreHandle_t done_sema = me->callback_done_sema;
         xSemaphoreGive(me->lock);
 
         if (callback_idle && done_sema) {
@@ -541,6 +747,53 @@ static lwlte_event_id_t map_core_event(core_event_id_t event_id)
     }
 }
 
+static lwlte_mqtt_state_t map_mqtt_state(mqtt_client_state_t state)
+{
+    switch (state) {
+    case MQTT_CLIENT_STATE_STOPPED:
+        return LWLTE_MQTT_STATE_STOPPED;
+    case MQTT_CLIENT_STATE_WAITING_NET:
+        return LWLTE_MQTT_STATE_WAITING_NET;
+    case MQTT_CLIENT_STATE_CONNECTING:
+        return LWLTE_MQTT_STATE_CONNECTING;
+    case MQTT_CLIENT_STATE_CONNECTED:
+        return LWLTE_MQTT_STATE_CONNECTED;
+    case MQTT_CLIENT_STATE_DISCONNECTING:
+        return LWLTE_MQTT_STATE_DISCONNECTING;
+    case MQTT_CLIENT_STATE_ERROR:
+    case MQTT_CLIENT_STATE_DESTROYING:
+    default:
+        return LWLTE_MQTT_STATE_ERROR;
+    }
+}
+
+static lwlte_event_id_t map_mqtt_event(mqtt_client_event_id_t event_id)
+{
+    switch (event_id) {
+    case MQTT_CLIENT_EVENT_STARTED:
+        return LWLTE_EVENT_MQTT_STARTED;
+    case MQTT_CLIENT_EVENT_STOPPED:
+        return LWLTE_EVENT_MQTT_STOPPED;
+    case MQTT_CLIENT_EVENT_CONNECTING:
+        return LWLTE_EVENT_MQTT_CONNECTING;
+    case MQTT_CLIENT_EVENT_CONNECTED:
+        return LWLTE_EVENT_MQTT_CONNECTED;
+    case MQTT_CLIENT_EVENT_DISCONNECTED:
+        return LWLTE_EVENT_MQTT_DISCONNECTED;
+    case MQTT_CLIENT_EVENT_SUBSCRIBED:
+        return LWLTE_EVENT_MQTT_SUBSCRIBED;
+    case MQTT_CLIENT_EVENT_UNSUBSCRIBED:
+        return LWLTE_EVENT_MQTT_UNSUBSCRIBED;
+    case MQTT_CLIENT_EVENT_PUBLISHED:
+        return LWLTE_EVENT_MQTT_PUBLISHED;
+    case MQTT_CLIENT_EVENT_DATA:
+        return LWLTE_EVENT_MQTT_DATA;
+    case MQTT_CLIENT_EVENT_ERROR:
+    default:
+        return LWLTE_EVENT_MQTT_ERROR;
+    }
+}
+
 static void map_core_event_data(const core_event_data_t *core_data,
                                 lwlte_event_data_t *lwlte_data)
 {
@@ -578,6 +831,28 @@ static esp_err_t begin_api_call(lwlte_t *me, bool require_core,
     }
     me->active_api_calls++;
     xSemaphoreGive(me->lock);
+
+    return ESP_OK;
+}
+
+static esp_err_t begin_mqtt_api_call(lwlte_t *me, mqtt_client_t **out_mqtt)
+{
+    ESP_RETURN_ON_FALSE(out_mqtt, ESP_ERR_INVALID_ARG, TAG,
+                        "out_mqtt is NULL");
+    *out_mqtt = NULL;
+
+    esp_err_t ret = begin_api_call(me, false, NULL);
+    ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    mqtt_client_t *mqtt = me->mqtt;
+    xSemaphoreGive(me->lock);
+
+    if (!mqtt) {
+        end_api_call(me);
+        return ESP_ERR_INVALID_STATE;
+    }
+    *out_mqtt = mqtt;
 
     return ESP_OK;
 }
@@ -634,7 +909,7 @@ static esp_err_t wait_callbacks_idle(lwlte_t *me, bool claim_waiter)
         xSemaphoreGive(me->lock);
         return ESP_OK;
     }
-    if (me->callback_task == xTaskGetCurrentTaskHandle()) {
+    if (callback_task_active_locked(me, xTaskGetCurrentTaskHandle())) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -664,6 +939,69 @@ static esp_err_t wait_callbacks_idle(lwlte_t *me, bool claim_waiter)
     }
 
     return ESP_OK;
+}
+
+static bool callback_task_active_locked(const lwlte_t *me, TaskHandle_t task)
+{
+    if (!me || !task) {
+        return false;
+    }
+
+    for (int i = 0; i < LWLTE_CALLBACK_TASKS_MAX; i++) {
+        if (me->callback_tasks[i] == task) {
+            return true;
+        }
+    }
+
+    return me->callback_task_overflow > 0;
+}
+
+static bool add_callback_task_locked(lwlte_t *me, TaskHandle_t task)
+{
+    if (!me || !task) {
+        return false;
+    }
+
+    for (int i = 0; i < LWLTE_CALLBACK_TASKS_MAX; i++) {
+        if (me->callback_tasks[i] == task) {
+            me->callback_task_counts[i]++;
+            return true;
+        }
+    }
+
+    for (int i = 0; i < LWLTE_CALLBACK_TASKS_MAX; i++) {
+        if (!me->callback_tasks[i]) {
+            me->callback_tasks[i] = task;
+            me->callback_task_counts[i] = 1;
+            return true;
+        }
+    }
+
+    me->callback_task_overflow++;
+    return false;
+}
+
+static void remove_callback_task_locked(lwlte_t *me, TaskHandle_t task)
+{
+    if (!me || !task) {
+        return;
+    }
+
+    for (int i = 0; i < LWLTE_CALLBACK_TASKS_MAX; i++) {
+        if (me->callback_tasks[i] == task) {
+            if (me->callback_task_counts[i] > 1) {
+                me->callback_task_counts[i]--;
+                return;
+            }
+            me->callback_task_counts[i] = 0;
+            me->callback_tasks[i] = NULL;
+            return;
+        }
+    }
+
+    if (me->callback_task_overflow > 0) {
+        me->callback_task_overflow--;
+    }
 }
 
 static void wake_ready_waiters_locked(lwlte_t *me)
@@ -696,6 +1034,15 @@ static void restore_after_destroy_failure(lwlte_t *me)
 static esp_err_t destroy_owned_resources(lwlte_t *me)
 {
     esp_err_t ret = ESP_OK;
+
+    if (me->mqtt) {
+        ret = mqtt_client_destroy(me->mqtt);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "destroy MQTT client failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+        me->mqtt = NULL;
+    }
 
     if (me->core) {
         ret = core_destroy(me->core);

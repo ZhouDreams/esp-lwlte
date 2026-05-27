@@ -463,6 +463,9 @@ static esp_err_t post_mqtt_event(mqtt_client_t *me,
 
     mqtt_client_event_data_t empty_data = {0};
     if (!event_data) {
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        empty_data.state = me->state;
+        xSemaphoreGive(me->lock);
         event_data = &empty_data;
     }
 
