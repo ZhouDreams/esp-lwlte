@@ -428,7 +428,8 @@ class MqttEndToEndContractTest(unittest.TestCase):
     def test_protocol_data_path_symbols_exist(self):
         self.assertIn("MODEM_EVENT_PROTOCOL_DATA", self.air780ep_c)
         self.assertIn("clone_protocol_data", self.core_c)
-        self.assertIn("CORE_EVENT_PROTOCOL_DATA", self.core_fsm_c)
+        self.assertIn("CORE_EVENT_PROTOCOL_DATA", self.core_c)
+        self.assertIn("core_post_protocol_data", self.core_fsm_c)
         self.assertIn("handle_core_event", self.mqtt_c)
         self.assertIn("MQTT_CLIENT_EVENT_DATA", self.mqtt_c)
         self.assertIn("LWLTE_EVENT_MQTT_DATA", self.lwlte_c)
