@@ -14,6 +14,7 @@ extern "C" {
 /*********************
  *      INCLUDES
  *********************/
+#include <stddef.h>
 #include <stdint.h>
 #include "driver/uart.h"
 #include "esp_err.h"
@@ -224,6 +225,31 @@ esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
  *         - ESP_FAIL: UART 写入失败
  */
 esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
+                                          at_response_t *response,
+                                          const at_cmd_options_t *options);
+
+/**
+ * @brief 发送带 payload prompt 的 AT 命令
+ * @details Send AT command that waits for a payload prompt and then writes raw payload
+ * @param[in] me AT 引擎句柄
+ * @param[in] cmd AT 命令，不要求包含 CRLF
+ * @param[in] payload 待写入的原始 payload
+ * @param[in] payload_len payload 字节数
+ * @param[in] payload_prompt payload 输入提示符，如 ">"
+ * @param[out] response 响应对象
+ * @param[in] options payload 写入后继续等待最终响应的命令选项
+ * @return
+ *         - ESP_OK: 命令流程完成，AT 业务结果见 response->status
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_TIMEOUT: 等待 prompt 或最终响应超时
+ *         - ESP_FAIL: UART 写入失败
+ */
+esp_err_t at_engine_send_cmd_with_payload(at_engine_t *me, const char *cmd,
+                                          const uint8_t *payload,
+                                          size_t payload_len,
+                                          const char *payload_prompt,
                                           at_response_t *response,
                                           const at_cmd_options_t *options);
 

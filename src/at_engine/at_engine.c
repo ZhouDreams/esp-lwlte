@@ -56,12 +56,16 @@ typedef enum {
 
 typedef struct {
     const char *cmd;
+    const uint8_t *payload;
+    size_t payload_len;
+    const char *payload_prompt;
     uint32_t timeout_ms;
     at_response_t *response;
     at_cmd_options_t options;
     int echo_consumed;
     int data_line_index;
     bool result_received;
+    bool payload_sent;
 } at_cmd_ctx_t;
 
 struct at_engine {
@@ -102,7 +106,14 @@ static void cleanup_resources(at_engine_t *me);
 static void rx_task(void *arg);
 static esp_err_t begin_send_call(at_engine_t *me);
 static void end_send_call(at_engine_t *me);
+static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
+                                   const uint8_t *payload, size_t payload_len,
+                                   const char *payload_prompt,
+                                   at_response_t *response,
+                                   const at_cmd_options_t *options);
 static esp_err_t write_cmd(at_engine_t *me, const char *cmd);
+static esp_err_t write_payload(at_engine_t *me, const uint8_t *payload,
+                               size_t payload_len);
 static void reset_response(at_response_t *response);
 static void clear_response_pool(at_engine_t *me);
 static void clear_done_signal(at_engine_t *me);
@@ -115,6 +126,7 @@ static esp_err_t validate_options(const at_cmd_options_t *options);
 static bool parse_error_result(at_response_t *response, const char *line);
 static bool match_custom_success(const at_cmd_ctx_t *ctx, const char *line);
 static bool match_success_rule(const at_cmd_success_match_t *rule, const char *line);
+static bool is_payload_prompt(const at_cmd_ctx_t *ctx, const char *line);
 static bool is_intermediate_ok(const at_cmd_ctx_t *ctx, const char *line);
 static int parse_error_code(const char *line);
 static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line);
@@ -240,94 +252,22 @@ esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
                                           at_response_t *response,
                                           const at_cmd_options_t *options)
 {
-    ESP_RETURN_ON_FALSE(me && cmd && response && options,
-                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-    ESP_RETURN_ON_FALSE(response->lines && response->max_lines > 0,
-                        ESP_ERR_INVALID_ARG, TAG, "invalid response lines");
+    return send_cmd_internal(me, cmd, NULL, 0, NULL, response, options);
+}
 
-    esp_err_t ret = validate_options(options);
-    ESP_RETURN_ON_ERROR(ret, TAG, "invalid command options");
+esp_err_t at_engine_send_cmd_with_payload(at_engine_t *me, const char *cmd,
+                                          const uint8_t *payload,
+                                          size_t payload_len,
+                                          const char *payload_prompt,
+                                          at_response_t *response,
+                                          const at_cmd_options_t *options)
+{
+    ESP_RETURN_ON_FALSE(payload && payload_len > 0 && payload_prompt &&
+                        payload_prompt[0] != '\0',
+                        ESP_ERR_INVALID_ARG, TAG, "invalid payload arguments");
 
-    ret = begin_send_call(me);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    uint32_t wait_ms = options->timeout_ms ? options->timeout_ms :
-                       (uint32_t)me->config.cmd_default_timeout_ms;
-    if (wait_ms == 0) {
-        end_send_call(me);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (xSemaphoreTake(me->cmd_mutex, pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
-        end_send_call(me);
-        return ESP_ERR_TIMEOUT;
-    }
-
-    reset_response(response);
-    clear_done_signal(me);
-
-    at_cmd_ctx_t *ctx = &me->cmd_ctx_storage;
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    clear_response_pool(me);
-    *ctx = (at_cmd_ctx_t) {
-        .cmd = cmd,
-        .timeout_ms = wait_ms,
-        .response = response,
-        .options = *options,
-        .echo_consumed = 0,
-        .data_line_index = 0,
-        .result_received = false,
-    };
-    me->cmd_ctx = ctx;
-    me->state = AT_STATE_SENDING;
-    xSemaphoreGive(me->lock);
-
-    ret = write_cmd(me, cmd);
-    if (ret != ESP_OK) {
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        me->cmd_ctx = NULL;
-        me->state = AT_STATE_IDLE;
-        xSemaphoreGive(me->lock);
-        xSemaphoreGive(me->cmd_mutex);
-        end_send_call(me);
-        return ret;
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->cmd_ctx == ctx) {
-        me->state = AT_STATE_WAITING;
-    }
-    xSemaphoreGive(me->lock);
-
-    if (xSemaphoreTake(me->cmd_done_sema, pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        response->status = AT_RESP_TIMEOUT;
-        response->error_code = 0;
-        if (me->cmd_ctx == ctx) {
-            me->cmd_ctx = NULL;
-        }
-        flush_rx_input_locked(me);
-        me->state = AT_STATE_IDLE;
-        xSemaphoreGive(me->lock);
-        clear_done_signal(me);
-        xSemaphoreGive(me->cmd_mutex);
-        end_send_call(me);
-        return ESP_ERR_TIMEOUT;
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->cmd_ctx == ctx) {
-        me->cmd_ctx = NULL;
-        me->state = AT_STATE_IDLE;
-    }
-    xSemaphoreGive(me->lock);
-
-    xSemaphoreGive(me->cmd_mutex);
-    end_send_call(me);
-    return ESP_OK;
+    return send_cmd_internal(me, cmd, payload, payload_len, payload_prompt,
+                             response, options);
 }
 
 esp_err_t at_engine_begin_exclusive(at_engine_t *me)
@@ -500,6 +440,106 @@ static void end_send_call(at_engine_t *me)
     xSemaphoreGive(me->lock);
 }
 
+static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
+                                   const uint8_t *payload, size_t payload_len,
+                                   const char *payload_prompt,
+                                   at_response_t *response,
+                                   const at_cmd_options_t *options)
+{
+    ESP_RETURN_ON_FALSE(me && cmd && response && options,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(response->lines && response->max_lines > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid response lines");
+
+    esp_err_t ret = validate_options(options);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid command options");
+
+    ret = begin_send_call(me);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    uint32_t wait_ms = options->timeout_ms ? options->timeout_ms :
+                       (uint32_t)me->config.cmd_default_timeout_ms;
+    if (wait_ms == 0) {
+        end_send_call(me);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (xSemaphoreTake(me->cmd_mutex, pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
+        end_send_call(me);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    reset_response(response);
+    clear_done_signal(me);
+
+    at_cmd_ctx_t *ctx = &me->cmd_ctx_storage;
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    clear_response_pool(me);
+    *ctx = (at_cmd_ctx_t) {
+        .cmd = cmd,
+        .payload = payload,
+        .payload_len = payload_len,
+        .payload_prompt = payload_prompt,
+        .timeout_ms = wait_ms,
+        .response = response,
+        .options = *options,
+        .echo_consumed = 0,
+        .data_line_index = 0,
+        .result_received = false,
+        .payload_sent = false,
+    };
+    me->cmd_ctx = ctx;
+    me->state = AT_STATE_SENDING;
+    xSemaphoreGive(me->lock);
+
+    ret = write_cmd(me, cmd);
+    if (ret != ESP_OK) {
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        me->cmd_ctx = NULL;
+        me->state = AT_STATE_IDLE;
+        xSemaphoreGive(me->lock);
+        xSemaphoreGive(me->cmd_mutex);
+        end_send_call(me);
+        return ret;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->cmd_ctx == ctx) {
+        me->state = AT_STATE_WAITING;
+    }
+    xSemaphoreGive(me->lock);
+
+    if (xSemaphoreTake(me->cmd_done_sema, pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        response->status = AT_RESP_TIMEOUT;
+        response->error_code = 0;
+        if (me->cmd_ctx == ctx) {
+            me->cmd_ctx = NULL;
+        }
+        flush_rx_input_locked(me);
+        me->state = AT_STATE_IDLE;
+        xSemaphoreGive(me->lock);
+        clear_done_signal(me);
+        xSemaphoreGive(me->cmd_mutex);
+        end_send_call(me);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->cmd_ctx == ctx) {
+        me->cmd_ctx = NULL;
+        me->state = AT_STATE_IDLE;
+    }
+    xSemaphoreGive(me->lock);
+
+    xSemaphoreGive(me->cmd_mutex);
+    end_send_call(me);
+    return ESP_OK;
+}
+
 static void rx_task(void *arg)
 {
     at_engine_t *me = (at_engine_t *)arg;
@@ -635,6 +675,17 @@ static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
             return;
         }
 
+        if (is_payload_prompt(ctx, line)) {
+            esp_err_t payload_ret = write_payload(me, ctx->payload, ctx->payload_len);
+            if (payload_ret != ESP_OK) {
+                finish_cmd_locked(me, AT_RESP_ERROR, 0);
+            } else {
+                ctx->payload_sent = true;
+            }
+            xSemaphoreGive(me->lock);
+            return;
+        }
+
         if (strcmp(line, "OK") == 0) {
             if (!is_intermediate_ok(ctx, line)) {
                 finish_cmd_locked(me, AT_RESP_OK, 0);
@@ -698,6 +749,12 @@ static bool parse_error_result(at_response_t *response, const char *line)
         return true;
     }
     return false;
+}
+
+static bool is_payload_prompt(const at_cmd_ctx_t *ctx, const char *line)
+{
+    return ctx && ctx->payload && !ctx->payload_sent && ctx->payload_prompt &&
+           strcmp(line, ctx->payload_prompt) == 0;
 }
 
 static bool is_intermediate_ok(const at_cmd_ctx_t *ctx, const char *line)
@@ -854,6 +911,20 @@ static esp_err_t write_cmd(at_engine_t *me, const char *cmd)
     int written = uart_write_bytes(me->uart_num, buf, len + 2);
     free(buf);
     ESP_RETURN_ON_FALSE(written == (int)(len + 2), ESP_FAIL, TAG, "uart_write_bytes failed");
+    return ESP_OK;
+}
+
+static esp_err_t write_payload(at_engine_t *me, const uint8_t *payload,
+                               size_t payload_len)
+{
+    ESP_RETURN_ON_FALSE(me && payload && payload_len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid payload");
+#ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
+    log_uart_line("TX_PAYLOAD", (const char *)payload, payload_len);
+#endif
+    int written = uart_write_bytes(me->uart_num, payload, payload_len);
+    ESP_RETURN_ON_FALSE(written == (int)payload_len, ESP_FAIL, TAG,
+                        "uart_write_bytes payload failed");
     return ESP_OK;
 }
 
