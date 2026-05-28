@@ -12,6 +12,7 @@
 #include "core_priv.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -76,6 +77,12 @@ static void handle_stop(core_t *me);
  */
 static void handle_modem_event(core_t *me, const modem_event_t *event);
 static void handle_service_cmd(core_t *me, core_cmd_t *cmd);
+static void handle_ping_cmd(core_t *me, core_cmd_t *cmd);
+static void copy_core_ping_replies(core_ping_reply_t *dst,
+                                   const modem_ping_reply_t *src,
+                                   size_t count);
+static void copy_core_ping_summary(core_ping_summary_t *dst,
+                                   const modem_ping_summary_t *src);
 static core_cmd_result_t result_from_esp_err(esp_err_t err);
 static void finish_service_cmd(core_t *me, core_cmd_t *cmd,
                                core_cmd_result_t result,
@@ -580,12 +587,99 @@ static void handle_service_cmd(core_t *me, core_cmd_t *cmd)
         ret = modem_mqtt_publish(me->modem, &publish);
         break;
     }
+    case CORE_CMD_PING:
+        handle_ping_cmd(me, cmd);
+        return;
     default:
         ret = ESP_ERR_INVALID_ARG;
         break;
     }
 
     finish_service_cmd(me, cmd, result_from_esp_err(ret), NULL);
+}
+
+static void handle_ping_cmd(core_t *me, core_cmd_t *cmd)
+{
+    esp_err_t ret = ESP_ERR_INVALID_ARG;
+
+    if (!me || !cmd) {
+        finish_service_cmd(me, cmd, CORE_CMD_RESULT_ERROR, &ret);
+        return;
+    }
+
+    core_net_state_t net_state = CORE_NET_STATE_OFFLINE;
+    ret = core_get_net_state(me, &net_state);
+    if (ret == ESP_OK && net_state != CORE_NET_STATE_ONLINE) {
+        ret = ESP_ERR_INVALID_STATE;
+    }
+    if (ret != ESP_OK) {
+        finish_service_cmd(me, cmd, result_from_esp_err(ret), &ret);
+        return;
+    }
+
+    modem_ping_reply_t *modem_replies = calloc(cmd->data.ping.count,
+                                               sizeof(modem_ping_reply_t));
+    if (!modem_replies) {
+        ret = ESP_ERR_NO_MEM;
+        finish_service_cmd(me, cmd, CORE_CMD_RESULT_ERROR, &ret);
+        return;
+    }
+
+    modem_ping_summary_t modem_summary = {0};
+    modem_ping_request_t request = {
+        .host = cmd->data.ping.host,
+        .count = cmd->data.ping.count,
+        .data_len = cmd->data.ping.data_len,
+        .timeout_100ms = cmd->data.ping.timeout_100ms,
+        .ttl = cmd->data.ping.ttl,
+        .total_timeout_ms = cmd->timeout_ms,
+    };
+
+    ret = modem_ping(me->modem, &request, modem_replies,
+                     cmd->data.ping.count,
+                     cmd->data.ping.summary ? &modem_summary : NULL);
+    if (ret == ESP_OK) {
+        copy_core_ping_replies(cmd->data.ping.replies, modem_replies,
+                               cmd->data.ping.count);
+        copy_core_ping_summary(cmd->data.ping.summary, &modem_summary);
+    }
+
+    free(modem_replies);
+    finish_service_cmd(me, cmd, result_from_esp_err(ret), &ret);
+}
+
+static void copy_core_ping_replies(core_ping_reply_t *dst,
+                                   const modem_ping_reply_t *src,
+                                   size_t count)
+{
+    if (!dst || !src) {
+        return;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        dst[i].seq = src[i].seq;
+        strlcpy(dst[i].ip, src[i].ip, sizeof(dst[i].ip));
+        dst[i].time_ms = src[i].time_ms;
+        dst[i].ttl = src[i].ttl;
+        dst[i].success = src[i].success;
+    }
+}
+
+static void copy_core_ping_summary(core_ping_summary_t *dst,
+                                   const modem_ping_summary_t *src)
+{
+    if (!dst || !src) {
+        return;
+    }
+
+    const modem_ping_summary_t modem_summary = *src;
+
+    dst->sent = modem_summary.sent;
+    dst->received = modem_summary.received;
+    dst->lost = modem_summary.lost;
+    dst->min_time_ms = modem_summary.min_time_ms;
+    dst->max_time_ms = modem_summary.max_time_ms;
+    dst->avg_time_ms = modem_summary.avg_time_ms;
 }
 
 static core_cmd_result_t result_from_esp_err(esp_err_t err)

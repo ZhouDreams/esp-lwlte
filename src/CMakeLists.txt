@@ -7,9 +7,10 @@ idf_component_register(
          "core/net_mgr.c"
          "core/pdp_mgr.c"
          "mqtt_client/mqtt_client.c"
+         "ping_client/ping_client.c"
          "lwlte/lwlte.c"
          "lwlte/lwlte_air780ep.c"
     INCLUDE_DIRS include
-    PRIV_INCLUDE_DIRS lwlte core mqtt_client modem at_engine
+    PRIV_INCLUDE_DIRS lwlte core mqtt_client ping_client modem at_engine
     REQUIRES esp_driver_uart esp_driver_gpio esp_event
 )

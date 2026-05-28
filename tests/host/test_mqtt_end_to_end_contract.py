@@ -2,6 +2,7 @@
 """Static regression checks for the MQTT end-to-end implementation."""
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -98,7 +99,10 @@ class MqttEndToEndContractTest(unittest.TestCase):
 
     def test_mqtt_service_layer_exists_and_does_not_cross_boundaries(self):
         self.assertIn('"mqtt_client/mqtt_client.c"', self.src_cmake)
-        self.assertIn("PRIV_INCLUDE_DIRS lwlte core mqtt_client modem at_engine", self.src_cmake)
+        match = re.search(r"PRIV_INCLUDE_DIRS(?P<body>.*?)(?:\n\s*[A-Z_]+|\))", self.src_cmake, re.DOTALL)
+        self.assertIsNotNone(match, "missing PRIV_INCLUDE_DIRS")
+        for include_dir in ["lwlte", "core", "mqtt_client", "modem", "at_engine"]:
+            self.assertRegex(match.group("body"), rf"\b{include_dir}\b")
         self.assertIn("typedef struct mqtt_client mqtt_client_t;", self.mqtt_h)
         self.assertIn("mqtt_client_create", self.mqtt_h)
         self.assertIn("core_submit_cmd", self.mqtt_c)

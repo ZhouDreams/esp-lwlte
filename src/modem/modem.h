@@ -152,6 +152,32 @@ typedef struct {
     bool retain;
 } modem_mqtt_publish_t;
 
+typedef struct {
+    const char *host;
+    uint8_t count;
+    uint16_t data_len;
+    uint16_t timeout_100ms;
+    uint8_t ttl;
+    uint32_t total_timeout_ms;
+} modem_ping_request_t;
+
+typedef struct {
+    uint8_t seq;
+    char ip[48];
+    uint32_t time_ms;
+    uint8_t ttl;
+    bool success;
+} modem_ping_reply_t;
+
+typedef struct {
+    uint8_t sent;
+    uint8_t received;
+    uint8_t lost;
+    uint32_t min_time_ms;
+    uint32_t max_time_ms;
+    uint32_t avg_time_ms;
+} modem_ping_summary_t;
+
 typedef enum {
     MODEM_PROTOCOL_MQTT = 0,
 } modem_protocol_t;
@@ -412,6 +438,11 @@ esp_err_t modem_mqtt_unsubscribe(modem_t *me,
                                  const modem_mqtt_topic_t *topic);
 esp_err_t modem_mqtt_publish(modem_t *me,
                              const modem_mqtt_publish_t *publish);
+esp_err_t modem_ping(modem_t *me,
+                     const modem_ping_request_t *request,
+                     modem_ping_reply_t *replies,
+                     size_t max_replies,
+                     modem_ping_summary_t *summary);
 
 /**********************
  *      MACROS

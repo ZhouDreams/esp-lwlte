@@ -206,6 +206,12 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ret);
     }
 
+    me->ping = ping_client_create(me->core);
+    if (!me->ping) {
+        ESP_LOGE(TAG, "create Ping client failed");
+        return cleanup_after_failure(me, ESP_OK);
+    }
+
     if (config->mqtt_client.enabled) {
         const mqtt_client_config_t mqtt_config = {
             .transport = MQTT_CLIENT_TRANSPORT_PLAIN_TCP,

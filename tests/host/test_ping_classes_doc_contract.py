@@ -2,6 +2,7 @@
 """Static regression checks for the Ping Service class documentation."""
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -28,12 +29,20 @@ class PingClassesDocContractTest(unittest.TestCase):
             "modem_ping_request_t",
             "modem_ping_reply_t",
             "modem_ping_summary_t",
+            "uint32_t total_timeout_ms;",
             "esp_err_t modem_ping(modem_t *me,",
             "esp_err_t (*ping)(modem_t *me,",
             "| `ping` | 执行网络连通性诊断，不参与 Core online 条件 | `AT+CIPPING` |",
             "AT+CIPPING` 现在作为 `modem_ping()` 的 Air780EP 映射",
         ]:
             self.assertIn(token, self.classes_md)
+
+        modem_request = re.search(
+            r"typedef\s+struct\s*\{(?P<body>[^}]*)\}\s*modem_ping_request_t\s*;",
+            self.classes_md,
+        )
+        self.assertIsNotNone(modem_request)
+        self.assertIn("uint32_t total_timeout_ms;", modem_request.group("body"))
 
     def test_core_ping_command_contract_is_documented(self):
         for token in [

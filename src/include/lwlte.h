@@ -84,6 +84,44 @@ typedef struct {
 } lwlte_mqtt_msg_t;
 
 /**
+ * @brief LTE Ping 请求
+ * @details LTE Ping request
+ */
+typedef struct {
+    const char *host;                /**< 目标主机或 IP； Target host or IP */
+    uint8_t count;                   /**< 发送次数，1..100； Request count, 1..100 */
+    uint16_t data_len;               /**< 数据长度，0..1024； Data length, 0..1024 */
+    uint16_t timeout_100ms;          /**< 单包超时，单位 100ms； Per-packet timeout in 100ms */
+    uint8_t ttl;                     /**< TTL，1..255； TTL, 1..255 */
+    uint32_t total_timeout_ms;       /**< 总等待超时，0 使用派生默认值； Total timeout, 0 derives default */
+} lwlte_ping_request_t;
+
+/**
+ * @brief LTE Ping 单包响应
+ * @details LTE Ping single reply
+ */
+typedef struct {
+    uint8_t seq;                     /**< 响应序号； Reply sequence */
+    char ip[48];                     /**< 响应 IP； Reply IP */
+    uint32_t time_ms;                /**< 耗时毫秒； Time in milliseconds */
+    uint8_t ttl;                     /**< 响应 TTL； Reply TTL */
+    bool success;                    /**< 是否成功； Whether successful */
+} lwlte_ping_reply_t;
+
+/**
+ * @brief LTE Ping 汇总
+ * @details LTE Ping summary
+ */
+typedef struct {
+    uint8_t sent;                    /**< 已发送数量； Sent count */
+    uint8_t received;                /**< 已收到数量； Received count */
+    uint8_t lost;                    /**< 丢包数量； Lost count */
+    uint32_t min_time_ms;            /**< 最小耗时； Minimum time */
+    uint32_t max_time_ms;            /**< 最大耗时； Maximum time */
+    uint32_t avg_time_ms;            /**< 平均耗时； Average time */
+} lwlte_ping_summary_t;
+
+/**
  * @brief LTE 用户事件 ID
  * @details LTE user event ID
  */
@@ -223,6 +261,30 @@ esp_err_t lwlte_get_state(lwlte_t *me, lwlte_state_t *state);
  *         - ESP_ERR_INVALID_STATE: 门面正在销毁
  */
 esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state);
+
+/**
+ * @brief 执行同步 Ping 诊断
+ * @details Perform synchronous Ping diagnostic
+ * @note replies 由调用方提供，max_replies 必须大于等于 request->count。
+ * @note 该函数阻塞直到 Core command 完成；不应在时间敏感回调中调用。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] request Ping 请求
+ * @param[out] replies 调用方提供的单包响应数组
+ * @param[in] max_replies replies 数组容量
+ * @param[out] summary 可选汇总结果，可为 NULL
+ * @return
+ *         - ESP_OK: 命令完成
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 网络未 online 或门面正在销毁
+ *         - ESP_ERR_TIMEOUT: Ping 超时
+ *         - ESP_ERR_INVALID_RESPONSE: 模块响应格式无效
+ *         - other: 下层错误
+ */
+esp_err_t lwlte_ping(lwlte_t *me,
+                     const lwlte_ping_request_t *request,
+                     lwlte_ping_reply_t *replies,
+                     size_t max_replies,
+                     lwlte_ping_summary_t *summary);
 
 /**
  * @brief 启动 MQTT 客户端

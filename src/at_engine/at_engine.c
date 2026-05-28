@@ -38,10 +38,13 @@
 #define AT_ENGINE_DEFAULT_RX_TASK_PRIORITY   10
 #define AT_ENGINE_DEFAULT_LINE_BUF_SIZE      256
 #define AT_ENGINE_DEFAULT_TIMEOUT_MS         3000
-#define AT_ENGINE_DEFAULT_MAX_RESP_LINES     8
+#define AT_ENGINE_DEFAULT_MAX_RESP_LINES     101
 #define AT_ENGINE_RX_WAIT_MS                 100
 #define AT_ENGINE_RX_TASK_STOP_WAIT_MS       20
 #define AT_ENGINE_RX_TASK_STOP_POLL_LIMIT    50
+
+_Static_assert(AT_ENGINE_DEFAULT_MAX_RESP_LINES >= 101,
+               "AT Engine default response storage must hold max CIPPING replies plus final status");
 
 /**********************
  *      TYPEDEFS
@@ -115,6 +118,9 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
 static esp_err_t write_cmd(at_engine_t *me, const char *cmd);
 static esp_err_t write_payload(at_engine_t *me, const uint8_t *payload,
                                size_t payload_len);
+static TickType_t timeout_ticks_from_ms(uint32_t timeout_ms);
+static TickType_t remaining_timeout_ticks(TickType_t start_ticks,
+                                          TickType_t total_ticks);
 static void reset_response(at_response_t *response);
 static void clear_response_pool(at_engine_t *me);
 static void clear_done_signal(at_engine_t *me);
@@ -467,8 +473,18 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         end_send_call(me);
         return ESP_ERR_INVALID_ARG;
     }
+    TickType_t total_timeout_ticks = timeout_ticks_from_ms(wait_ms);
+    TickType_t start_ticks = xTaskGetTickCount();
 
-    if (xSemaphoreTake(me->cmd_mutex, pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
+    if (xSemaphoreTake(me->cmd_mutex, total_timeout_ticks) != pdTRUE) {
+        end_send_call(me);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    TickType_t remaining_ticks = remaining_timeout_ticks(start_ticks,
+                                                        total_timeout_ticks);
+    if (remaining_ticks == 0) {
+        xSemaphoreGive(me->cmd_mutex);
         end_send_call(me);
         return ESP_ERR_TIMEOUT;
     }
@@ -503,6 +519,7 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         xSemaphoreTake(me->lock, portMAX_DELAY);
         me->cmd_ctx = NULL;
         me->state = AT_STATE_IDLE;
+        flush_rx_input_locked(me);
         xSemaphoreGive(me->lock);
         xSemaphoreGive(me->cmd_mutex);
         end_send_call(me);
@@ -515,7 +532,8 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
     }
     xSemaphoreGive(me->lock);
 
-    if (xSemaphoreTake(me->cmd_done_sema, pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
+    remaining_ticks = remaining_timeout_ticks(start_ticks, total_timeout_ticks);
+    if (xSemaphoreTake(me->cmd_done_sema, remaining_ticks) != pdTRUE) {
         xSemaphoreTake(me->lock, portMAX_DELAY);
         response->status = AT_RESP_TIMEOUT;
         response->error_code = 0;
@@ -547,6 +565,25 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         return io_error;
     }
     return ESP_OK;
+}
+
+static TickType_t timeout_ticks_from_ms(uint32_t timeout_ms)
+{
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (ticks == 0 && timeout_ms > 0) {
+        ticks = 1;
+    }
+    return ticks;
+}
+
+static TickType_t remaining_timeout_ticks(TickType_t start_ticks,
+                                          TickType_t total_ticks)
+{
+    TickType_t elapsed_ticks = xTaskGetTickCount() - start_ticks;
+    if (elapsed_ticks >= total_ticks) {
+        return 0;
+    }
+    return total_ticks - elapsed_ticks;
 }
 
 static void rx_task(void *arg)
@@ -1052,6 +1089,8 @@ static esp_err_t normalize_config(const at_engine_config_t *in, at_engine_config
         out->cmd_default_timeout_ms = AT_ENGINE_DEFAULT_TIMEOUT_MS;
     }
     if (out->max_response_lines <= 0) {
+        out->max_response_lines = AT_ENGINE_DEFAULT_MAX_RESP_LINES;
+    } else if (out->max_response_lines < AT_ENGINE_DEFAULT_MAX_RESP_LINES) {
         out->max_response_lines = AT_ENGINE_DEFAULT_MAX_RESP_LINES;
     }
 

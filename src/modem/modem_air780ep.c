@@ -30,7 +30,7 @@
  *********************/
 #define TAG "modem_air780ep"
 #define AIR780EP_MAX_PDP_CONTEXTS        4
-#define AIR780EP_MAX_RESPONSE_LINES      8
+#define AIR780EP_MAX_RESPONSE_LINES      101
 #define AIR780EP_PARSE_BUF_SIZE          128
 #define AIR780EP_DEFAULT_CMD_TIMEOUT_MS  9000
 #define AIR780EP_DEFAULT_READY_TIMEOUT_MS 30000
@@ -57,6 +57,12 @@
 #define AIR780EP_MQTT_CMD_TIMEOUT_MS     9000
 #define AIR780EP_MQTT_CONNECT_TIMEOUT_MS 60000
 #define AIR780EP_MQTT_PAYLOAD_PROMPT     ">"
+#define AIR780EP_CIPPING_PREFIX         "+CIPPING:"
+#define AIR780EP_CIPPING_MAX_COUNT      100
+#define AIR780EP_CIPPING_CMD_OVERHEAD_MS 5000U
+
+_Static_assert(AIR780EP_MAX_RESPONSE_LINES >= AIR780EP_CIPPING_MAX_COUNT + 1,
+               "Air780EP CIPPING response storage must hold replies plus final status");
 
 /**********************
  *      TYPEDEFS
@@ -268,6 +274,22 @@ static esp_err_t air780ep_mqtt_unsubscribe(modem_t *me,
                                             const modem_mqtt_topic_t *topic);
 static esp_err_t air780ep_mqtt_publish(modem_t *me,
                                         const modem_mqtt_publish_t *publish);
+static esp_err_t air780ep_ping(modem_t *me,
+                               const modem_ping_request_t *request,
+                               modem_ping_reply_t *replies,
+                               size_t max_replies,
+                               modem_ping_summary_t *summary);
+static esp_err_t parse_cipping_line(const char *line,
+                                    const modem_ping_request_t *request,
+                                    modem_ping_reply_t *reply);
+static esp_err_t parse_cipping_uint(const char **cursor,
+                                    uint32_t max_value,
+                                    uint32_t *out_value);
+static void calculate_ping_summary(const modem_ping_request_t *request,
+                                   modem_ping_reply_t *replies,
+                                   size_t reply_count,
+                                   modem_ping_summary_t *summary);
+static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request);
 
 /**
  * @brief 转换为 Air780EP 实例
@@ -796,6 +818,7 @@ static const modem_ops_t s_air780ep_ops = {
     .mqtt_subscribe = air780ep_mqtt_subscribe,
     .mqtt_unsubscribe = air780ep_mqtt_unsubscribe,
     .mqtt_publish = air780ep_mqtt_publish,
+    .ping = air780ep_ping,
 };
 
 /**********************
@@ -3010,6 +3033,265 @@ static esp_err_t air780ep_mqtt_publish(modem_t *me,
     free(cmd);
     free(escaped_topic);
     return ret;
+}
+
+static esp_err_t air780ep_ping(modem_t *me,
+                               const modem_ping_request_t *request,
+                               modem_ping_reply_t *replies,
+                               size_t max_replies,
+                               modem_ping_summary_t *summary)
+{
+    ESP_RETURN_ON_FALSE(me && request && request->host && request->host[0] &&
+                        replies && max_replies >= request->count,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(request->count >= 1 &&
+                        request->count <= AIR780EP_CIPPING_MAX_COUNT,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ping count");
+
+    char *host = escape_at_string(request->host);
+    ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape ping host failed");
+
+    /* Command form: AT+CIPPING="%s",%u,%u,%u,%u */
+    int needed = snprintf(NULL, 0, "AT+CIPPING=\"%s\",%u,%u,%u,%u",
+                          host, (unsigned int)request->count,
+                          (unsigned int)request->data_len,
+                          (unsigned int)request->timeout_100ms,
+                          (unsigned int)request->ttl);
+    if (needed < 0) {
+        free(host);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(host);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+CIPPING=\"%s\",%u,%u,%u,%u",
+             host, (unsigned int)request->count,
+             (unsigned int)request->data_len,
+             (unsigned int)request->timeout_100ms,
+             (unsigned int)request->ttl);
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ping_cmd_timeout_ms(request));
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+CIPPING");
+    }
+    if (ret != ESP_OK) {
+        free(cmd);
+        free(host);
+        return ret;
+    }
+
+    size_t parsed_count = 0;
+    int line_count = ctx.response.line_count;
+    if (line_count > ctx.response.max_lines) {
+        line_count = ctx.response.max_lines;
+    }
+    for (int i = 0; i < line_count && parsed_count < request->count; i++) {
+        const char *line = ctx.response.lines[i];
+        if (!line || strncmp(line, AIR780EP_CIPPING_PREFIX,
+                            sizeof(AIR780EP_CIPPING_PREFIX) - 1U) != 0) {
+            continue;
+        }
+        ret = parse_cipping_line(line, request, &replies[parsed_count]);
+        if (ret != ESP_OK) {
+            free(cmd);
+            free(host);
+            return ret;
+        }
+        parsed_count++;
+    }
+
+    if (parsed_count != request->count) {
+        free(cmd);
+        free(host);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    calculate_ping_summary(request, replies, parsed_count, summary);
+    free(cmd);
+    free(host);
+    return ESP_OK;
+}
+
+static esp_err_t parse_cipping_line(const char *line,
+                                    const modem_ping_request_t *request,
+                                    modem_ping_reply_t *reply)
+{
+    ESP_RETURN_ON_FALSE(request && reply, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    if (!line) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const size_t prefix_len = sizeof(AIR780EP_CIPPING_PREFIX) - 1U;
+    if (strncmp(line, AIR780EP_CIPPING_PREFIX, prefix_len) != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = line + prefix_len;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor == ':') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    uint32_t seq = 0;
+    esp_err_t ret = parse_cipping_uint(&cursor, UINT8_MAX, &seq);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +CIPPING seq");
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    const char *ip_start = cursor;
+    const char *ip_end = NULL;
+    if (*cursor == '"') {
+        ip_start = cursor + 1;
+        ip_end = strchr(ip_start, '"');
+        if (!ip_end) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        cursor = ip_end + 1;
+    } else {
+        ip_end = cursor;
+        while (*ip_end && *ip_end != ',') {
+            ip_end++;
+        }
+        cursor = ip_end;
+        while (ip_end > ip_start && isspace((unsigned char)*(ip_end - 1))) {
+            ip_end--;
+        }
+    }
+    if (ip_end == ip_start || (size_t)(ip_end - ip_start) >= sizeof(reply->ip)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    uint32_t reply_time = 0;
+    ret = parse_cipping_uint(&cursor, UINT32_MAX, &reply_time);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +CIPPING reply time");
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    uint32_t ttl = 0;
+    ret = parse_cipping_uint(&cursor, UINT8_MAX, &ttl);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +CIPPING ttl");
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    modem_ping_reply_t parsed = {
+        .seq = (uint8_t)seq,
+        .time_ms = reply_time,
+        .ttl = (uint8_t)ttl,
+    };
+    memcpy(parsed.ip, ip_start, (size_t)(ip_end - ip_start));
+    parsed.ip[ip_end - ip_start] = '\0';
+
+    bool lost = reply_time == (uint32_t)request->timeout_100ms * 100U &&
+                parsed.ttl == 255;
+    parsed.success = !lost;
+    *reply = parsed;
+    return ESP_OK;
+}
+
+static esp_err_t parse_cipping_uint(const char **cursor,
+                                    uint32_t max_value,
+                                    uint32_t *out_value)
+{
+    ESP_RETURN_ON_FALSE(cursor && *cursor && out_value,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const char *value = *cursor;
+    while (isspace((unsigned char)*value)) {
+        value++;
+    }
+    if (!isdigit((unsigned char)*value)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || errno == ERANGE || parsed > max_value) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *cursor = end;
+    *out_value = (uint32_t)parsed;
+    return ESP_OK;
+}
+
+static void calculate_ping_summary(const modem_ping_request_t *request,
+                                   modem_ping_reply_t *replies,
+                                   size_t reply_count,
+                                   modem_ping_summary_t *summary)
+{
+    if (!request || !replies || !summary) {
+        return;
+    }
+
+    memset(summary, 0, sizeof(*summary));
+    summary->sent = request->count;
+
+    uint64_t total_time_ms = 0;
+    for (size_t i = 0; i < reply_count; i++) {
+        if (!replies[i].success) {
+            continue;
+        }
+
+        if (summary->received == 0 || replies[i].time_ms < summary->min_time_ms) {
+            summary->min_time_ms = replies[i].time_ms;
+        }
+        if (replies[i].time_ms > summary->max_time_ms) {
+            summary->max_time_ms = replies[i].time_ms;
+        }
+        total_time_ms += replies[i].time_ms;
+        summary->received++;
+    }
+
+    summary->lost = summary->sent - summary->received;
+    if (summary->received > 0) {
+        summary->avg_time_ms = (uint32_t)(total_time_ms / summary->received);
+    }
+}
+
+static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request)
+{
+    if (!request) {
+        return AIR780EP_DEFAULT_CMD_TIMEOUT_MS;
+    }
+    if (request->total_timeout_ms != 0) {
+        return request->total_timeout_ms;
+    }
+
+    return (uint32_t)request->count * (uint32_t)request->timeout_100ms * 100U +
+           AIR780EP_CIPPING_CMD_OVERHEAD_MS;
 }
 
 static esp_err_t post_mqtt_data_event(modem_air780ep_t *self, char *topic,

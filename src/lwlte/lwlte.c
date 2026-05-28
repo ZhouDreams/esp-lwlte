@@ -11,6 +11,7 @@
  *********************/
 #include "lwlte_priv.h"
 
+#include <string.h>
 #include <stdlib.h>
 
 #include "esp_check.h"
@@ -423,6 +424,74 @@ esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state)
     end_api_call(me);
 
     return ESP_OK;
+}
+
+esp_err_t lwlte_ping(lwlte_t *me,
+                     const lwlte_ping_request_t *request,
+                     lwlte_ping_reply_t *replies,
+                     size_t max_replies,
+                     lwlte_ping_summary_t *summary)
+{
+    ESP_RETURN_ON_FALSE(request && replies && request->host && request->host[0] &&
+                        request->count >= 1 && request->count <= 100 &&
+                        request->data_len <= 1024 &&
+                        request->timeout_100ms >= 1 &&
+                        request->timeout_100ms <= 600 &&
+                        request->ttl >= 1 &&
+                        max_replies >= request->count,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ping request");
+
+    esp_err_t ret = begin_api_call(me, false, NULL);
+    ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    ping_client_t *ping = me->ping;
+    xSemaphoreGive(me->lock);
+    if (!ping) {
+        end_api_call(me);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    core_ping_reply_t *core_replies = calloc(request->count,
+                                             sizeof(core_ping_reply_t));
+    if (!core_replies) {
+        end_api_call(me);
+        return ESP_ERR_NO_MEM;
+    }
+
+    core_ping_summary_t core_summary = {0};
+    ping_client_request_t ping_request = {
+        .host = request->host,
+        .count = request->count,
+        .data_len = request->data_len,
+        .timeout_100ms = request->timeout_100ms,
+        .ttl = request->ttl,
+        .total_timeout_ms = request->total_timeout_ms,
+    };
+
+    ret = ping_client_ping(ping, &ping_request, core_replies, request->count,
+                           summary ? &core_summary : NULL);
+    if (ret == ESP_OK) {
+        for (size_t i = 0; i < request->count; i++) {
+            replies[i].seq = core_replies[i].seq;
+            strlcpy(replies[i].ip, core_replies[i].ip, sizeof(replies[i].ip));
+            replies[i].time_ms = core_replies[i].time_ms;
+            replies[i].ttl = core_replies[i].ttl;
+            replies[i].success = core_replies[i].success;
+        }
+        if (summary) {
+            summary->sent = core_summary.sent;
+            summary->received = core_summary.received;
+            summary->lost = core_summary.lost;
+            summary->min_time_ms = core_summary.min_time_ms;
+            summary->max_time_ms = core_summary.max_time_ms;
+            summary->avg_time_ms = core_summary.avg_time_ms;
+        }
+    }
+
+    free(core_replies);
+    end_api_call(me);
+    return ret;
 }
 
 esp_err_t lwlte_mqtt_start(lwlte_t *me)
@@ -1048,6 +1117,15 @@ static esp_err_t destroy_owned_resources(lwlte_t *me)
             return ret;
         }
         me->mqtt = NULL;
+    }
+
+    if (me->ping) {
+        ret = ping_client_destroy(me->ping);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "destroy Ping client failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+        me->ping = NULL;
     }
 
     if (me->core) {

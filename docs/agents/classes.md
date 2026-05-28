@@ -475,6 +475,7 @@ typedef struct {
     uint16_t data_len;
     uint16_t timeout_100ms;
     uint8_t ttl;
+    uint32_t total_timeout_ms;
 } modem_ping_request_t;
 
 typedef struct {

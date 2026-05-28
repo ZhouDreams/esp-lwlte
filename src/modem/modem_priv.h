@@ -60,6 +60,11 @@ typedef struct modem_ops {
                                   const modem_mqtt_topic_t *topic);
     esp_err_t (*mqtt_publish)(modem_t *me,
                               const modem_mqtt_publish_t *publish);
+    esp_err_t (*ping)(modem_t *me,
+                      const modem_ping_request_t *request,
+                      modem_ping_reply_t *replies,
+                      size_t max_replies,
+                      modem_ping_summary_t *summary);
 } modem_ops_t;
 
 struct modem {

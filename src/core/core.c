@@ -937,6 +937,13 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
             return NULL;
         }
         break;
+    case CORE_CMD_PING:
+        clone->data.ping.host = clone_optional_string(cmd->data.ping.host);
+        if (!clone->data.ping.host) {
+            free_core_cmd(clone);
+            return NULL;
+        }
+        break;
     case CORE_CMD_MQTT_SUBSCRIBE:
         clone->data.mqtt_subscribe.topic = clone_optional_string(cmd->data.mqtt_subscribe.topic);
         if (!clone->data.mqtt_subscribe.topic) {
@@ -985,6 +992,9 @@ static void free_core_cmd(core_cmd_t *cmd)
         break;
     case CORE_CMD_MQTT_OPEN:
         free((void *)cmd->data.mqtt_open.host);
+        break;
+    case CORE_CMD_PING:
+        free((void *)cmd->data.ping.host);
         break;
     case CORE_CMD_MQTT_SUBSCRIBE:
         free((void *)cmd->data.mqtt_subscribe.topic);
@@ -1035,7 +1045,7 @@ static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len)
 
 static bool core_cmd_type_valid(core_cmd_type_t type)
 {
-    return type >= CORE_CMD_MQTT_CONFIG && type <= CORE_CMD_MQTT_PUBLISH;
+    return type >= CORE_CMD_MQTT_CONFIG && type <= CORE_CMD_PING;
 }
 
 static bool core_cmd_valid(const core_cmd_t *cmd)
@@ -1049,6 +1059,17 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
         return cmd->data.mqtt_config.client_id != NULL;
     case CORE_CMD_MQTT_OPEN:
         return cmd->data.mqtt_open.host != NULL && cmd->data.mqtt_open.port > 0;
+    case CORE_CMD_PING:
+        return cmd->data.ping.host != NULL &&
+               cmd->data.ping.host[0] != '\0' &&
+               cmd->data.ping.count >= 1 &&
+               cmd->data.ping.count <= 100 &&
+               cmd->data.ping.data_len <= 1024 &&
+               cmd->data.ping.timeout_100ms >= 1 &&
+               cmd->data.ping.timeout_100ms <= 600 &&
+               cmd->data.ping.ttl >= 1 &&
+               cmd->data.ping.replies != NULL &&
+               cmd->data.ping.max_replies >= cmd->data.ping.count;
     case CORE_CMD_MQTT_LOGIN:
         return true;
     case CORE_CMD_MQTT_DISCONNECT:

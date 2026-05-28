@@ -138,6 +138,7 @@ typedef enum {
     CORE_CMD_MQTT_SUBSCRIBE,             /**< 订阅 MQTT 主题； Subscribe MQTT topic */
     CORE_CMD_MQTT_UNSUBSCRIBE,           /**< 退订 MQTT 主题； Unsubscribe MQTT topic */
     CORE_CMD_MQTT_PUBLISH,               /**< 发布 MQTT 消息； Publish MQTT message */
+    CORE_CMD_PING,                       /**< 执行 Ping 诊断； Perform Ping diagnostic */
 } core_cmd_type_t;
 
 /**
@@ -150,6 +151,23 @@ typedef enum {
     CORE_CMD_RESULT_TIMEOUT,             /**< 超时； Timeout */
     CORE_CMD_RESULT_INVALID_RESPONSE,    /**< 响应无效； Invalid response */
 } core_cmd_result_t;
+
+typedef struct {
+    uint8_t seq;                         /**< 响应序号； Reply sequence */
+    char ip[48];                         /**< 响应 IP； Reply IP */
+    uint32_t time_ms;                    /**< 耗时毫秒； Time in milliseconds */
+    uint8_t ttl;                         /**< 响应 TTL； Reply TTL */
+    bool success;                        /**< 是否成功； Whether successful */
+} core_ping_reply_t;
+
+typedef struct {
+    uint8_t sent;                        /**< 已发送数量； Sent count */
+    uint8_t received;                    /**< 已收到数量； Received count */
+    uint8_t lost;                        /**< 丢包数量； Lost count */
+    uint32_t min_time_ms;                /**< 最小耗时； Minimum time */
+    uint32_t max_time_ms;                /**< 最大耗时； Maximum time */
+    uint32_t avg_time_ms;                /**< 平均耗时； Average time */
+} core_ping_summary_t;
 
 /**
  * @brief Core 服务命令完成回调
@@ -198,6 +216,16 @@ typedef struct {
             uint8_t qos;                 /**< QoS； QoS */
             bool retain;                 /**< 保留消息； Retain */
         } mqtt_publish;                  /**< MQTT 发布参数； MQTT publish args */
+        struct {
+            const char *host;            /**< 主机； Host */
+            uint8_t count;               /**< 发送次数； Request count */
+            uint16_t data_len;           /**< 数据长度； Data length */
+            uint16_t timeout_100ms;      /**< 单包超时，单位 100ms； Per-packet timeout in 100ms */
+            uint8_t ttl;                 /**< TTL； TTL */
+            core_ping_reply_t *replies;  /**< 响应输出数组； Reply output array */
+            size_t max_replies;          /**< 响应数组容量； Reply array capacity */
+            core_ping_summary_t *summary; /**< 可选汇总输出； Optional summary output */
+        } ping;                          /**< Ping 参数； Ping args */
     } data;                              /**< 命令数据； Command data */
 } core_cmd_t;
 

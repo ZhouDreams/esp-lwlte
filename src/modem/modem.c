@@ -595,6 +595,29 @@ esp_err_t modem_mqtt_publish(modem_t *me,
     return me->ops->mqtt_publish(me, publish);
 }
 
+esp_err_t modem_ping(modem_t *me,
+                     const modem_ping_request_t *request,
+                     modem_ping_reply_t *replies,
+                     size_t max_replies,
+                     modem_ping_summary_t *summary)
+{
+    ESP_RETURN_ON_FALSE(me && request && request->host && request->host[0] &&
+                        replies && request->count >= 1 && request->count <= 100 &&
+                        request->data_len <= 1024 &&
+                        request->timeout_100ms >= 1 &&
+                        request->timeout_100ms <= 600 &&
+                        request->ttl >= 1 &&
+                        max_replies >= request->count,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ping request");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->ping,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "ping not supported");
+
+    return me->ops->ping(me, request, replies, max_replies, summary);
+}
+
 /**********************
  *   STATIC FUNCTIONS
  **********************/
