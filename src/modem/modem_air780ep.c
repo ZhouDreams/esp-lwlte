@@ -1885,11 +1885,19 @@ static esp_err_t run_basic_init_cmds(modem_air780ep_t *self)
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
-        air780ep_cmd_ctx_t ctx;
-        esp_err_t ret = send_cmd(self, cmds[i], &ctx, 0);
-        ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cmds[i]);
-        ret = ensure_at_ok(&ctx.response, cmds[i]);
-        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed", cmds[i]);
+        esp_err_t ret = ESP_FAIL;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            air780ep_cmd_ctx_t ctx;
+            ret = send_cmd(self, cmds[i], &ctx, 0);
+            if (ret == ESP_OK) {
+                ret = ensure_at_ok(&ctx.response, cmds[i]);
+            }
+            if (ret == ESP_OK) {
+                break;
+            }
+            ESP_LOGW(TAG, "%s failed (attempt %d/3): %s", cmds[i], attempt + 1, esp_err_to_name(ret));
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed after 3 attempts", cmds[i]);
     }
 
     return ESP_OK;
