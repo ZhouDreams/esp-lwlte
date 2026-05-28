@@ -3,9 +3,11 @@
 
 # IDE files
 .vscode/
+.clangd
 
 # Build files
 build/
+sdkconfig
 sdkconfig.old
 dependencies.lock
 

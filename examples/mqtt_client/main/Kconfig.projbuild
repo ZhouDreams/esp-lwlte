@@ -15,7 +15,7 @@ config EXAMPLE_MQTT_CLIENT_ID
 
 config EXAMPLE_MQTT_TOKEN
     string "ThingsBoard device access token (used as MQTT username)"
-    default ""
+    default "Air780EP"
 
 config EXAMPLE_MQTT_KEEPALIVE_S
     int "MQTT keepalive seconds"
