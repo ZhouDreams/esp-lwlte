@@ -40,40 +40,122 @@ extern "C" {
  **********************/
 
 /**
+ * @brief 无额外参数的调制解调器操作函数
+ * @details Modem operation function without extra arguments
+ */
+typedef esp_err_t (*modem_no_arg_fn)(modem_t *me);
+
+/**
+ * @brief 获取模块信息操作函数
+ * @details Get modem information operation function
+ */
+typedef esp_err_t (*modem_get_info_fn)(modem_t *me, modem_info_t *info);
+
+/**
+ * @brief 获取 SIM 状态操作函数
+ * @details Get SIM status operation function
+ */
+typedef esp_err_t (*modem_get_sim_status_fn)(modem_t *me,
+                                             modem_sim_status_t *status);
+
+/**
+ * @brief 获取信号质量操作函数
+ * @details Get signal quality operation function
+ */
+typedef esp_err_t (*modem_get_signal_fn)(modem_t *me,
+                                         modem_signal_t *signal);
+
+/**
+ * @brief 获取注册状态操作函数
+ * @details Get registration status operation function
+ */
+typedef esp_err_t (*modem_get_registration_fn)(modem_t *me,
+                                               modem_reg_status_t *status);
+
+/**
+ * @brief 获取分组域附着状态操作函数
+ * @details Get packet attach status operation function
+ */
+typedef esp_err_t (*modem_get_packet_attach_status_fn)(modem_t *me,
+                                                       bool *attached);
+
+/**
+ * @brief 设置 APN 操作函数
+ * @details Set APN operation function
+ */
+typedef esp_err_t (*modem_set_apn_fn)(modem_t *me, uint8_t cid,
+                                      const char *apn);
+
+/**
+ * @brief PDP 上下文 ID 操作函数
+ * @details PDP context ID operation function
+ */
+typedef esp_err_t (*modem_pdp_cid_fn)(modem_t *me, uint8_t cid);
+
+/**
+ * @brief 获取 PDP 上下文操作函数
+ * @details Get PDP context operation function
+ */
+typedef esp_err_t (*modem_get_pdp_context_fn)(modem_t *me, uint8_t cid,
+                                              modem_pdp_context_t *pdp);
+
+/**
+ * @brief 配置 MQTT 操作函数
+ * @details Configure MQTT operation function
+ */
+typedef esp_err_t (*modem_mqtt_configure_fn)(modem_t *me,
+                                             const modem_mqtt_config_t *config);
+
+/**
+ * @brief MQTT 主题操作函数
+ * @details MQTT topic operation function
+ */
+typedef esp_err_t (*modem_mqtt_topic_fn)(modem_t *me,
+                                         const modem_mqtt_topic_t *topic);
+
+/**
+ * @brief MQTT 发布操作函数
+ * @details MQTT publish operation function
+ */
+typedef esp_err_t (*modem_mqtt_publish_fn)(modem_t *me,
+                                           const modem_mqtt_publish_t *publish);
+
+/**
+ * @brief Ping 诊断操作函数
+ * @details Ping diagnostic operation function
+ */
+typedef esp_err_t (*modem_ping_fn)(modem_t *me,
+                                   const modem_ping_request_t *request,
+                                   modem_ping_reply_t *replies,
+                                   size_t max_replies,
+                                   modem_ping_summary_t *summary);
+
+/**
  * @brief 调制解调器虚函数表
  * @details Modem virtual function table
  */
 typedef struct modem_ops {
-    esp_err_t (*destroy)(modem_t *me);       /**< 销毁子类资源； Destroy subclass resources */
-    esp_err_t (*init)(modem_t *me);          /**< 初始化模块； Initialize modem */
-    esp_err_t (*reset)(modem_t *me);         /**< 复位模块； Reset modem */
-    esp_err_t (*get_info)(modem_t *me, modem_info_t *info);    /**< 获取模块信息； Get modem information */
-    esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);   /**< 获取 SIM 状态； Get SIM status */
-    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);   /**< 获取信号质量； Get signal quality */
-    esp_err_t (*get_registration)(modem_t *me, modem_reg_status_t *status);  /**< 获取注册状态； Get registration status */
-    esp_err_t (*get_packet_attach_status)(modem_t *me, bool *attached);  /**< 获取分组域附着状态； Get packet attach status */
-    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn); /**< 设置 APN； Set APN */
-    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);     /**< 激活 PDP； Activate PDP */
-    esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);   /**< 去激活 PDP； Deactivate PDP */
-    esp_err_t (*get_pdp_context)(modem_t *me, uint8_t cid,
-                                  modem_pdp_context_t *pdp); /**< 获取 PDP 上下文； Get PDP context */
-    esp_err_t (*mqtt_configure)(modem_t *me,
-                                const modem_mqtt_config_t *config);   /**< 配置 MQTT； Configure MQTT */
-    esp_err_t (*mqtt_tcp_connect)(modem_t *me); /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
-    esp_err_t (*mqtt_connect)(modem_t *me);     /**< 连接 MQTT； Connect MQTT */
-    esp_err_t (*mqtt_disconnect)(modem_t *me);  /**< 断开 MQTT； Disconnect MQTT */
-    esp_err_t (*mqtt_tcp_disconnect)(modem_t *me); /**< 断开 MQTT TCP 通道； Disconnect MQTT TCP channel */
-    esp_err_t (*mqtt_subscribe)(modem_t *me,
-                                const modem_mqtt_topic_t *topic);  /**< 订阅 MQTT 主题； Subscribe MQTT topic */
-    esp_err_t (*mqtt_unsubscribe)(modem_t *me,
-                                  const modem_mqtt_topic_t *topic);    /**< 取消订阅 MQTT 主题； Unsubscribe MQTT topic */
-    esp_err_t (*mqtt_publish)(modem_t *me,
-                              const modem_mqtt_publish_t *publish);    /**< 发布 MQTT 消息； Publish MQTT message */
-    esp_err_t (*ping)(modem_t *me,
-                      const modem_ping_request_t *request,
-                      modem_ping_reply_t *replies,
-                      size_t max_replies,
-                      modem_ping_summary_t *summary);  /**< 执行 Ping 诊断； Execute ping diagnostic */
+    modem_no_arg_fn destroy;                         /**< 销毁子类资源； Destroy subclass resources */
+    modem_no_arg_fn init;                            /**< 初始化模块； Initialize modem */
+    modem_no_arg_fn reset;                           /**< 复位模块； Reset modem */
+    modem_get_info_fn get_info;                      /**< 获取模块信息； Get modem information */
+    modem_get_sim_status_fn get_sim_status;          /**< 获取 SIM 状态； Get SIM status */
+    modem_get_signal_fn get_signal;                  /**< 获取信号质量； Get signal quality */
+    modem_get_registration_fn get_registration;      /**< 获取注册状态； Get registration status */
+    modem_get_packet_attach_status_fn get_packet_attach_status; /**< 获取分组域附着状态； Get packet attach status */
+    modem_set_apn_fn set_apn;                        /**< 设置 APN； Set APN */
+    modem_pdp_cid_fn activate_pdp;                   /**< 激活 PDP； Activate PDP */
+    modem_pdp_cid_fn deactivate_pdp;                 /**< 去激活 PDP； Deactivate PDP */
+    modem_get_pdp_context_fn get_pdp_context;        /**< 获取 PDP 上下文； Get PDP context */
+    modem_mqtt_configure_fn mqtt_configure;          /**< 配置 MQTT； Configure MQTT */
+    modem_no_arg_fn mqtt_tcp_connect;                /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
+    modem_no_arg_fn mqtt_connect;                    /**< 连接 MQTT； Connect MQTT */
+    modem_no_arg_fn mqtt_disconnect;                 /**< 断开 MQTT； Disconnect MQTT */
+    modem_no_arg_fn mqtt_tcp_disconnect;             /**< 断开 MQTT TCP 通道； Disconnect MQTT TCP channel */
+    modem_mqtt_topic_fn mqtt_subscribe;              /**< 订阅 MQTT 主题； Subscribe MQTT topic */
+    modem_mqtt_topic_fn mqtt_unsubscribe;            /**< 取消订阅 MQTT 主题； Unsubscribe MQTT topic */
+    modem_mqtt_publish_fn mqtt_publish;              /**< 发布 MQTT 消息； Publish MQTT message */
+    modem_ping_fn ping;                              /**< 执行 Ping 诊断； Execute ping diagnostic */
 } modem_ops_t;
 
 /**

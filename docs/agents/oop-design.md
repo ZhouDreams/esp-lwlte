@@ -318,14 +318,21 @@ static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
 
 ```c
 /* src/modem/modem_priv.h — Modem 内部多态接口 */
+typedef esp_err_t (*modem_no_arg_fn)(modem_t *me);
+typedef esp_err_t (*modem_get_signal_fn)(modem_t *me,
+                                         modem_signal_t *signal);
+typedef esp_err_t (*modem_set_apn_fn)(modem_t *me, uint8_t cid,
+                                      const char *apn);
+typedef esp_err_t (*modem_pdp_cid_fn)(modem_t *me, uint8_t cid);
+
 typedef struct modem_ops {
-    esp_err_t (*destroy)(modem_t *me);
-    esp_err_t (*init)(modem_t *me);
-    esp_err_t (*reset)(modem_t *me);
-    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
-    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
-    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
-    esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);
+    modem_no_arg_fn destroy;
+    modem_no_arg_fn init;
+    modem_no_arg_fn reset;
+    modem_get_signal_fn get_signal;
+    modem_set_apn_fn set_apn;
+    modem_pdp_cid_fn activate_pdp;
+    modem_pdp_cid_fn deactivate_pdp;
 } modem_ops_t;
 ```
 
@@ -450,7 +457,7 @@ static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
 
 | 规则 | 做法 |
 |------|------|
-| ops 表定义 | `struct xxx_ops { 函数指针字段; }` |
+| ops 表定义 | 复杂签名先定义 `xxx_fn` 函数指针类型，`struct xxx_ops` 中只放字段名和类型名 |
 | vptr 位置 | 对象结构体第一个字段：`const struct xxx_ops *ops` |
 | ops 实例化 | `static const struct xxx_ops xxx_ops = { .method = impl }` |
 | ops 注入 | init 时传入：`me->ops = ops` |

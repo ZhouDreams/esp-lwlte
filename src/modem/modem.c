@@ -73,7 +73,7 @@ static esp_err_t check_ready(modem_t *me, bool allow_created);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: ops 方法返回值
  */
-static esp_err_t call_no_arg(modem_t *me, esp_err_t (*fn)(modem_t *me));
+static esp_err_t call_no_arg(modem_t *me, modem_no_arg_fn fn);
 
 static void release_event_payload(modem_event_t *event);
 static void drain_event_queue_payloads(modem_t *me);
@@ -714,7 +714,7 @@ static esp_err_t check_ready(modem_t *me, bool allow_created)
     return ESP_ERR_INVALID_STATE;
 }
 
-static esp_err_t call_no_arg(modem_t *me, esp_err_t (*fn)(modem_t *me))
+static esp_err_t call_no_arg(modem_t *me, modem_no_arg_fn fn)
 {
     ESP_RETURN_ON_FALSE(me && fn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     return fn(me);

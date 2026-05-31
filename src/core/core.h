@@ -21,6 +21,8 @@ extern "C" {
 #include "esp_err.h"
 #include "esp_event.h"
 
+#include "modem.h"
+
 /*********************
  *      DEFINES
  *********************/
@@ -28,12 +30,6 @@ extern "C" {
 /**********************
  *      TYPEDEFS
  **********************/
-
-/**
- * @brief 调制解调器句柄前置声明
- * @details Modem handle forward declaration
- */
-typedef struct modem modem_t;
 
 /**
  * @brief LTE 核心服务句柄
