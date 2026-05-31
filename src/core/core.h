@@ -131,9 +131,9 @@ typedef struct {
  * @details Core service command type
  */
 typedef enum {
-    CORE_CMD_MQTT_CONFIG = 0,            /**< 配置 MQTT； Configure MQTT */
-    CORE_CMD_MQTT_OPEN,                  /**< 打开 MQTT 连接； Open MQTT connection */
-    CORE_CMD_MQTT_LOGIN,                 /**< 登录 MQTT； Login MQTT */
+    CORE_CMD_MQTT_CONFIGURE = 0,         /**< 配置 MQTT； Configure MQTT */
+    CORE_CMD_MQTT_TCP_CONNECT,           /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
+    CORE_CMD_MQTT_CONNECT,               /**< 连接 MQTT； Connect MQTT */
     CORE_CMD_MQTT_DISCONNECT,            /**< 断开 MQTT； Disconnect MQTT */
     CORE_CMD_MQTT_SUBSCRIBE,             /**< 订阅 MQTT 主题； Subscribe MQTT topic */
     CORE_CMD_MQTT_UNSUBSCRIBE,           /**< 退订 MQTT 主题； Unsubscribe MQTT topic */
@@ -197,11 +197,11 @@ typedef struct {
         struct {
             const char *host;            /**< 主机； Host */
             uint16_t port;               /**< 端口； Port */
-        } mqtt_open;                     /**< MQTT 打开参数； MQTT open args */
+        } mqtt_tcp_connect;              /**< MQTT TCP 连接参数； MQTT TCP connect args */
         struct {
             bool clean_session;          /**< 清理会话； Clean session */
             uint16_t keepalive_s;        /**< 保活秒数； Keepalive seconds */
-        } mqtt_login;                    /**< MQTT 登录参数； MQTT login args */
+        } mqtt_connect;                  /**< MQTT 连接参数； MQTT connect args */
         struct {
             const char *topic;           /**< 主题； Topic */
             uint8_t qos;                 /**< QoS； QoS */

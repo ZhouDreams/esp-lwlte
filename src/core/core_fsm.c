@@ -532,29 +532,29 @@ static void handle_service_cmd(core_t *me, core_cmd_t *cmd)
 
     esp_err_t ret = ESP_ERR_INVALID_ARG;
     switch (cmd->type) {
-    case CORE_CMD_MQTT_CONFIG: {
+    case CORE_CMD_MQTT_CONFIGURE: {
         modem_mqtt_config_t config = {
             .client_id = cmd->data.mqtt_config.client_id,
             .username = cmd->data.mqtt_config.username,
             .password = cmd->data.mqtt_config.password,
         };
-        ret = modem_mqtt_config(me->modem, &config);
+        ret = modem_mqtt_configure(me->modem, &config);
         break;
     }
-    case CORE_CMD_MQTT_OPEN: {
-        modem_mqtt_open_t open = {
-            .host = cmd->data.mqtt_open.host,
-            .port = cmd->data.mqtt_open.port,
+    case CORE_CMD_MQTT_TCP_CONNECT: {
+        modem_mqtt_tcp_config_t config = {
+            .host = cmd->data.mqtt_tcp_connect.host,
+            .port = cmd->data.mqtt_tcp_connect.port,
         };
-        ret = modem_mqtt_open(me->modem, &open);
+        ret = modem_mqtt_tcp_connect(me->modem, &config);
         break;
     }
-    case CORE_CMD_MQTT_LOGIN: {
-        modem_mqtt_login_t login = {
-            .clean_session = cmd->data.mqtt_login.clean_session,
-            .keepalive_s = cmd->data.mqtt_login.keepalive_s,
+    case CORE_CMD_MQTT_CONNECT: {
+        modem_mqtt_connect_config_t config = {
+            .clean_session = cmd->data.mqtt_connect.clean_session,
+            .keepalive_s = cmd->data.mqtt_connect.keepalive_s,
         };
-        ret = modem_mqtt_login(me->modem, &login);
+        ret = modem_mqtt_connect(me->modem, &config);
         break;
     }
     case CORE_CMD_MQTT_DISCONNECT:

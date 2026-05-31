@@ -564,18 +564,18 @@ static esp_err_t submit_core_cmd(mqtt_client_t *me, core_cmd_type_t type,
     };
 
     switch (type) {
-    case CORE_CMD_MQTT_CONFIG:
+    case CORE_CMD_MQTT_CONFIGURE:
         cmd.data.mqtt_config.client_id = me->config.client_id;
         cmd.data.mqtt_config.username = me->config.username;
         cmd.data.mqtt_config.password = me->config.password;
         break;
-    case CORE_CMD_MQTT_OPEN:
-        cmd.data.mqtt_open.host = me->config.host;
-        cmd.data.mqtt_open.port = me->config.port;
+    case CORE_CMD_MQTT_TCP_CONNECT:
+        cmd.data.mqtt_tcp_connect.host = me->config.host;
+        cmd.data.mqtt_tcp_connect.port = me->config.port;
         break;
-    case CORE_CMD_MQTT_LOGIN:
-        cmd.data.mqtt_login.clean_session = me->config.clean_session;
-        cmd.data.mqtt_login.keepalive_s = me->config.keepalive_s;
+    case CORE_CMD_MQTT_CONNECT:
+        cmd.data.mqtt_connect.clean_session = me->config.clean_session;
+        cmd.data.mqtt_connect.keepalive_s = me->config.keepalive_s;
         break;
     case CORE_CMD_MQTT_DISCONNECT:
         break;
@@ -616,14 +616,14 @@ static esp_err_t submit_core_cmd(mqtt_client_t *me, core_cmd_type_t type,
 static esp_err_t begin_connect(mqtt_client_t *me)
 {
     set_state(me, MQTT_CLIENT_STATE_CONNECTING);
-    me->connect_step = MQTT_CONNECT_STEP_CONFIG;
+    me->connect_step = MQTT_CONNECT_STEP_CONFIGURE;
     mqtt_client_event_data_t data = {
         .state = MQTT_CLIENT_STATE_CONNECTING,
         .data.operation = MQTT_CLIENT_OPERATION_CONNECT,
     };
     (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_CONNECTING, &data);
 
-    return submit_core_cmd(me, CORE_CMD_MQTT_CONFIG,
+    return submit_core_cmd(me, CORE_CMD_MQTT_CONFIGURE,
                            MQTT_CLIENT_OPERATION_CONNECT, NULL);
 }
 
@@ -790,7 +790,7 @@ static void handle_core_cmd_done(mqtt_client_t *me, mqtt_fsm_sig_t *sig)
 
     mqtt_client_operation_t operation = me->pending_cmd.operation;
     me->pending_cmd.active = false;
-    if (sig->core_cmd_type == CORE_CMD_MQTT_OPEN &&
+    if (sig->core_cmd_type == CORE_CMD_MQTT_TCP_CONNECT &&
         sig->core_result == CORE_CMD_RESULT_OK) {
         me->transport_open = true;
     }
@@ -812,15 +812,15 @@ static void handle_core_cmd_done(mqtt_client_t *me, mqtt_fsm_sig_t *sig)
     }
 
     if (operation == MQTT_CLIENT_OPERATION_CONNECT) {
-        if (me->connect_step == MQTT_CONNECT_STEP_CONFIG) {
-            me->connect_step = MQTT_CONNECT_STEP_OPEN;
-            (void)submit_core_cmd(me, CORE_CMD_MQTT_OPEN,
+        if (me->connect_step == MQTT_CONNECT_STEP_CONFIGURE) {
+            me->connect_step = MQTT_CONNECT_STEP_TCP_CONNECT;
+            (void)submit_core_cmd(me, CORE_CMD_MQTT_TCP_CONNECT,
                                   MQTT_CLIENT_OPERATION_CONNECT, NULL);
-        } else if (me->connect_step == MQTT_CONNECT_STEP_OPEN) {
-            me->connect_step = MQTT_CONNECT_STEP_LOGIN;
-            (void)submit_core_cmd(me, CORE_CMD_MQTT_LOGIN,
+        } else if (me->connect_step == MQTT_CONNECT_STEP_TCP_CONNECT) {
+            me->connect_step = MQTT_CONNECT_STEP_CONNECT;
+            (void)submit_core_cmd(me, CORE_CMD_MQTT_CONNECT,
                                   MQTT_CLIENT_OPERATION_CONNECT, NULL);
-        } else if (me->connect_step == MQTT_CONNECT_STEP_LOGIN) {
+        } else if (me->connect_step == MQTT_CONNECT_STEP_CONNECT) {
             me->connect_step = MQTT_CONNECT_STEP_DONE;
             me->transport_open = true;
             set_state(me, MQTT_CLIENT_STATE_CONNECTED);

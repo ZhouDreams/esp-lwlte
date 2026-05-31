@@ -164,9 +164,9 @@ class MqttEndToEndContractTest(unittest.TestCase):
             self.mqtt_c.index("esp_err_t mqtt_client_register_event_callback")
         ]
         for token in [
-            "submit_core_cmd(me, CORE_CMD_MQTT_CONFIG",
-            "submit_core_cmd(me, CORE_CMD_MQTT_OPEN",
-            "submit_core_cmd(me, CORE_CMD_MQTT_LOGIN",
+            "submit_core_cmd(me, CORE_CMD_MQTT_CONFIGURE",
+            "submit_core_cmd(me, CORE_CMD_MQTT_TCP_CONNECT",
+            "submit_core_cmd(me, CORE_CMD_MQTT_CONNECT",
             "submit_core_cmd(me, CORE_CMD_MQTT_SUBSCRIBE",
             "submit_core_cmd(me, CORE_CMD_MQTT_UNSUBSCRIBE",
             "submit_core_cmd(me, CORE_CMD_MQTT_PUBLISH",
@@ -272,9 +272,9 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "CORE_EVENT_PROTOCOL_CLOSED",
             "CORE_PROTOCOL_MQTT",
             "core_protocol_data_t",
-            "CORE_CMD_MQTT_CONFIG",
-            "CORE_CMD_MQTT_OPEN",
-            "CORE_CMD_MQTT_LOGIN",
+            "CORE_CMD_MQTT_CONFIGURE",
+            "CORE_CMD_MQTT_TCP_CONNECT",
+            "CORE_CMD_MQTT_CONNECT",
             "CORE_CMD_MQTT_DISCONNECT",
             "CORE_CMD_MQTT_SUBSCRIBE",
             "CORE_CMD_MQTT_UNSUBSCRIBE",
@@ -284,13 +284,24 @@ class MqttEndToEndContractTest(unittest.TestCase):
         ]:
             self.assertIn(token, self.core_h)
 
+        old_tokens = [
+            "CORE_CMD_MQTT_" + "CONFIG,",
+            "CORE_CMD_MQTT_" + "CONFIG =",
+            "CORE_CMD_MQTT_" + "OPEN",
+            "CORE_CMD_MQTT_" + "LOGIN",
+            "mqtt_" + "open",
+            "mqtt_" + "login",
+        ]
+        for token in old_tokens:
+            self.assertNotIn(token, self.core_h)
+
         self.assertIn("CORE_SIG_SERVICE_CMD", self.core_priv)
         self.assertIn("core_cmd_t *service_cmd;", self.core_priv)
         self.assertIn("static core_cmd_t *clone_core_cmd", self.core_c)
         self.assertIn("static void free_core_cmd", self.core_c)
         self.assertIn("esp_err_t core_submit_cmd", self.core_c)
         self.assertIn("handle_service_cmd", self.core_fsm_c)
-        self.assertIn("modem_mqtt_config", self.core_fsm_c)
+        self.assertIn("modem_mqtt_configure", self.core_fsm_c)
         self.assertIn("modem_mqtt_publish", self.core_fsm_c)
 
     def test_core_protocol_event_ids_keep_stopped_error_stable(self):
@@ -426,22 +437,34 @@ class MqttEndToEndContractTest(unittest.TestCase):
     def test_modem_mqtt_ops_and_air780ep_commands_exist(self):
         for token in [
             "modem_mqtt_config_t",
-            "modem_mqtt_open_t",
-            "modem_mqtt_login_t",
+            "modem_mqtt_tcp_config_t",
+            "modem_mqtt_connect_config_t",
             "modem_mqtt_topic_t",
             "modem_mqtt_publish_t",
             "MODEM_EVENT_PROTOCOL_DATA",
             "MODEM_EVENT_PROTOCOL_CLOSED",
             "MODEM_PROTOCOL_MQTT",
-            "modem_mqtt_config(modem_t *me",
+            "modem_mqtt_configure(modem_t *me",
+            "modem_mqtt_tcp_connect(modem_t *me",
+            "modem_mqtt_connect(modem_t *me",
             "modem_mqtt_publish(modem_t *me",
         ]:
             self.assertIn(token, self.modem_h)
 
+        old_modem_h_tokens = [
+            "modem_mqtt_" + "open_t",
+            "modem_mqtt_" + "login_t",
+            "modem_mqtt_" + "config(modem_t *me",
+            "modem_mqtt_" + "open(modem_t *me",
+            "modem_mqtt_" + "login(modem_t *me",
+        ]
+        for token in old_modem_h_tokens:
+            self.assertNotIn(token, self.modem_h)
+
         for token in [
-            "mqtt_config",
-            "mqtt_open",
-            "mqtt_login",
+            "mqtt_configure",
+            "mqtt_tcp_connect",
+            "mqtt_connect",
             "mqtt_disconnect",
             "mqtt_subscribe",
             "mqtt_unsubscribe",
@@ -449,12 +472,30 @@ class MqttEndToEndContractTest(unittest.TestCase):
         ]:
             self.assertIn(token, self.modem_priv)
 
+        old_modem_priv_tokens = [
+            "mqtt_" + "config)(",
+            "mqtt_" + "open",
+            "mqtt_" + "login",
+        ]
+        for token in old_modem_priv_tokens:
+            self.assertNotIn(token, self.modem_priv)
+
         for token in [
-            "esp_err_t modem_mqtt_config",
+            "esp_err_t modem_mqtt_configure",
+            "esp_err_t modem_mqtt_tcp_connect",
+            "esp_err_t modem_mqtt_connect",
             "esp_err_t modem_mqtt_publish",
             "release_event_payload",
         ]:
             self.assertIn(token, self.modem_c)
+
+        old_modem_c_tokens = [
+            "esp_err_t modem_mqtt_" + "config(",
+            "esp_err_t modem_mqtt_" + "open",
+            "esp_err_t modem_mqtt_" + "login",
+        ]
+        for token in old_modem_c_tokens:
+            self.assertNotIn(token, self.modem_c)
 
         for token in [
             "AIR780EP_URC_MSUB",
@@ -465,11 +506,21 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "AT+MSUB",
             "AT+MUNSUB",
             "AT+MPUBEX",
-            "air780ep_mqtt_config",
+            "air780ep_mqtt_configure",
+            "air780ep_mqtt_tcp_connect",
+            "air780ep_mqtt_connect",
             "air780ep_mqtt_publish",
             "handle_msub_urc",
         ]:
             self.assertIn(token, self.air780ep_c)
+
+        old_air780ep_tokens = [
+            "air780ep_mqtt_" + "config(",
+            "air780ep_mqtt_" + "open",
+            "air780ep_mqtt_" + "login",
+        ]
+        for token in old_air780ep_tokens:
+            self.assertNotIn(token, self.air780ep_c)
 
     def test_modem_protocol_data_event_cleanup_contract(self):
         self.assertIn("static void drain_event_queue_payloads", self.modem_c)
@@ -610,9 +661,9 @@ class MqttEndToEndContractTest(unittest.TestCase):
 
         for forbidden in [
             "core_submit_cmd",
-            "CORE_CMD_MQTT_CONFIG",
-            "CORE_CMD_MQTT_OPEN",
-            "CORE_CMD_MQTT_LOGIN",
+            "CORE_CMD_MQTT_CONFIGURE",
+            "CORE_CMD_MQTT_TCP_CONNECT",
+            "CORE_CMD_MQTT_CONNECT",
             "CORE_CMD_MQTT_SUBSCRIBE",
             "CORE_CMD_MQTT_UNSUBSCRIBE",
             "CORE_CMD_MQTT_PUBLISH",
@@ -889,14 +940,16 @@ class MqttEndToEndContractTest(unittest.TestCase):
         ]:
             self.assertIn(token, self.air780ep_c)
 
-        login_body = self.air780ep_c[
-            self.air780ep_c.rindex("static esp_err_t air780ep_mqtt_login"):
+        connect_anchor = "static esp_err_t air780ep_mqtt_connect"
+        self.assertIn(connect_anchor, self.air780ep_c)
+        connect_body = self.air780ep_c[
+            self.air780ep_c.rindex(connect_anchor):
             self.air780ep_c.rindex("static esp_err_t air780ep_mqtt_disconnect")
         ]
-        self.assertIn("set_mqtt_data_enabled(self, true);", login_body)
+        self.assertIn("set_mqtt_data_enabled(self, true);", connect_body)
         self.assertLess(
-            login_body.index("if (ret == ESP_OK)"),
-            login_body.index("set_mqtt_data_enabled(self, true);")
+            connect_body.index("if (ret == ESP_OK)"),
+            connect_body.index("set_mqtt_data_enabled(self, true);")
         )
 
         disconnect_body = self.air780ep_c[

@@ -16,11 +16,18 @@ dependencies.lock
 
 # Cache files
 .cache/
-
-# Reference (read-only archived project)
-reference/
+.pytest_cache/
 
 # Doxygen output
 docs/html/
 html/
+
+# Coding Agent
 .opencode/
+.claude/
+
+# Reference (read-only archived project)
+reference/
+
+# Personal notes
+docs/interview-preparation/

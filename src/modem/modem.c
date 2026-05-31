@@ -500,43 +500,43 @@ esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
     return me->ops->get_pdp_context(me, cid, pdp);
 }
 
-esp_err_t modem_mqtt_config(modem_t *me,
-                            const modem_mqtt_config_t *config)
+esp_err_t modem_mqtt_configure(modem_t *me,
+                               const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
-    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_config,
-                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_config not supported");
-    return me->ops->mqtt_config(me, config);
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_configure,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_configure not supported");
+    return me->ops->mqtt_configure(me, config);
 }
 
-esp_err_t modem_mqtt_open(modem_t *me,
-                          const modem_mqtt_open_t *open)
+esp_err_t modem_mqtt_tcp_connect(modem_t *me,
+                                 const modem_mqtt_tcp_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && open && open->host && open->port > 0,
+    ESP_RETURN_ON_FALSE(me && config && config->host && config->port > 0,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
-    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_open,
-                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_open not supported");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_tcp_connect,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_tcp_connect not supported");
 
-    return me->ops->mqtt_open(me, open);
+    return me->ops->mqtt_tcp_connect(me, config);
 }
 
-esp_err_t modem_mqtt_login(modem_t *me,
-                           const modem_mqtt_login_t *login)
+esp_err_t modem_mqtt_connect(modem_t *me,
+                             const modem_mqtt_connect_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && login, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && config, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
-    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_login,
-                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_login not supported");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_connect,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_connect not supported");
 
-    return me->ops->mqtt_login(me, login);
+    return me->ops->mqtt_connect(me, config);
 }
 
 esp_err_t modem_mqtt_disconnect(modem_t *me)

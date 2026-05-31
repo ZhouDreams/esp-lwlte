@@ -261,12 +261,12 @@ static esp_err_t air780ep_deactivate_pdp(modem_t *me, uint8_t cid);
  */
 static esp_err_t air780ep_get_pdp_context(modem_t *me, uint8_t cid,
                                            modem_pdp_context_t *pdp);
-static esp_err_t air780ep_mqtt_config(modem_t *me,
-                                       const modem_mqtt_config_t *config);
-static esp_err_t air780ep_mqtt_open(modem_t *me,
-                                     const modem_mqtt_open_t *open);
-static esp_err_t air780ep_mqtt_login(modem_t *me,
-                                      const modem_mqtt_login_t *login);
+static esp_err_t air780ep_mqtt_configure(modem_t *me,
+                                         const modem_mqtt_config_t *config);
+static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me,
+                                           const modem_mqtt_tcp_config_t *config);
+static esp_err_t air780ep_mqtt_connect(modem_t *me,
+                                       const modem_mqtt_connect_config_t *config);
 static esp_err_t air780ep_mqtt_disconnect(modem_t *me);
 static esp_err_t air780ep_mqtt_subscribe(modem_t *me,
                                           const modem_mqtt_topic_t *topic);
@@ -811,9 +811,9 @@ static const modem_ops_t s_air780ep_ops = {
     .activate_pdp = air780ep_activate_pdp,
     .deactivate_pdp = air780ep_deactivate_pdp,
     .get_pdp_context = air780ep_get_pdp_context,
-    .mqtt_config = air780ep_mqtt_config,
-    .mqtt_open = air780ep_mqtt_open,
-    .mqtt_login = air780ep_mqtt_login,
+    .mqtt_configure = air780ep_mqtt_configure,
+    .mqtt_tcp_connect = air780ep_mqtt_tcp_connect,
+    .mqtt_connect = air780ep_mqtt_connect,
     .mqtt_disconnect = air780ep_mqtt_disconnect,
     .mqtt_subscribe = air780ep_mqtt_subscribe,
     .mqtt_unsubscribe = air780ep_mqtt_unsubscribe,
@@ -2743,8 +2743,8 @@ static esp_err_t air780ep_get_pdp_context(modem_t *me, uint8_t cid,
     return ESP_OK;
 }
 
-static esp_err_t air780ep_mqtt_config(modem_t *me,
-                                       const modem_mqtt_config_t *config)
+static esp_err_t air780ep_mqtt_configure(modem_t *me,
+                                         const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -2791,17 +2791,17 @@ static esp_err_t air780ep_mqtt_config(modem_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_open(modem_t *me,
-                                     const modem_mqtt_open_t *open)
+static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me,
+                                           const modem_mqtt_tcp_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && open && open->host && open->port > 0,
+    ESP_RETURN_ON_FALSE(me && config && config->host && config->port > 0,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
-    char *host = escape_at_string(open->host);
+    char *host = escape_at_string(config->host);
     ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape host failed");
 
     int needed = snprintf(NULL, 0, "AT+MIPSTART=\"%s\",%u",
-                          host, (unsigned int)open->port);
+                          host, (unsigned int)config->port);
     if (needed < 0) {
         free(host);
         return ESP_ERR_INVALID_ARG;
@@ -2812,7 +2812,7 @@ static esp_err_t air780ep_mqtt_open(modem_t *me,
         return ESP_ERR_NO_MEM;
     }
     snprintf(cmd, (size_t)needed + 1U, "AT+MIPSTART=\"%s\",%u",
-             host, (unsigned int)open->port);
+             host, (unsigned int)config->port);
 
     const at_cmd_success_match_t matches[] = {
         { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "CONNECT OK" },
@@ -2837,15 +2837,15 @@ static esp_err_t air780ep_mqtt_open(modem_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_login(modem_t *me,
-                                      const modem_mqtt_login_t *login)
+static esp_err_t air780ep_mqtt_connect(modem_t *me,
+                                       const modem_mqtt_connect_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && login, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && config, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     char cmd[48];
     int written = snprintf(cmd, sizeof(cmd), "AT+MCONNECT=%u,%u",
-                           login->clean_session ? 1U : 0U,
-                           (unsigned int)login->keepalive_s);
+                           config->clean_session ? 1U : 0U,
+                           (unsigned int)config->keepalive_s);
     ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
                         ESP_ERR_INVALID_ARG, TAG, "AT+MCONNECT command truncated");
 

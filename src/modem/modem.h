@@ -123,63 +123,99 @@ typedef struct {
     char ip_addr[MODEM_IP_ADDR_MAX_LEN];       /**< IP 地址； IP address */
 } modem_pdp_context_t;
 
+/**
+ * @brief MQTT 配置参数
+ * @details MQTT configuration parameters
+ */
 typedef struct {
-    const char *client_id;
-    const char *username;
-    const char *password;
+    const char *client_id;        /**< 客户端 ID； Client ID */
+    const char *username;         /**< 用户名，可为 NULL； Username, can be NULL */
+    const char *password;         /**< 密码，可为 NULL； Password, can be NULL */
 } modem_mqtt_config_t;
 
+/**
+ * @brief MQTT TCP 连接参数
+ * @details MQTT TCP connection parameters
+ */
 typedef struct {
-    const char *host;
-    uint16_t port;
-} modem_mqtt_open_t;
+    const char *host;             /**< Broker 主机名或 IP； Broker host name or IP */
+    uint16_t port;                /**< Broker 端口号； Broker port */
+} modem_mqtt_tcp_config_t;
 
+/**
+ * @brief MQTT 连接参数
+ * @details MQTT connection parameters
+ */
 typedef struct {
-    bool clean_session;
-    uint16_t keepalive_s;
-} modem_mqtt_login_t;
+    bool clean_session;           /**< 是否使用 clean session； Whether to use clean session */
+    uint16_t keepalive_s;         /**< 保活时间（秒）； Keepalive in seconds */
+} modem_mqtt_connect_config_t;
 
+/**
+ * @brief MQTT 主题参数
+ * @details MQTT topic parameters
+ */
 typedef struct {
-    const char *topic;
-    uint8_t qos;
+    const char *topic;            /**< 主题字符串； Topic string */
+    uint8_t qos;                  /**< QoS 等级； QoS level */
 } modem_mqtt_topic_t;
 
+/**
+ * @brief MQTT 发布参数
+ * @details MQTT publish parameters
+ */
 typedef struct {
-    const char *topic;
-    const uint8_t *payload;
-    size_t payload_len;
-    uint8_t qos;
-    bool retain;
+    const char *topic;            /**< 主题字符串； Topic string */
+    const uint8_t *payload;       /**< 负载数据； Payload data */
+    size_t payload_len;           /**< 负载长度； Payload length */
+    uint8_t qos;                  /**< QoS 等级； QoS level */
+    bool retain;                  /**< 是否保留消息； Whether to retain message */
 } modem_mqtt_publish_t;
 
+/**
+ * @brief Ping 请求参数
+ * @details Ping request parameters
+ */
 typedef struct {
-    const char *host;
-    uint8_t count;
-    uint16_t data_len;
-    uint16_t timeout_100ms;
-    uint8_t ttl;
-    uint32_t total_timeout_ms;
+    const char *host;             /**< 目标主机名或 IP； Target host name or IP */
+    uint8_t count;                /**< Ping 次数； Ping count */
+    uint16_t data_len;            /**< 单包数据长度； Per-packet data length */
+    uint16_t timeout_100ms;       /**< 单包超时，单位 100ms； Per-packet timeout in 100ms units */
+    uint8_t ttl;                  /**< TTL 值； TTL value */
+    uint32_t total_timeout_ms;    /**< 总超时，0 表示自动计算； Total timeout, 0 for automatic calculation */
 } modem_ping_request_t;
 
+/**
+ * @brief Ping 单包响应
+ * @details Ping single reply
+ */
 typedef struct {
-    uint8_t seq;
-    char ip[48];
-    uint32_t time_ms;
-    uint8_t ttl;
-    bool success;
+    uint8_t seq;                  /**< 响应序号； Reply sequence */
+    char ip[48];                  /**< 目标 IP 地址； Target IP address */
+    uint32_t time_ms;             /**< 响应耗时（毫秒）； Reply time in milliseconds */
+    uint8_t ttl;                  /**< 响应 TTL； Reply TTL */
+    bool success;                 /**< 是否成功； Whether successful */
 } modem_ping_reply_t;
 
+/**
+ * @brief Ping 汇总结果
+ * @details Ping summary result
+ */
 typedef struct {
-    uint8_t sent;
-    uint8_t received;
-    uint8_t lost;
-    uint32_t min_time_ms;
-    uint32_t max_time_ms;
-    uint32_t avg_time_ms;
+    uint8_t sent;                 /**< 发送数量； Sent count */
+    uint8_t received;             /**< 接收数量； Received count */
+    uint8_t lost;                 /**< 丢包数量； Lost count */
+    uint32_t min_time_ms;         /**< 最小耗时（毫秒）； Minimum time in milliseconds */
+    uint32_t max_time_ms;         /**< 最大耗时（毫秒）； Maximum time in milliseconds */
+    uint32_t avg_time_ms;         /**< 平均耗时（毫秒）； Average time in milliseconds */
 } modem_ping_summary_t;
 
+/**
+ * @brief 协议类型
+ * @details Protocol type
+ */
 typedef enum {
-    MODEM_PROTOCOL_MQTT = 0,
+    MODEM_PROTOCOL_MQTT = 0,      /**< MQTT 协议； MQTT protocol */
 } modem_protocol_t;
 
 /**
@@ -189,13 +225,14 @@ typedef enum {
  * Modem owns and frees them after the callback returns; on failure, caller keeps ownership.
  * Callback pointers are valid only during modem_event_callback_t;
  * consumers must copy topic/payload if they need to retain them.
+ * @note `topic` 和 `payload` 指针只在回调期间有效；需要保留时调用方必须复制。
  */
 typedef struct {
-    modem_protocol_t protocol;
-    const char *topic;
-    size_t topic_len;
-    const uint8_t *payload;
-    size_t payload_len;
+    modem_protocol_t protocol;    /**< 协议类型； Protocol type */
+    const char *topic;            /**< 主题指针； Topic pointer */
+    size_t topic_len;             /**< 主题长度； Topic length */
+    const uint8_t *payload;       /**< 负载指针； Payload pointer */
+    size_t payload_len;           /**< 负载长度； Payload length */
 } modem_protocol_data_t;
 
 /**
@@ -425,19 +462,131 @@ esp_err_t modem_deactivate_pdp(modem_t *me, uint8_t cid);
 esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
 
-esp_err_t modem_mqtt_config(modem_t *me,
-                            const modem_mqtt_config_t *config);
-esp_err_t modem_mqtt_open(modem_t *me,
-                          const modem_mqtt_open_t *open);
-esp_err_t modem_mqtt_login(modem_t *me,
-                           const modem_mqtt_login_t *login);
+/**
+ * @brief 配置 MQTT 参数
+ * @details Configure MQTT parameters
+ * @param[in] me 调制解调器句柄
+ * @param[in] config MQTT 配置参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: 配置失败
+ */
+esp_err_t modem_mqtt_configure(modem_t *me,
+                               const modem_mqtt_config_t *config);
+
+/**
+ * @brief 建立 MQTT TCP 通道
+ * @details Connect MQTT TCP channel
+ * @param[in] me 调制解调器句柄
+ * @param[in] config MQTT TCP 连接参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: 连接失败
+ */
+esp_err_t modem_mqtt_tcp_connect(modem_t *me,
+                                 const modem_mqtt_tcp_config_t *config);
+
+/**
+ * @brief 连接 MQTT Broker
+ * @details Connect to MQTT broker
+ * @param[in] me 调制解调器句柄
+ * @param[in] config MQTT 连接参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_FAIL: 连接失败
+ */
+esp_err_t modem_mqtt_connect(modem_t *me,
+                             const modem_mqtt_connect_config_t *config);
+
+/**
+ * @brief 断开 MQTT Broker 连接
+ * @details Disconnect from MQTT broker
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_FAIL: 断开失败
+ */
 esp_err_t modem_mqtt_disconnect(modem_t *me);
+
+/**
+ * @brief 订阅 MQTT 主题
+ * @details Subscribe MQTT topic
+ * @param[in] me 调制解调器句柄
+ * @param[in] topic MQTT 主题参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: 订阅失败
+ */
 esp_err_t modem_mqtt_subscribe(modem_t *me,
                                const modem_mqtt_topic_t *topic);
+
+/**
+ * @brief 取消订阅 MQTT 主题
+ * @details Unsubscribe MQTT topic
+ * @param[in] me 调制解调器句柄
+ * @param[in] topic MQTT 主题参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: 取消订阅失败
+ */
 esp_err_t modem_mqtt_unsubscribe(modem_t *me,
                                  const modem_mqtt_topic_t *topic);
+
+/**
+ * @brief 发布 MQTT 消息
+ * @details Publish MQTT message
+ * @param[in] me 调制解调器句柄
+ * @param[in] publish MQTT 发布参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: 发布失败
+ */
 esp_err_t modem_mqtt_publish(modem_t *me,
                              const modem_mqtt_publish_t *publish);
+
+/**
+ * @brief 执行 Ping 诊断
+ * @details Execute ping diagnostic
+ * @param[in] me 调制解调器句柄
+ * @param[in] request Ping 请求参数
+ * @param[out] replies Ping 单包响应数组
+ * @param[in] max_replies Ping 单包响应数组容量
+ * @param[out] summary Ping 汇总结果，可为 NULL
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - ESP_FAIL: Ping 失败
+ */
 esp_err_t modem_ping(modem_t *me,
                      const modem_ping_request_t *request,
                      modem_ping_reply_t *replies,

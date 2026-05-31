@@ -27,72 +27,141 @@ extern "C" {
 /*********************
  *      DEFINES
  *********************/
+
+/**
+ * @brief 从成员指针获取包含它的结构体指针
+ * @details Get container structure pointer from member pointer
+ */
 #define MODEM_CONTAINER_OF(ptr, type, member) \
     ((type *)((char *)(ptr) - offsetof(type, member)))
 
 /**********************
  *      TYPEDEFS
  **********************/
+
+/**
+ * @brief 调制解调器虚函数表
+ * @details Modem virtual function table
+ */
 typedef struct modem_ops {
-    esp_err_t (*destroy)(modem_t *me);
-    esp_err_t (*init)(modem_t *me);
-    esp_err_t (*reset)(modem_t *me);
-    esp_err_t (*get_info)(modem_t *me, modem_info_t *info);
-    esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);
-    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
-    esp_err_t (*get_registration)(modem_t *me, modem_reg_status_t *status);
-    esp_err_t (*get_packet_attach_status)(modem_t *me, bool *attached);
-    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
-    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
-    esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);
+    esp_err_t (*destroy)(modem_t *me);       /**< 销毁子类资源； Destroy subclass resources */
+    esp_err_t (*init)(modem_t *me);          /**< 初始化模块； Initialize modem */
+    esp_err_t (*reset)(modem_t *me);         /**< 复位模块； Reset modem */
+    esp_err_t (*get_info)(modem_t *me, modem_info_t *info);    /**< 获取模块信息； Get modem information */
+    esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);   /**< 获取 SIM 状态； Get SIM status */
+    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);   /**< 获取信号质量； Get signal quality */
+    esp_err_t (*get_registration)(modem_t *me, modem_reg_status_t *status);  /**< 获取注册状态； Get registration status */
+    esp_err_t (*get_packet_attach_status)(modem_t *me, bool *attached);  /**< 获取分组域附着状态； Get packet attach status */
+    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn); /**< 设置 APN； Set APN */
+    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);     /**< 激活 PDP； Activate PDP */
+    esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);   /**< 去激活 PDP； Deactivate PDP */
     esp_err_t (*get_pdp_context)(modem_t *me, uint8_t cid,
-                                  modem_pdp_context_t *pdp);
-    esp_err_t (*mqtt_config)(modem_t *me,
-                             const modem_mqtt_config_t *config);
-    esp_err_t (*mqtt_open)(modem_t *me,
-                           const modem_mqtt_open_t *open);
-    esp_err_t (*mqtt_login)(modem_t *me,
-                            const modem_mqtt_login_t *login);
-    esp_err_t (*mqtt_disconnect)(modem_t *me);
+                                  modem_pdp_context_t *pdp); /**< 获取 PDP 上下文； Get PDP context */
+    esp_err_t (*mqtt_configure)(modem_t *me,
+                                const modem_mqtt_config_t *config);   /**< 配置 MQTT； Configure MQTT */
+    esp_err_t (*mqtt_tcp_connect)(modem_t *me,
+                                  const modem_mqtt_tcp_config_t *config); /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
+    esp_err_t (*mqtt_connect)(modem_t *me,
+                              const modem_mqtt_connect_config_t *config);  /**< 连接 MQTT； Connect MQTT */
+    esp_err_t (*mqtt_disconnect)(modem_t *me);      /**< 断开 MQTT； Disconnect MQTT */
     esp_err_t (*mqtt_subscribe)(modem_t *me,
-                                const modem_mqtt_topic_t *topic);
+                                const modem_mqtt_topic_t *topic);  /**< 订阅 MQTT 主题； Subscribe MQTT topic */
     esp_err_t (*mqtt_unsubscribe)(modem_t *me,
-                                  const modem_mqtt_topic_t *topic);
+                                  const modem_mqtt_topic_t *topic);    /**< 取消订阅 MQTT 主题； Unsubscribe MQTT topic */
     esp_err_t (*mqtt_publish)(modem_t *me,
-                              const modem_mqtt_publish_t *publish);
+                              const modem_mqtt_publish_t *publish);    /**< 发布 MQTT 消息； Publish MQTT message */
     esp_err_t (*ping)(modem_t *me,
                       const modem_ping_request_t *request,
                       modem_ping_reply_t *replies,
                       size_t max_replies,
-                      modem_ping_summary_t *summary);
+                      modem_ping_summary_t *summary);  /**< 执行 Ping 诊断； Execute ping diagnostic */
 } modem_ops_t;
 
+/**
+ * @brief 调制解调器基类
+ * @details Modem base class
+ */
 struct modem {
-    const modem_ops_t *ops;
-    at_engine_t *at;
-    SemaphoreHandle_t lock;
-    QueueHandle_t event_queue;
-    TaskHandle_t event_task;
-    SemaphoreHandle_t event_task_done_sema;
-    SemaphoreHandle_t event_cb_done_sema;
-    modem_event_callback_t event_cb;
-    void *event_user_ctx;
-    int event_cb_active;
-    modem_state_t state;
-    bool destroying;
-    bool event_task_stop_requested;
-    const char *name;
+    const modem_ops_t *ops;                       /**< 虚函数表； Virtual function table */
+    at_engine_t *at;                              /**< AT 引擎句柄，借用； Borrowed AT engine handle */
+    SemaphoreHandle_t lock;                       /**< 内部状态锁； Internal state lock */
+    QueueHandle_t event_queue;                    /**< 事件队列； Event queue */
+    TaskHandle_t event_task;                      /**< 事件任务； Event task */
+    SemaphoreHandle_t event_task_done_sema;       /**< 事件任务退出信号量； Event task done semaphore */
+    SemaphoreHandle_t event_cb_done_sema;         /**< 事件回调完成信号量； Event callback done semaphore */
+    modem_event_callback_t event_cb;              /**< 上层事件回调； Upper-layer event callback */
+    void *event_user_ctx;                         /**< 上层事件回调上下文； Upper-layer event callback context */
+    int event_cb_active;                          /**< 正在执行的事件回调数量； Active event callback count */
+    modem_state_t state;                          /**< 当前状态； Current state */
+    bool destroying;                              /**< 是否正在销毁； Whether destroying */
+    bool event_task_stop_requested;               /**< 事件任务停止请求； Event task stop request */
+    const char *name;                             /**< 模块名称； Modem name */
 };
 
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
+
+/**
+ * @brief 初始化调制解调器基类
+ * @details Initialize modem base class
+ * @param[in,out] me 调制解调器基类对象
+ * @param[in] name 模块名称
+ * @param[in] at AT 引擎句柄
+ * @param[in] ops 虚函数表
+ * @param[in] event_queue_size 事件队列长度，<=0 使用默认值
+ * @param[in] event_task_stack 事件任务栈大小，<=0 使用默认值
+ * @param[in] event_task_priority 事件任务优先级，<=0 使用默认值
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ */
 esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
                           const modem_ops_t *ops, int event_queue_size,
                           int event_task_stack, int event_task_priority);
+
+/**
+ * @brief 反初始化调制解调器基类
+ * @details Deinitialize modem base class
+ * @param[in,out] me 调制解调器基类对象
+ */
 void modem_base_deinit(modem_t *me);
+
+/**
+ * @brief 停止调制解调器事件任务
+ * @details Stop modem event task
+ * @param[in,out] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ */
 esp_err_t modem_base_stop_event_task(modem_t *me);
+
+/**
+ * @brief 投递调制解调器事件
+ * @details Post modem event
+ * @param[in] me 调制解调器句柄
+ * @param[in] event 调制解调器事件
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_TIMEOUT: 事件队列已满
+ */
 esp_err_t modem_post_event(modem_t *me, const modem_event_t *event);
+
+/**
+ * @brief 设置调制解调器状态
+ * @details Set modem state
+ * @param[in,out] me 调制解调器句柄
+ * @param[in] state 调制解调器状态
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ */
 esp_err_t modem_set_state(modem_t *me, modem_state_t state);
 
 /**********************

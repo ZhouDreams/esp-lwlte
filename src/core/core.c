@@ -919,7 +919,7 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
     *clone = *cmd;
 
     switch (cmd->type) {
-    case CORE_CMD_MQTT_CONFIG:
+    case CORE_CMD_MQTT_CONFIGURE:
         clone->data.mqtt_config.client_id = clone_optional_string(cmd->data.mqtt_config.client_id);
         clone->data.mqtt_config.username = clone_optional_string(cmd->data.mqtt_config.username);
         clone->data.mqtt_config.password = clone_optional_string(cmd->data.mqtt_config.password);
@@ -930,9 +930,9 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
             return NULL;
         }
         break;
-    case CORE_CMD_MQTT_OPEN:
-        clone->data.mqtt_open.host = clone_optional_string(cmd->data.mqtt_open.host);
-        if (!clone->data.mqtt_open.host) {
+    case CORE_CMD_MQTT_TCP_CONNECT:
+        clone->data.mqtt_tcp_connect.host = clone_optional_string(cmd->data.mqtt_tcp_connect.host);
+        if (!clone->data.mqtt_tcp_connect.host) {
             free_core_cmd(clone);
             return NULL;
         }
@@ -967,7 +967,7 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
             return NULL;
         }
         break;
-    case CORE_CMD_MQTT_LOGIN:
+    case CORE_CMD_MQTT_CONNECT:
     case CORE_CMD_MQTT_DISCONNECT:
         break;
     default:
@@ -985,13 +985,13 @@ static void free_core_cmd(core_cmd_t *cmd)
     }
 
     switch (cmd->type) {
-    case CORE_CMD_MQTT_CONFIG:
+    case CORE_CMD_MQTT_CONFIGURE:
         free((void *)cmd->data.mqtt_config.client_id);
         free((void *)cmd->data.mqtt_config.username);
         free((void *)cmd->data.mqtt_config.password);
         break;
-    case CORE_CMD_MQTT_OPEN:
-        free((void *)cmd->data.mqtt_open.host);
+    case CORE_CMD_MQTT_TCP_CONNECT:
+        free((void *)cmd->data.mqtt_tcp_connect.host);
         break;
     case CORE_CMD_PING:
         free((void *)cmd->data.ping.host);
@@ -1045,7 +1045,7 @@ static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len)
 
 static bool core_cmd_type_valid(core_cmd_type_t type)
 {
-    return type >= CORE_CMD_MQTT_CONFIG && type <= CORE_CMD_PING;
+    return type >= CORE_CMD_MQTT_CONFIGURE && type <= CORE_CMD_PING;
 }
 
 static bool core_cmd_valid(const core_cmd_t *cmd)
@@ -1055,10 +1055,11 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
     }
 
     switch (cmd->type) {
-    case CORE_CMD_MQTT_CONFIG:
+    case CORE_CMD_MQTT_CONFIGURE:
         return cmd->data.mqtt_config.client_id != NULL;
-    case CORE_CMD_MQTT_OPEN:
-        return cmd->data.mqtt_open.host != NULL && cmd->data.mqtt_open.port > 0;
+    case CORE_CMD_MQTT_TCP_CONNECT:
+        return cmd->data.mqtt_tcp_connect.host != NULL &&
+               cmd->data.mqtt_tcp_connect.port > 0;
     case CORE_CMD_PING:
         return cmd->data.ping.host != NULL &&
                cmd->data.ping.host[0] != '\0' &&
@@ -1070,7 +1071,7 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
                cmd->data.ping.ttl >= 1 &&
                cmd->data.ping.replies != NULL &&
                cmd->data.ping.max_replies >= cmd->data.ping.count;
-    case CORE_CMD_MQTT_LOGIN:
+    case CORE_CMD_MQTT_CONNECT:
         return true;
     case CORE_CMD_MQTT_DISCONNECT:
         return true;

@@ -218,9 +218,9 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
-| MQTT 参数配置 | `AT+MCONFIG=<clientid>[,<username>,<password>[,<will_qos>,<will_retain>,<will_topic>,<will_message>]]` | `OK` 或 `ERROR` | `clientid`、`username`、`password` 最长 256 字节；`will_qos=0..2`；`will_retain=0/1`；`will_message` 最长 1360 字节 | 9s | `mqtt_client_config()` | 客户端 ID 不能与服务器上其他连接重复；遗嘱主题和消息需要加引号 |
-| 建立 MQTT TCP 连接 | 普通：`AT+MIPSTART=<svraddr>,<port>`；SSL：`AT+SSLMIPSTART=<svraddr>,<port>` | 立即 `OK`，后续 `CONNECT OK`、`ALREADY CONNECT`、`CONNECT FAIL`；多连接可能上报 `7,CONNECT OK` | `svraddr` 为 IP 或域名；`port=1..65535` | 命令 9s；连接结果按业务预算等待 | `mqtt_transport_connect()` | 使用 SSL 时先配置 `SSLCFG` context `88`；等待 `CONNECT OK` 后立即发送 `MCONNECT`，否则可能被服务器踢掉 |
-| MQTT 会话连接 | `AT+MCONNECT=<clean_session>,<keepalive>[,<mode>]` | 立即 `OK`；成功 URC `CONNACK OK`；失败 `ERROR` | `clean_session=0/1`；`keepalive=1..65535s`；`mode=1` 启用大于 300s 长心跳支持 | 命令 9s；CONNACK 按业务预算等待 | `mqtt_client_connect()` | 收到 `CONNACK OK` 后才能 publish/subscribe；建议 keepalive 取 300s 以上 |
+| MQTT 参数配置 | `AT+MCONFIG=<clientid>[,<username>,<password>[,<will_qos>,<will_retain>,<will_topic>,<will_message>]]` | `OK` 或 `ERROR` | `clientid`、`username`、`password` 最长 256 字节；`will_qos=0..2`；`will_retain=0/1`；`will_message` 最长 1360 字节 | 9s | `modem_mqtt_configure()` | 客户端 ID 不能与服务器上其他连接重复；遗嘱主题和消息需要加引号 |
+| 建立 MQTT TCP 连接 | 普通：`AT+MIPSTART=<svraddr>,<port>`；SSL：`AT+SSLMIPSTART=<svraddr>,<port>` | 立即 `OK`，后续 `CONNECT OK`、`ALREADY CONNECT`、`CONNECT FAIL`；多连接可能上报 `7,CONNECT OK` | `svraddr` 为 IP 或域名；`port=1..65535` | 命令 9s；连接结果按业务预算等待 | `modem_mqtt_tcp_connect()` | 使用 SSL 时先配置 `SSLCFG` context `88`；等待 `CONNECT OK` 后立即发送 `MCONNECT`，否则可能被服务器踢掉 |
+| MQTT 协议连接 | `AT+MCONNECT=<clean_session>,<keepalive>[,<mode>]` | 立即 `OK`；成功 URC `CONNACK OK`；失败 `ERROR` | `clean_session=0/1`；`keepalive=1..65535s`；`mode=1` 启用大于 300s 长心跳支持 | 命令 9s；CONNACK 按业务预算等待 | `modem_mqtt_connect()` | 收到 `CONNACK OK` 后才能 publish/subscribe；建议 keepalive 取 300s 以上 |
 | 发布消息 | `AT+MPUB=<topic>,<qos>,<retain>,<message>` | `qos=0`：`OK`；`qos=1`：`OK` + `PUBACK`；`qos=2`：`OK` + `PUBREC` + `PUBCOMP`；失败 `ERROR` | `topic` 最长 256 字节；`message` 最长 4100 字节；`qos=0..2`；`retain=0/1` | 9s 或按 QoS ACK 预算 | `mqtt_client_publish()` | 消息内双引号用 `\22`，回车 `\0D`，换行 `\0A`，反斜杠 `\5C`；MCU 字符串中可能需再次转义 |
 | 定长发布 | `AT+MPUBEX=<topic>,<qos>,<retain>[,<len>]` | 先返回 `>`；输入指定长度或 `Ctrl+Z`/5s 超时后发送；随后按 QoS 返回 `OK`、`PUBACK`、`PUBREC`、`PUBCOMP` | `len=1..4100` | prompt 9s；发送按 QoS 预算 | 二进制或大 payload 发布 | 适合包含特殊字符的数据；最大 4100 字节 |
 | 订阅主题 | `AT+MSUB=<topic>,<qos>` | `OK` + `SUBACK`；失败 `ERROR` | `topic` 最长 256 字节；`qos=0..2` | 9s 或按 SUBACK 预算 | `mqtt_client_subscribe()` | 收到订阅消息后的 URC 由 `MQTTMSGSET` 决定 |
@@ -348,9 +348,9 @@ MQTT 推荐流程：
 
 1. 完成 SIM、注册、附着检查，确认 `AT+CGATT?` 返回 `+CGATT: 1`。
 2. TLS 场景先写入证书文件，并配置 `AT+SSLCFG` context `88`。
-3. `AT+MCONFIG=<clientid>,<username>,<password>`，用户名密码为空时使用 `"",""`。
-4. 普通连接用 `AT+MIPSTART="<host>",<port>`；TLS 连接用 `AT+SSLMIPSTART="<host>",<port>`。
-5. 等待 `CONNECT OK` 后立即 `AT+MCONNECT=1,<keepalive>[,<mode>]`。
+3. `modem_mqtt_configure()` 发送 `AT+MCONFIG=<clientid>,<username>,<password>`，用户名密码为空时使用 `"",""`。
+4. `modem_mqtt_tcp_connect()` 发送普通连接 `AT+MIPSTART="<host>",<port>`；TLS 后续可映射 `AT+SSLMIPSTART="<host>",<port>`。
+5. 等待 `CONNECT OK` 后立即通过 `modem_mqtt_connect()` 发送 `AT+MCONNECT=1,<keepalive>[,<mode>]`。
 6. 等待 `CONNACK OK` 后执行 `AT+MSUB="<topic>",<qos>` 或 `AT+MPUB="<topic>",<qos>,<retain>,"<message>"`。
 7. 需要缓存订阅消息时先 `AT+MQTTMSGSET=1`，收到 `+MSUB:<store_addr>` 后用 `AT+MQTTMSGGET` 读取。
 8. 断开时先 `AT+MDISCONNECT`，再 `AT+MIPCLOSE`。

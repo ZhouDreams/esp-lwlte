@@ -76,6 +76,13 @@ static void log_lte_status(lwlte_t *lte, const char *stage);
 static void cleanup_lte(lwlte_t *lte);
 
 /**
+ * @brief 执行 ping 测试
+ * @details Perform ping test
+ * @param[in] lte LTE 用户门面句柄
+ */
+static void do_ping(lwlte_t *lte);
+
+/**
  * @brief 进入永久等待
  * @details Enter forever delay loop
  */
@@ -171,6 +178,7 @@ void app_main(void)
 
     if (s_net_online) {
         ESP_LOGI(TAG, "LTE network is online");
+        do_ping(lte);
     } else {
         ESP_LOGW(TAG, "LTE network did not become online, error=%d",
                  s_net_error_code);
@@ -257,6 +265,42 @@ static void cleanup_lte(lwlte_t *lte)
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "destroy LTE failed: %s", esp_err_to_name(ret));
     }
+}
+
+static void do_ping(lwlte_t *lte)
+{
+    lwlte_ping_request_t req = {
+        .host = "8.8.8.8",
+        .count = 4,
+        .data_len = 64,
+        .timeout_100ms = 10,
+        .ttl = 64,
+        .total_timeout_ms = 0,
+    };
+
+    lwlte_ping_reply_t replies[4] = {0};
+    lwlte_ping_summary_t summary = {0};
+
+    ESP_LOGI(TAG, "ping %s count=%d datalen=%d", req.host, req.count,
+             req.data_len);
+
+    esp_err_t ret = lwlte_ping(lte, &req, replies, req.count, &summary);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ping failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    for (int i = 0; i < req.count; i++) {
+        ESP_LOGI(TAG, "  [%d] seq=%d ip=%s time=%lums ttl=%d %s",
+                 i, replies[i].seq, replies[i].ip,
+                 (unsigned long)replies[i].time_ms, replies[i].ttl,
+                 replies[i].success ? "ok" : "timeout");
+    }
+    ESP_LOGI(TAG, "ping summary: sent=%d recv=%d lost=%d min=%lums max=%lums avg=%lums",
+             summary.sent, summary.received, summary.lost,
+             (unsigned long)summary.min_time_ms,
+             (unsigned long)summary.max_time_ms,
+             (unsigned long)summary.avg_time_ms);
 }
 
 static void idle_forever(void)
