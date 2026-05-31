@@ -20,7 +20,6 @@
 #include "freertos/task.h"
 
 #include "lwlte.h"
-#include "lwlte_air780ep.h"
 
 /*********************
  *      DEFINES

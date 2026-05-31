@@ -9,7 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 LWLTE_H = ROOT / "src/include/lwlte.h"
-AIR780EP_H = ROOT / "src/include/lwlte_air780ep.h"
+LWLTE_AIR780EP_H = ROOT / "src/include/lwlte_air780ep.h"
 LWLTE_PRIV = ROOT / "src/lwlte/lwlte_priv.h"
 LWLTE_C = ROOT / "src/lwlte/lwlte.c"
 LWLTE_AIR780EP_C = ROOT / "src/lwlte/lwlte_air780ep.c"
@@ -45,7 +45,6 @@ class MqttEndToEndContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.lwlte_h = read_optional(LWLTE_H)
-        cls.air780ep_h = read_optional(AIR780EP_H)
         cls.lwlte_priv = read_optional(LWLTE_PRIV)
         cls.lwlte_c = read_optional(LWLTE_C)
         cls.lwlte_air780ep_c = read_optional(LWLTE_AIR780EP_C)
@@ -94,8 +93,25 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "uint16_t port;",
             "const char *client_id;",
             "lwlte_air780ep_config_mqtt_client_t mqtt_client;",
+            "esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,",
         ]:
-            self.assertIn(token, self.air780ep_h)
+            self.assertIn(token, self.lwlte_h)
+
+    def test_lwlte_h_is_the_only_public_lwlte_header(self):
+        self.assertFalse(
+            LWLTE_AIR780EP_H.exists(),
+            "Air780EP public declarations must live in lwlte.h",
+        )
+        self.assertIn('#include "driver/gpio.h"', self.lwlte_h)
+        self.assertIn('#include "driver/uart.h"', self.lwlte_h)
+        self.assertIn("esp_err_t lwlte_air780ep_init", self.lwlte_h)
+        self.assertIn("esp_err_t lwlte_destroy", self.lwlte_h)
+        self.assertLess(
+            self.lwlte_h.index("esp_err_t lwlte_air780ep_init"),
+            self.lwlte_h.index("esp_err_t lwlte_destroy"),
+        )
+        self.assertIn('#include "lwlte.h"', self.lwlte_air780ep_c)
+        self.assertNotIn('#include "lwlte_air780ep.h"', self.lwlte_air780ep_c)
 
     def test_mqtt_service_layer_exists_and_does_not_cross_boundaries(self):
         self.assertIn('"mqtt_client/mqtt_client.c"', self.src_cmake)

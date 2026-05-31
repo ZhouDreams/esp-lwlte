@@ -9,7 +9,7 @@
 /*********************
  *      INCLUDES
  *********************/
-#include "lwlte_air780ep.h"
+#include "lwlte.h"
 #include "lwlte_priv.h"
 
 #include "at_engine.h"

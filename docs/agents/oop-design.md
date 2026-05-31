@@ -40,7 +40,7 @@ static bool param_valid(uint32_t param);
 
 对外暴露的模块实例必须使用不完整类型（opaque struct）指针作为句柄，禁止暴露结构体定义（教程第3章）：
 
-**用户公共头文件（`src/include/lwlte*.h`）**：
+**用户公共头文件（`src/include/lwlte.h`）**：
 
 ```c
 typedef struct lwlte lwlte_t;  /* 前置声明，不暴露内部 */
@@ -608,7 +608,7 @@ int lwlte_channel_send(struct lwlte_channel *me,
 
 ```
 应用层 (main.c / app.c)
-    │  #include "lwlte.h" / "lwlte_air780ep.h"
+    │  #include "lwlte.h"
     │  业务代码只调用用户操作 API；初始化代码可填写公开 UART/GPIO 配置
     ▼
 门面 factory (src/lwlte/lwlte_air780ep.c)
@@ -693,7 +693,7 @@ int lwlte_board_init(void)
 
 ### 5.4 业务 App 代码边界
 
-业务 App 代码只 include `lwlte.h` 并操作 `lwlte_t`，不暴露任何子类类型。板级初始化或 App 自有配置代码可 include `lwlte_air780ep.h` 并填写 `lwlte_air780ep_config_t` 中的 UART/GPIO 字段。
+业务 App 代码只 include `lwlte.h` 并操作 `lwlte_t`，不暴露任何子类类型。板级初始化或 App 自有配置代码也 include `lwlte.h`，并填写其中声明的模块配置如 `lwlte_air780ep_config_t`。
 
 ```c
 /* app.c — 业务操作代码 */

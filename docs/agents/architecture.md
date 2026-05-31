@@ -10,7 +10,7 @@ esp-lwlte 采用**用户门面 + 内部分层服务架构**。业务 App 代码�
 
 ```
 App
-  ↓ 只依赖 src/include/lwlte*.h
+  ↓ 只依赖 src/include/lwlte.h
 LWLTE Facade
   ↓ 调用 Core/MQTT/TCP/HTTP 等 service API，并在模块 factory 中完成装配
 Service Layer: MQTT → Core；Core 是访问 Modem 的 service；future TCP/HTTP 边界待设计
@@ -22,7 +22,7 @@ AT Engine
 
 | 层 | 职责 |
 |----|------|
-| App | 用户业务逻辑只操作 `lwlte_t`；板级初始化代码可 include `lwlte_air780ep.h` 并填写 UART/GPIO 配置 |
+| App | 用户业务逻辑只操作 `lwlte_t`；板级初始化代码 include `lwlte.h` 并填写 `lwlte_air780ep_config_t` 等模块配置 |
 | LWLTE Facade | `lwlte_t` 用户门面、模块 factory、资源生命周期组合根、用户事件适配 |
 | Service Layer | Core 负责网络状态机、PDP 管理、连接/重连和命令串行化；MQTT 是依赖 Core 的上层 service；TCP/HTTP 边界留待后续设计 |
 | Modem Adapter | `modem_t` 抽象、具体模块 factory 与 AT 指令/URC 语义翻译 |
@@ -51,7 +51,7 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 
 ### 3.1 核心规则
 
-- 业务 App 代码只应 include `lwlte.h` 并调用 `lwlte_*` 操作；板级初始化或 App 自有配置代码可 include `lwlte_air780ep.h` 填写公开的 UART/GPIO 配置。
+- 业务 App 代码只应 include `lwlte.h` 并调用 `lwlte_*` 操作；板级初始化或 App 自有配置代码也 include `lwlte.h`，并填写其中声明的模块配置如 `lwlte_air780ep_config_t`。
 - Facade 的通用文件只应调用 service 层 API。
 - Facade 的模块 factory 文件是 composition root，允许认识 AT Engine、Modem、具体 Modem factory 和 Core，用于创建并持有完整依赖树。
 - Core 可以调用紧邻的 Modem Adapter；MQTT 通过 Core command queue 投递模块命令，不直接调用 Modem 或 AT Engine；TCP/HTTP 边界尚未承诺。

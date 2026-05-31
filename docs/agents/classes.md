@@ -6,7 +6,7 @@
 
 | 可见性 | 落入哪个头文件 | 谁能看到 | 命名前缀 |
 |--------|-------------|---------|---------|
-| 用户 API | `src/include/lwlte*.h` | App 开发者 | `lwlte_` |
+| 用户 API | `src/include/lwlte.h` | App 开发者 | `lwlte_` |
 | 层间 API | `src/core/core.h`、`src/mqtt_client/mqtt_client.h`、`src/ping_client/ping_client.h`、`src/modem/modem.h`、`src/modem/modem_air780ep.h`、`src/at_engine/at_engine.h` | 组件内部相邻层；Facade factory 作为 composition root 可见全部装配 API | `core_`、`mqtt_client_`、`ping_client_`、`modem_`、`modem_air780ep_`、`at_engine_` |
 | 模块私有 API | `*_priv.h` | 当前模块自己的 `.c` 文件 | 模块内部命名 |
 | 文件内部 | `.c` 中 static | 当前 `.c` 文件 | 无限制 |
@@ -1917,7 +1917,7 @@ esp_err_t lwlte_ping_async(lwlte_t *me,
 
 ## 6. App（应用层）
 
-> App 层不定义内部框架类，只有用户自己的业务类型。LWLTE Facade 暴露的用户 API 类型位于 `src/include/lwlte*.h`，用于把 App 请求映射到内部 service。
+> App 层不定义内部框架类，只有用户自己的业务类型。LWLTE Facade 暴露的用户 API 类型位于 `src/include/lwlte.h`，用于把 App 请求映射到内部 service。
 
 MQTT 第一版会增加这些用户可见类型和函数：
 
