@@ -52,6 +52,16 @@ esp_err_t lwlte_destroy(lwlte_t *me);
 
 内部层 factory 可沿用该层既定的指针返回 create 模式，例如 `core_create()`、`modem_air780ep_create()`；不要把内部 factory 形态投射成用户公共 API。
 
+### 1.2.1 生命周期命名规则
+
+本项目统一使用以下生命周期语义：
+
+- 用户门面 API 使用 `esp_err_t xxx_init(const xxx_config_t *config, xxx_t **out)`，例如 `lwlte_air780ep_init()`。
+- 独立 opaque 堆对象使用 `xxx_create()` / `xxx_destroy()`；`create` 返回对象指针，失败返回 `NULL`，`destroy` 返回 `esp_err_t`。
+- 内嵌对象、基类对象、组合成员使用 `xxx_init(me, ...)` / `xxx_deinit(me)`；二者都返回 `esp_err_t`，不负责分配或释放 `me` 自身。
+- `create` 内部可以调用私有或层内 `init`；初始化失败时必须按已成功初始化的反序调用对应 `deinit`，再释放堆内存。
+- `destroy` 内部必须调用对应 `deinit`，再释放堆内存；如果清理阶段出现错误，返回第一个错误码。
+
 **私有头文件或 `.c` 文件**：
 
 ```c
@@ -392,7 +402,7 @@ Air780EP 子类实现 ops 表为 `static const`（教程第10章、第14章 ops 
 
 static const modem_ops_t air780ep_ops = {
     .destroy        = air780ep_destroy,
-    .init           = air780ep_init,
+    .start          = air780ep_start,
     .reset          = air780ep_reset,
     .get_signal     = air780ep_get_signal,
     .set_apn        = air780ep_set_apn,
@@ -486,28 +496,28 @@ static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
 
 ```c
 /* 统一接口——assert 守卫 */
-esp_err_t modem_require_init(modem_t *me)
+esp_err_t modem_require_start(modem_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
-    assert(me->ops && me->ops->init &&
-           "modem.init is required — subclass must implement");
-    return me->ops->init(me);
+    assert(me->ops && me->ops->start &&
+           "modem.start is required - subclass must implement");
+    return me->ops->start(me);
 }
 ```
 
 带 Release 兜底的稳健写法（教程第14章）：
 
 ```c
-esp_err_t modem_require_init(modem_t *me)
+esp_err_t modem_require_start(modem_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
-    assert(me->ops && me->ops->init);
-    if (!me->ops || !me->ops->init)
+    assert(me->ops && me->ops->start);
+    if (!me->ops || !me->ops->start)
         return ESP_ERR_NOT_SUPPORTED;  /* release 构建的最后一道闸 */
 
-    return me->ops->init(me);
+    return me->ops->start(me);
 }
 ```
 
@@ -531,7 +541,7 @@ esp_err_t modem_reset_optional(modem_t *me)
 
 ```c
 static const modem_ops_t diagnostic_modem_ops = {
-    .init = diagnostic_modem_init,
+    .start = diagnostic_modem_start,
     .get_signal = diagnostic_modem_get_signal,
     /* .reset 故意不填——该诊断实现无复位能力，自动为 NULL */
 };

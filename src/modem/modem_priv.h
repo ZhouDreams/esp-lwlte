@@ -136,7 +136,7 @@ typedef esp_err_t (*modem_ping_fn)(modem_t *me,
  */
 typedef struct modem_ops {
     modem_no_arg_fn destroy;                         /**< 销毁子类资源； Destroy subclass resources */
-    modem_no_arg_fn init;                            /**< 初始化模块； Initialize modem */
+    modem_no_arg_fn start;                           /**< 启动模块； Start modem */
     modem_no_arg_fn reset;                           /**< 复位模块； Reset modem */
     modem_get_info_fn get_info;                      /**< 获取模块信息； Get modem information */
     modem_get_sim_status_fn get_sim_status;          /**< 获取 SIM 状态； Get SIM status */
@@ -206,8 +206,12 @@ esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
  * @brief 反初始化调制解调器基类
  * @details Deinitialize modem base class
  * @param[in,out] me 调制解调器基类对象
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
  */
-void modem_base_deinit(modem_t *me);
+esp_err_t modem_base_deinit(modem_t *me);
 
 /**
  * @brief 停止调制解调器事件任务

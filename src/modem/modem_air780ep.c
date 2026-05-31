@@ -129,15 +129,15 @@ typedef struct {
 static esp_err_t air780ep_destroy(modem_t *me);
 
 /**
- * @brief 初始化 Air780EP 调制解调器
- * @details Initialize Air780EP modem
+ * @brief 启动 Air780EP 调制解调器
+ * @details Start Air780EP modem
  * @param[in] me 调制解调器句柄
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - ESP_FAIL: 初始化失败
+ *         - ESP_FAIL: 启动失败
  */
-static esp_err_t air780ep_init(modem_t *me);
+static esp_err_t air780ep_start(modem_t *me);
 
 /**
  * @brief 复位 Air780EP 调制解调器
@@ -808,7 +808,7 @@ static bool parse_msub_direct(const char *line, char **topic, size_t *topic_len,
 
 static const modem_ops_t s_air780ep_ops = {
     .destroy = air780ep_destroy,
-    .init = air780ep_init,
+    .start = air780ep_start,
     .reset = air780ep_reset,
     .get_info = air780ep_get_info,
     .get_sim_status = air780ep_get_sim_status,
@@ -885,7 +885,11 @@ modem_t *modem_air780ep_create(at_engine_t *at,
     self->rdy_sema = xSemaphoreCreateBinary();
     if (!self->rdy_sema) {
         ESP_LOGE(TAG, "create RDY semaphore failed");
-        modem_base_deinit(&self->base);
+        esp_err_t cleanup_ret = modem_base_deinit(&self->base);
+        if (cleanup_ret != ESP_OK) {
+            ESP_LOGW(TAG, "cleanup after RDY semaphore failure failed: %s",
+                     esp_err_to_name(cleanup_ret));
+        }
         free(self);
         return NULL;
     }
@@ -895,7 +899,11 @@ modem_t *modem_air780ep_create(at_engine_t *at,
         ESP_LOGE(TAG, "create CPIN ready semaphore failed");
         vSemaphoreDelete(self->rdy_sema);
         self->rdy_sema = NULL;
-        modem_base_deinit(&self->base);
+        esp_err_t cleanup_ret = modem_base_deinit(&self->base);
+        if (cleanup_ret != ESP_OK) {
+            ESP_LOGW(TAG, "cleanup after CPIN semaphore failure failed: %s",
+                     esp_err_to_name(cleanup_ret));
+        }
         free(self);
         return NULL;
     }
@@ -2209,7 +2217,7 @@ static esp_err_t air780ep_destroy(modem_t *me)
     return ESP_OK;
 }
 
-static esp_err_t air780ep_init(modem_t *me)
+static esp_err_t air780ep_start(modem_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 

@@ -222,18 +222,18 @@ void core_fsm_stop(core_t *me)
     me->fsm.running = false;
 }
 
-void core_fsm_deinit(core_t *me)
+esp_err_t core_fsm_deinit(core_t *me)
 {
     if (!me) {
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
     if (core_fsm_is_task(me)) {
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
 
     core_fsm_stop(me);
     if (me->fsm.task) {
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (me->fsm.queue) {
@@ -255,6 +255,8 @@ void core_fsm_deinit(core_t *me)
     }
     me->fsm.running = false;
     me->fsm.stop_requested = false;
+
+    return ESP_OK;
 }
 
 esp_err_t core_fsm_send(core_t *me, const core_fsm_sig_t *sig)

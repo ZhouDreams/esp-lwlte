@@ -241,7 +241,7 @@ static void cgev_handler(const char *prefix, const char *line, void *user_ctx) {
 static at_urc_handler_t cgev_handler_node = {
     .prefix    = "+CGEV:",
     .callback  = cgev_handler,
-    .user_ctx  = NULL,  // 在 modem_init 时设置
+    .user_ctx  = NULL,  // 在 modem_start 时设置
 };
 at_engine_register_urc(at, "+CGEV:", &cgev_handler_node);
 ```
@@ -374,7 +374,7 @@ typedef struct modem modem_t;
 
 ```c
 esp_err_t modem_destroy(modem_t *me);
-esp_err_t modem_init(modem_t *me);
+esp_err_t modem_start(modem_t *me);
 esp_err_t modem_reset(modem_t *me);
 
 esp_err_t modem_register_event_callback(modem_t *me,
@@ -772,7 +772,7 @@ modem_t *modem_air780ep_create(at_engine_t *at,
 - `modem_air780ep_create()` 是具体模块工厂，只应出现在 Facade 模块 factory 装配代码中。
 - Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_t *`。
 - GPIO 控制属于 Modem 层职责，Air780EP 实现可以直接使用 ESP-IDF `driver/gpio.h`。
-- 硬件复位通过 EN 引脚实现：注册 URC 后，拉低 EN，等待 reset_pulse_ms，再拉高 EN；随后等待 RDY URC，收到 RDY 后才发送 AT 初始化命令。`air780ep_init()` 和 `air780ep_reset()` 都使用此方式。
+- 硬件复位通过 EN 引脚实现：注册 URC 后，拉低 EN，等待 reset_pulse_ms，再拉高 EN；随后等待 RDY URC，收到 RDY 后才发送 AT 初始化命令。`air780ep_start()` 和 `air780ep_reset()` 都使用此方式。
 
 ### 2.12 `modem_air780ep_t` — Air780EP 子类
 

@@ -144,8 +144,8 @@ modem_air780ep_config_t modem_cfg = {
 };
 modem_t *modem = modem_air780ep_create(at, &modem_cfg);
 
-/* Facade factory：通用 API 初始化具体模块，Air780EP 内部注册 URC handler。 */
-modem_init(modem);  /* 内部调用 at_engine_register_urc(me->at, "+CGEV:", ...) */
+/* Facade factory：通用 API 启动具体模块，Air780EP 内部注册 URC handler。 */
+modem_start(modem);  /* 内部调用 at_engine_register_urc(me->at, "+CGEV:", ...) */
 
 esp_err_t core_init(core_t *me, modem_t *modem)
 {
@@ -198,9 +198,9 @@ typedef struct {
 | 维度 | 说明 |
 |------|------|
 | **职责** | 定义 `modem_t` opaque 句柄和 `modem_*` 包装 API；内部使用 `modem_ops` 虚函数表分发到具体模块 |
-| **知道什么** | 模块需要有 init、get_info、get_signal、set_apn、activate_pdp 等操作 |
+| **知道什么** | 模块需要有 start、get_info、get_signal、set_apn、activate_pdp 等操作 |
 | **不知道什么** | 每个操作的具体 AT 指令格式 |
-| **对外接口** | `modem_init()`、`modem_get_info()`、`modem_get_signal()`、`modem_set_apn()`、`modem_activate_pdp()` 等 `modem_*` 包装 API |
+| **对外接口** | `modem_start()`、`modem_get_info()`、`modem_get_signal()`、`modem_set_apn()`、`modem_activate_pdp()` 等 `modem_*` 包装 API |
 
 #### 5.2.2 Modem Impl（具体模块实现）
 
@@ -329,7 +329,7 @@ Facade factory
     ├─ 2. modem_air780ep_create(at, &modem_cfg) → 创建 Modem 实例
     │       └─ 传入 at 句柄和模块硬件配置，工厂保存依赖
     │
-    ├─ 3. modem_init(modem)                     → 初始化模块并注册 URC
+    ├─ 3. modem_start(modem)                    → 启动模块并注册 URC
     │       └─ modem 内部注册 URC handler 到 at engine
     │
     ├─ 4. core_create(&core_cfg, modem)         → 创建 Core Service
@@ -377,7 +377,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     modem_t *modem = modem_air780ep_create(at, &modem_cfg);
     if (!modem) goto err_at;
 
-    if (modem_init(modem) != ESP_OK) goto err_modem;
+    if (modem_start(modem) != ESP_OK) goto err_modem;
 
     /* 3. 核心服务：auto_connect 由 Facade 在 ready 后显式触发。 */
     core_config_t core_cfg = {

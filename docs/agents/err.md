@@ -18,13 +18,13 @@ esp_err_t lwlte_destroy(lwlte_t *me);
 
 ```c
 /* src/modem/modem.h：Core 调用层间 modem_* 包装 API */
-esp_err_t modem_init(modem_t *me);
+esp_err_t modem_start(modem_t *me);
 esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
 esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn);
 
 /* Modem 层内部：wrapper 实现再分发到具体模块 ops */
 struct modem_ops {
-    esp_err_t (*init)(modem_t *me);
+    esp_err_t (*start)(modem_t *me);
     esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
     esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
     esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);

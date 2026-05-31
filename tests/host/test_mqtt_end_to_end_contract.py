@@ -473,7 +473,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
         )
 
         fsm_deinit_body = self.core_fsm_c[
-            self.core_fsm_c.index("void core_fsm_deinit"):
+            self.core_fsm_c.index("esp_err_t core_fsm_deinit"):
             self.core_fsm_c.index("esp_err_t core_fsm_send")
         ]
         for token in [
@@ -645,7 +645,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIn("release_event_payload(&event);", self.modem_c)
 
         deinit_body = self.modem_c[
-            self.modem_c.index("void modem_base_deinit"):
+            self.modem_c.index("esp_err_t modem_base_deinit"):
             self.modem_c.index("esp_err_t modem_base_stop_event_task")
         ]
         for token in [
@@ -1098,11 +1098,11 @@ class MqttEndToEndContractTest(unittest.TestCase):
             (
                 "destroy",
                 "static esp_err_t air780ep_destroy",
-                "static esp_err_t air780ep_init",
+                "static esp_err_t air780ep_start",
             ),
             (
-                "init",
-                "static esp_err_t air780ep_init",
+                "start",
+                "static esp_err_t air780ep_start",
                 "static esp_err_t air780ep_reset",
             ),
             (

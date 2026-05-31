@@ -148,21 +148,25 @@ esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
     return ESP_OK;
 
 err:
-    modem_base_deinit(me);
+    esp_err_t cleanup_ret = modem_base_deinit(me);
+    if (cleanup_ret != ESP_OK) {
+        ESP_LOGW(TAG, "cleanup after base init failure failed: %s",
+                 esp_err_to_name(cleanup_ret));
+    }
     return ret;
 }
 
-void modem_base_deinit(modem_t *me)
+esp_err_t modem_base_deinit(modem_t *me)
 {
     if (!me) {
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t ret = modem_base_stop_event_task(me);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "stop event task before deinit failed: %s", esp_err_to_name(ret));
         if (me->event_task) {
-            return;
+            return ret;
         }
     }
 
@@ -200,6 +204,8 @@ void modem_base_deinit(modem_t *me)
     me->event_user_ctx = NULL;
     me->event_cb_active = 0;
     me->name = NULL;
+
+    return ret;
 }
 
 esp_err_t modem_base_stop_event_task(modem_t *me)
@@ -307,21 +313,25 @@ esp_err_t modem_destroy(modem_t *me)
         }
     }
 
-    modem_base_deinit(me);
+    ret = modem_base_deinit(me);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "base deinit failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     free(me);
-    return ret;
+    return ESP_OK;
 }
 
-esp_err_t modem_init(modem_t *me)
+esp_err_t modem_start(modem_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
     esp_err_t ret = check_ready(me, true);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
-    ESP_RETURN_ON_FALSE(me->ops && me->ops->init,
-                        ESP_ERR_NOT_SUPPORTED, TAG, "init not supported");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->start,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "start not supported");
 
-    return call_no_arg(me, me->ops->init);
+    return call_no_arg(me, me->ops->start);
 }
 
 esp_err_t modem_reset(modem_t *me)

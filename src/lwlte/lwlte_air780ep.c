@@ -178,9 +178,9 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ESP_OK);
     }
 
-    ret = modem_init(me->modem);
+    ret = modem_start(me->modem);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "init modem failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "start modem failed: %s", esp_err_to_name(ret));
         return cleanup_after_failure(me, ret);
     }
 

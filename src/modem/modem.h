@@ -279,16 +279,16 @@ typedef void (*modem_event_callback_t)(modem_t *modem,
 esp_err_t modem_destroy(modem_t *me);
 
 /**
- * @brief 初始化调制解调器
- * @details Initialize modem
+ * @brief 启动调制解调器
+ * @details Start modem
  * @param[in] me 调制解调器句柄
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 状态错误
- *         - ESP_FAIL: 初始化失败
+ *         - ESP_FAIL: 启动失败
  */
-esp_err_t modem_init(modem_t *me);
+esp_err_t modem_start(modem_t *me);
 
 /**
  * @brief 复位调制解调器

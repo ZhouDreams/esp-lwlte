@@ -256,8 +256,8 @@ typedef void (*core_event_callback_t)(core_t *core,
  * @param[in] config LTE 核心服务配置
  * @param[in] modem 调制解调器句柄
  * @return
- *         - 非 NULL: 创建成功，返回 LTE 核心服务句柄
- *         - NULL: 参数无效或内存不足
+ *         - 非 NULL: 创建并初始化成功，返回 LTE 核心服务句柄
+ *         - NULL: 参数无效、内存不足或初始化失败
  */
 core_t *core_create(const core_config_t *config, modem_t *modem);
 
@@ -268,6 +268,8 @@ core_t *core_create(const core_config_t *config, modem_t *modem);
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 当前状态不允许销毁
+ *         - other: 下层资源清理错误码
  */
 esp_err_t core_destroy(core_t *me);
 

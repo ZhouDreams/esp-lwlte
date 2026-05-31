@@ -135,7 +135,7 @@ esp_err_t core_fsm_init(core_t *me);
  */
 void core_fsm_stop(core_t *me);
 
-void core_fsm_deinit(core_t *me);
+esp_err_t core_fsm_deinit(core_t *me);
 esp_err_t core_fsm_send(core_t *me, const core_fsm_sig_t *sig);
 bool core_fsm_is_task(core_t *me);
 

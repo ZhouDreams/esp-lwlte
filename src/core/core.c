@@ -133,15 +133,51 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
 static esp_err_t wait_event_callbacks_idle(core_t *me);
 
 /**
- * @brief 清理 Core 内部资源
- * @details Clean Core internal resources
+ * @brief 初始化 Core 内部资源
+ * @details Initialize Core internal resources
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] config LTE 核心服务配置
+ * @param[in] modem 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - other: ESP Event 或内部组件错误码
+ */
+static esp_err_t core_init(core_t *me, const core_config_t *config,
+                           modem_t *modem);
+
+/**
+ * @brief 反初始化 Core 内部资源
+ * @details Deinitialize Core internal resources
  * @param[in] me LTE 核心服务句柄
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: ESP Event 错误码
  */
-static esp_err_t cleanup_core(core_t *me);
+static esp_err_t core_deinit(core_t *me);
+
+/**
+ * @brief 判断 Core 内部资源是否已完整反初始化
+ * @details Check whether Core internal resources are fully deinitialized
+ * @param[in] me LTE 核心服务句柄
+ * @return
+ *         - true: 已完整反初始化
+ *         - false: 仍有资源未释放
+ */
+static bool core_deinit_complete(const core_t *me);
+
+/**
+ * @brief 注销 Modem 事件回调
+ * @details Unregister Modem event callback
+ * @param[in] me LTE 核心服务句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - other: Modem 错误码
+ */
+static esp_err_t core_unregister_modem_callback(core_t *me);
 static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd);
 static void free_core_cmd(core_cmd_t *cmd);
 static char *clone_optional_string(const char *value);
@@ -168,91 +204,24 @@ ESP_EVENT_DEFINE_BASE(CORE_EVENT);
  **********************/
 core_t *core_create(const core_config_t *config, modem_t *modem)
 {
-    esp_err_t ret = ESP_OK;
-    esp_err_t cleanup_ret = ESP_OK;
-
-    if (!config_valid(config, modem)) {
-        ESP_LOGE(TAG, "invalid core config");
-        return NULL;
-    }
-
     core_t *me = calloc(1, sizeof(core_t));
     if (!me) {
         ESP_LOGE(TAG, "calloc core failed");
         return NULL;
     }
 
-    ret = normalize_config(config, &me->config);
+    esp_err_t ret = core_init(me, config, modem);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "normalize core config failed: %s", esp_err_to_name(ret));
-        free(me);
+        ESP_LOGE(TAG, "init core failed: %s", esp_err_to_name(ret));
+        if (core_deinit_complete(me)) {
+            free(me);
+        } else {
+            ESP_LOGE(TAG, "core init cleanup failed; core left allocated");
+        }
         return NULL;
-    }
-    me->modem = modem;
-    me->state = CORE_STATE_STOPPED;
-    me->destroying = false;
-    me->destroy_in_progress = false;
-    me->event_loop_task = NULL;
-    me->event_callback_done_sema = NULL;
-    me->event_callback_task = NULL;
-    me->event_callback_active = 0;
-    me->event_callback_waiting = false;
-
-    me->lock = xSemaphoreCreateMutex();
-    if (!me->lock) {
-        ESP_LOGE(TAG, "create lock failed");
-        ret = ESP_ERR_NO_MEM;
-        goto err;
-    }
-
-    me->event_callback_done_sema = xSemaphoreCreateBinary();
-    if (!me->event_callback_done_sema) {
-        ESP_LOGE(TAG, "create event_callback_done_sema failed");
-        ret = ESP_ERR_NO_MEM;
-        goto err;
-    }
-
-    ret = create_event_loop(me);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "create event loop failed: %s", esp_err_to_name(ret));
-        goto err;
-    }
-
-    ret = pdp_mgr_init(&me->pdp_mgr, me->config.primary_cid);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "init PDP manager failed: %s", esp_err_to_name(ret));
-        goto err;
-    }
-
-    ret = net_mgr_init(me);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "init net manager failed: %s", esp_err_to_name(ret));
-        goto err;
-    }
-
-    ret = core_fsm_init(me);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "init core FSM failed: %s", esp_err_to_name(ret));
-        goto err;
-    }
-
-    ret = modem_register_event_callback(modem, core_modem_event_cb, me);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "register modem callback failed: %s", esp_err_to_name(ret));
-        goto err;
     }
 
     return me;
-
-err:
-    cleanup_ret = cleanup_core(me);
-    if (cleanup_ret == ESP_OK) {
-        free(me);
-    } else {
-        ESP_LOGE(TAG, "cleanup after create failure failed: %s; core left allocated",
-                 esp_err_to_name(cleanup_ret));
-    }
-    return NULL;
 }
 
 esp_err_t core_destroy(core_t *me)
@@ -294,7 +263,7 @@ esp_err_t core_destroy(core_t *me)
     me->destroy_in_progress = true;
     xSemaphoreGive(me->lock);
 
-    esp_err_t ret = modem_register_event_callback(me->modem, NULL, NULL);
+    esp_err_t ret = core_unregister_modem_callback(me);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "unregister modem callback failed: %s", esp_err_to_name(ret));
         xSemaphoreTake(me->lock, portMAX_DELAY);
@@ -317,7 +286,7 @@ esp_err_t core_destroy(core_t *me)
         return ret;
     }
 
-    ret = cleanup_core(me);
+    ret = core_deinit(me);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "cleanup core failed: %s", esp_err_to_name(ret));
         xSemaphoreTake(me->lock, portMAX_DELAY);
@@ -874,16 +843,116 @@ static esp_err_t wait_event_callbacks_idle(core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t cleanup_core(core_t *me)
+static esp_err_t core_init(core_t *me, const core_config_t *config,
+                           modem_t *modem)
+{
+    esp_err_t ret = ESP_OK;
+
+    if (!config_valid(config, modem)) {
+        ESP_LOGE(TAG, "invalid core config");
+        ret = ESP_ERR_INVALID_ARG;
+        goto err;
+    }
+
+    ret = normalize_config(config, &me->config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "normalize core config failed: %s", esp_err_to_name(ret));
+        goto err;
+    }
+    me->modem = NULL;
+    me->state = CORE_STATE_STOPPED;
+    me->destroying = false;
+    me->destroy_in_progress = false;
+    me->event_loop_task = NULL;
+    me->event_callback_done_sema = NULL;
+    me->event_callback_task = NULL;
+    me->event_callback_active = 0;
+    me->event_callback_waiting = false;
+
+    me->lock = xSemaphoreCreateMutex();
+    if (!me->lock) {
+        ESP_LOGE(TAG, "create lock failed");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
+
+    me->event_callback_done_sema = xSemaphoreCreateBinary();
+    if (!me->event_callback_done_sema) {
+        ESP_LOGE(TAG, "create event_callback_done_sema failed");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
+
+    ret = create_event_loop(me);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "create event loop failed: %s", esp_err_to_name(ret));
+        goto err;
+    }
+
+    ret = pdp_mgr_init(&me->pdp_mgr, me->config.primary_cid);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "init PDP manager failed: %s", esp_err_to_name(ret));
+        goto err;
+    }
+
+    ret = net_mgr_init(me);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "init net manager failed: %s", esp_err_to_name(ret));
+        goto err;
+    }
+
+    ret = core_fsm_init(me);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "init core FSM failed: %s", esp_err_to_name(ret));
+        goto err;
+    }
+
+    ret = modem_register_event_callback(modem, core_modem_event_cb, me);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "register modem callback failed: %s", esp_err_to_name(ret));
+        goto err;
+    }
+    me->modem = modem;
+
+    return ESP_OK;
+
+err:
+    esp_err_t cleanup_ret = core_deinit(me);
+    if (cleanup_ret != ESP_OK) {
+        ESP_LOGE(TAG, "cleanup after init failure failed: %s",
+                 esp_err_to_name(cleanup_ret));
+    }
+    return ret;
+}
+
+static esp_err_t core_deinit(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
-    core_fsm_stop(me);
-    esp_err_t ret = net_mgr_deinit(me);
+    esp_err_t ret = core_unregister_modem_callback(me);
     if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "unregister modem callback failed: %s", esp_err_to_name(ret));
         return ret;
     }
-    core_fsm_deinit(me);
+    if (me->lock && me->event_callback_done_sema) {
+        ret = wait_event_callbacks_idle(me);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "wait event callbacks idle failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+    }
+
+    core_fsm_stop(me);
+    ret = net_mgr_deinit(me);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "net manager deinit failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = core_fsm_deinit(me);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "core FSM deinit failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ret = destroy_event_loop(me);
     if (ret != ESP_OK) {
         return ret;
@@ -904,6 +973,35 @@ static esp_err_t cleanup_core(core_t *me)
     }
 
     return ESP_OK;
+}
+
+static bool core_deinit_complete(const core_t *me)
+{
+    if (!me) {
+        return true;
+    }
+
+    return !me->modem && !me->event_loop && !me->fsm.task &&
+           !me->fsm.queue && !me->fsm.task_done_sema &&
+           !me->net_mgr.reconnect_timer &&
+           !me->net_mgr.reconnect_cb_done_sema &&
+           !me->event_callback_done_sema && !me->lock && !me->config.apn;
+}
+
+static esp_err_t core_unregister_modem_callback(core_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    if (!me->modem) {
+        return ESP_OK;
+    }
+
+    modem_t *modem = me->modem;
+    esp_err_t ret = modem_register_event_callback(modem, NULL, NULL);
+    if (ret == ESP_OK) {
+        me->modem = NULL;
+    }
+
+    return ret;
 }
 
 static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
