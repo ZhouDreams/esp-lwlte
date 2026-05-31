@@ -228,8 +228,8 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 | 读取缓存消息 | `AT+MQTTMSGGET`，`AT+MQTTMSGGET?` | 执行命令输出最多 4 条 `+MSUB: <topic>,<len>,<message>` + `OK`；查询 `+MQTTMSGGET:<slot>,<status>` | `slot=0..3`；`status=VALID/INVALID`；`message` 最大 4100 字节 | 9s | MQTT RX 缓存读取 | 仅 `AT+MQTTMSGSET=1` 缓存模式下使用；超过 4 条时最新覆盖最旧 |
 | 设置订阅消息打印模式 | `AT+MQTTMSGSET=<mode>`，`AT+MQTTMSGSET?` | `+MQTTMSGSET:<mode>` + `OK` | `0` 新消息直接 URC `+MSUB:<topic>,<len>,<message>`；`1` 缓存模式，URC `+MSUB:<store_addr>` | 9s | MQTT RX 模式配置 | 直接模式解析简单但会把 payload 混入 AT 流；二进制/长消息建议缓存模式 |
 | MQTT 发布编码 | `AT+MQTTMODE=<mode>`，`AT+MQTTMODE?` | `+MQTTMODE:<mode>` + `OK` | `0` ASCII；`1` HEX | 9s | MQTT payload 编码配置 | HEX 模式下 `AT+MPUB="test",0,0,"313233"` 实际发布 `123` |
-| 关闭 MQTT TCP 连接 | `AT+MIPCLOSE` | `OK` 或 `ERROR` | 无 | 9s | MQTT transport close | 只关闭 TCP 连接；通常先 `MDISCONNECT` 再 `MIPCLOSE` |
-| 关闭 MQTT 会话 | `AT+MDISCONNECT` | `OK` 或 `ERROR` | 无 | 9s | `mqtt_client_disconnect()` | 关闭 MQTT 连接但不等同于全局 PDP 清理 |
+| 关闭 MQTT 会话 | `AT+MDISCONNECT` | `OK` 或 `ERROR` | 无 | 9s | `modem_mqtt_disconnect()` | 关闭 MQTT broker 会话，不关闭底层 TCP 通道 |
+| 关闭 MQTT TCP 连接 | `AT+MIPCLOSE` | `OK` 或 `ERROR` | 无 | 9s | `modem_mqtt_tcp_disconnect()` | 只关闭 TCP 连接；通常先 `MDISCONNECT` 再 `MIPCLOSE` |
 | 查询 MQTT 状态 | `AT+MQTTSTATU` | `+MQTTSTATU :<state>` + `OK` 或 `ERROR` | `0` 离线；`1` 已认证可发布；`2` TCP 已连但未认证，需 `MCONNECT` | 9s | `mqtt_client_get_state()` | 注意手册命令名为 `MQTTSTATU`，缺少末尾 `S` |
 
 ### MQTT 常见 URC 与 ACK
@@ -348,9 +348,9 @@ MQTT 推荐流程：
 
 1. 完成 SIM、注册、附着检查，确认 `AT+CGATT?` 返回 `+CGATT: 1`。
 2. TLS 场景先写入证书文件，并配置 `AT+SSLCFG` context `88`。
-3. `modem_mqtt_configure()` 发送 `AT+MCONFIG=<clientid>,<username>,<password>`，用户名密码为空时使用 `"",""`。
-4. `modem_mqtt_tcp_connect()` 发送普通连接 `AT+MIPSTART="<host>",<port>`；TLS 后续可映射 `AT+SSLMIPSTART="<host>",<port>`。
-5. 等待 `CONNECT OK` 后立即通过 `modem_mqtt_connect()` 发送 `AT+MCONNECT=1,<keepalive>[,<mode>]`。
+3. `modem_mqtt_configure()` 保存完整 MQTT 配置，并发送 `AT+MCONFIG=<clientid>,<username>,<password>`；用户名密码为空时使用 `"",""`。
+4. `modem_mqtt_tcp_connect()` 使用已缓存的 host/port 发送普通连接 `AT+MIPSTART="<host>",<port>`；TLS 后续可映射 `AT+SSLMIPSTART="<host>",<port>`。
+5. 等待 `CONNECT OK` 后立即通过 `modem_mqtt_connect()` 使用已缓存的 clean session/keepalive 发送 `AT+MCONNECT=<clean_session>,<keepalive>[,<mode>]`。
 6. 等待 `CONNACK OK` 后执行 `AT+MSUB="<topic>",<qos>` 或 `AT+MPUB="<topic>",<qos>,<retain>,"<message>"`。
 7. 需要缓存订阅消息时先 `AT+MQTTMSGSET=1`，收到 `+MSUB:<store_addr>` 后用 `AT+MQTTMSGGET` 读取。
 8. 断开时先 `AT+MDISCONNECT`，再 `AT+MIPCLOSE`。

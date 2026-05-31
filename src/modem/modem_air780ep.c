@@ -98,6 +98,7 @@ typedef struct {
     modem_reg_status_t last_reg_status;
     modem_signal_t last_signal;
     modem_pdp_context_t pdp[AIR780EP_MAX_PDP_CONTEXTS];
+    modem_mqtt_config_t mqtt_config;
     SemaphoreHandle_t rdy_sema;
     bool rdy_seen;
     bool waiting_rdy;
@@ -106,6 +107,9 @@ typedef struct {
     bool waiting_cpin_ready;
     bool urc_registered;
     bool initialized;
+    bool mqtt_configured;
+    bool mqtt_tcp_connected;
+    bool mqtt_session_connected;
     bool mqtt_data_enabled;
 } modem_air780ep_t;
 
@@ -260,16 +264,20 @@ static esp_err_t air780ep_deactivate_pdp(modem_t *me, uint8_t cid);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
 static esp_err_t air780ep_get_pdp_context(modem_t *me, uint8_t cid,
-                                           modem_pdp_context_t *pdp);
+                                            modem_pdp_context_t *pdp);
+static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
+                                  const modem_mqtt_config_t *src);
+static char *clone_mqtt_string(const char *value);
+static void free_mqtt_config(modem_mqtt_config_t *config);
+static void clear_mqtt_state(modem_air780ep_t *self);
 static esp_err_t air780ep_mqtt_configure(modem_t *me,
-                                         const modem_mqtt_config_t *config);
-static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me,
-                                           const modem_mqtt_tcp_config_t *config);
-static esp_err_t air780ep_mqtt_connect(modem_t *me,
-                                       const modem_mqtt_connect_config_t *config);
+                                          const modem_mqtt_config_t *config);
+static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me);
+static esp_err_t air780ep_mqtt_connect(modem_t *me);
 static esp_err_t air780ep_mqtt_disconnect(modem_t *me);
+static esp_err_t air780ep_mqtt_tcp_disconnect(modem_t *me);
 static esp_err_t air780ep_mqtt_subscribe(modem_t *me,
-                                          const modem_mqtt_topic_t *topic);
+                                           const modem_mqtt_topic_t *topic);
 static esp_err_t air780ep_mqtt_unsubscribe(modem_t *me,
                                             const modem_mqtt_topic_t *topic);
 static esp_err_t air780ep_mqtt_publish(modem_t *me,
@@ -815,6 +823,7 @@ static const modem_ops_t s_air780ep_ops = {
     .mqtt_tcp_connect = air780ep_mqtt_tcp_connect,
     .mqtt_connect = air780ep_mqtt_connect,
     .mqtt_disconnect = air780ep_mqtt_disconnect,
+    .mqtt_tcp_disconnect = air780ep_mqtt_tcp_disconnect,
     .mqtt_subscribe = air780ep_mqtt_subscribe,
     .mqtt_unsubscribe = air780ep_mqtt_unsubscribe,
     .mqtt_publish = air780ep_mqtt_publish,
@@ -1823,6 +1832,79 @@ static bool mqtt_data_is_enabled(modem_air780ep_t *self)
     return enabled;
 }
 
+static char *clone_mqtt_string(const char *value)
+{
+    if (!value) {
+        return NULL;
+    }
+
+    size_t len = strlen(value) + 1U;
+    char *copy = malloc(len);
+    if (!copy) {
+        return NULL;
+    }
+    memcpy(copy, value, len);
+    return copy;
+}
+
+static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
+                                  const modem_mqtt_config_t *src)
+{
+    ESP_RETURN_ON_FALSE(dst && src && src->client_id && src->host && src->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
+
+    modem_mqtt_config_t copy = {
+        .client_id = clone_mqtt_string(src->client_id),
+        .username = src->username ? clone_mqtt_string(src->username) : NULL,
+        .password = src->password ? clone_mqtt_string(src->password) : NULL,
+        .host = clone_mqtt_string(src->host),
+        .port = src->port,
+        .clean_session = src->clean_session,
+        .keepalive_s = src->keepalive_s,
+    };
+    if (!copy.client_id || !copy.host ||
+        (src->username && !copy.username) ||
+        (src->password && !copy.password)) {
+        free_mqtt_config(&copy);
+        return ESP_ERR_NO_MEM;
+    }
+
+    free_mqtt_config(dst);
+    *dst = copy;
+    return ESP_OK;
+}
+
+static void free_mqtt_config(modem_mqtt_config_t *config)
+{
+    if (!config) {
+        return;
+    }
+    free((void *)config->client_id);
+    free((void *)config->username);
+    free((void *)config->password);
+    free((void *)config->host);
+    memset(config, 0, sizeof(*config));
+}
+
+static void clear_mqtt_state(modem_air780ep_t *self)
+{
+    if (!self) {
+        return;
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_configured = false;
+    self->mqtt_tcp_connected = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_data_enabled = false;
+    free_mqtt_config(&self->mqtt_config);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+}
+
 static void clear_rdy_state(modem_air780ep_t *self)
 {
     if (!self) {
@@ -2100,6 +2182,7 @@ static esp_err_t air780ep_destroy(modem_t *me)
     esp_err_t ret = ESP_OK;
 
     set_mqtt_data_enabled(self, false);
+    clear_mqtt_state(self);
 
     if (self->urc_registered) {
         ret = air780ep_unregister_urcs(self);
@@ -2134,7 +2217,15 @@ static esp_err_t air780ep_init(modem_t *me)
     bool urc_registered_before = self->urc_registered;
     esp_err_t ret = ESP_OK;
 
-    set_mqtt_data_enabled(self, false);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_tcp_connected = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
     set_initialized(self, false);
 
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
@@ -2175,7 +2266,15 @@ static esp_err_t air780ep_reset(modem_t *me)
     bool urc_registered_before = self->urc_registered;
     esp_err_t ret = ESP_OK;
 
-    set_mqtt_data_enabled(self, false);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_tcp_connected = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
     set_initialized(self, false);
 
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
@@ -2636,7 +2735,6 @@ static esp_err_t air780ep_deactivate_pdp(modem_t *me, uint8_t cid)
                         "Air780EP TCPIP deactivation supports cid 1 only");
 
     modem_air780ep_t *self = to_air780ep(me);
-    set_mqtt_data_enabled(self, false);
 
     const at_cmd_success_match_t cipshut_match = {
         .type = AT_CMD_SUCCESS_MATCH_EXACT,
@@ -2659,6 +2757,9 @@ static esp_err_t air780ep_deactivate_pdp(modem_t *me, uint8_t cid)
 
     modem_pdp_context_t affected[AIR780EP_MAX_PDP_CONTEXTS];
     xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_tcp_connected = false;
     size_t affected_count = clear_all_pdp_cache(self, affected,
                                                 AIR780EP_MAX_PDP_CONTEXTS);
     xSemaphoreGive(self->base.lock);
@@ -2744,18 +2845,35 @@ static esp_err_t air780ep_get_pdp_context(modem_t *me, uint8_t cid,
 }
 
 static esp_err_t air780ep_mqtt_configure(modem_t *me,
-                                         const modem_mqtt_config_t *config)
+                                          const modem_mqtt_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && config && config->client_id,
-                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host &&
+                        config->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
 
-    char *client_id = escape_at_string(config->client_id);
-    char *username = escape_at_string(config->username ? config->username : "");
-    char *password = escape_at_string(config->password ? config->password : "");
+    modem_air780ep_t *self = to_air780ep(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    bool connected = self->mqtt_tcp_connected || self->mqtt_session_connected;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(!connected,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT is connected");
+
+    modem_mqtt_config_t new_config = {0};
+    esp_err_t ret = copy_mqtt_config(&new_config, config);
+    ESP_RETURN_ON_ERROR(ret, TAG, "copy MQTT config failed");
+
+    char *client_id = escape_at_string(new_config.client_id);
+    char *username = escape_at_string(new_config.username ? new_config.username : "");
+    char *password = escape_at_string(new_config.password ? new_config.password : "");
     if (!client_id || !username || !password) {
         free(client_id);
         free(username);
         free(password);
+        free_mqtt_config(&new_config);
         return ESP_ERR_NO_MEM;
     }
 
@@ -2765,6 +2883,7 @@ static esp_err_t air780ep_mqtt_configure(modem_t *me,
         free(client_id);
         free(username);
         free(password);
+        free_mqtt_config(&new_config);
         return ESP_ERR_INVALID_ARG;
     }
     char *cmd = malloc((size_t)needed + 1U);
@@ -2772,36 +2891,73 @@ static esp_err_t air780ep_mqtt_configure(modem_t *me,
         free(client_id);
         free(username);
         free(password);
+        free_mqtt_config(&new_config);
         return ESP_ERR_NO_MEM;
     }
     snprintf(cmd, (size_t)needed + 1U, "AT+MCONFIG=\"%s\",\"%s\",\"%s\"",
              client_id, username, password);
 
-    modem_air780ep_t *self = to_air780ep(me);
     air780ep_cmd_ctx_t ctx;
-    esp_err_t ret = send_cmd(self, cmd, &ctx, AIR780EP_MQTT_CMD_TIMEOUT_MS);
+    ret = send_cmd(self, cmd, &ctx, AIR780EP_MQTT_CMD_TIMEOUT_MS);
     if (ret == ESP_OK) {
         ret = ensure_at_ok(&ctx.response, "AT+MCONFIG");
+    }
+    if (ret == ESP_OK) {
+        if (self->base.lock) {
+            xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        }
+        free_mqtt_config(&self->mqtt_config);
+        self->mqtt_config = new_config;
+        memset(&new_config, 0, sizeof(new_config));
+        self->mqtt_configured = true;
+        if (self->base.lock) {
+            xSemaphoreGive(self->base.lock);
+        }
     }
 
     free(cmd);
     free(client_id);
     free(username);
     free(password);
+    if (ret != ESP_OK) {
+        free_mqtt_config(&new_config);
+    }
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me,
-                                           const modem_mqtt_tcp_config_t *config)
+static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me)
 {
-    ESP_RETURN_ON_FALSE(me && config && config->host && config->port > 0,
-                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
-    char *host = escape_at_string(config->host);
+    modem_air780ep_t *self = to_air780ep(me);
+    char *host_copy = NULL;
+    uint16_t port = 0;
+    bool configured = false;
+    bool tcp_connected = false;
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    configured = self->mqtt_configured;
+    tcp_connected = self->mqtt_tcp_connected;
+    if (configured && !tcp_connected) {
+        host_copy = clone_mqtt_string(self->mqtt_config.host);
+        port = self->mqtt_config.port;
+    }
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(configured, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT not configured");
+    ESP_RETURN_ON_FALSE(!tcp_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT TCP already connected");
+    ESP_RETURN_ON_FALSE(host_copy, ESP_ERR_NO_MEM, TAG, "copy MQTT host failed");
+
+    char *host = escape_at_string(host_copy);
+    free(host_copy);
     ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape host failed");
 
     int needed = snprintf(NULL, 0, "AT+MIPSTART=\"%s\",%u",
-                          host, (unsigned int)config->port);
+                          host, (unsigned int)port);
     if (needed < 0) {
         free(host);
         return ESP_ERR_INVALID_ARG;
@@ -2812,7 +2968,7 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me,
         return ESP_ERR_NO_MEM;
     }
     snprintf(cmd, (size_t)needed + 1U, "AT+MIPSTART=\"%s\",%u",
-             host, (unsigned int)config->port);
+             host, (unsigned int)port);
 
     const at_cmd_success_match_t matches[] = {
         { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "CONNECT OK" },
@@ -2825,11 +2981,19 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me,
         .success_match_count = sizeof(matches) / sizeof(matches[0]),
     };
 
-    modem_air780ep_t *self = to_air780ep(me);
     air780ep_cmd_ctx_t ctx;
     esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
     if (ret == ESP_OK) {
         ret = ensure_at_ok(&ctx.response, "AT+MIPSTART");
+    }
+    if (ret == ESP_OK) {
+        if (self->base.lock) {
+            xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        }
+        self->mqtt_tcp_connected = true;
+        if (self->base.lock) {
+            xSemaphoreGive(self->base.lock);
+        }
     }
 
     free(cmd);
@@ -2837,15 +3001,38 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_connect(modem_t *me,
-                                       const modem_mqtt_connect_config_t *config)
+static esp_err_t air780ep_mqtt_connect(modem_t *me)
 {
-    ESP_RETURN_ON_FALSE(me && config, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    bool configured = false;
+    bool tcp_connected = false;
+    bool session_connected = false;
+    bool clean_session = false;
+    uint16_t keepalive_s = 0;
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    configured = self->mqtt_configured;
+    tcp_connected = self->mqtt_tcp_connected;
+    session_connected = self->mqtt_session_connected;
+    clean_session = self->mqtt_config.clean_session;
+    keepalive_s = self->mqtt_config.keepalive_s;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(configured, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT not configured");
+    ESP_RETURN_ON_FALSE(tcp_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT TCP not connected");
+    ESP_RETURN_ON_FALSE(!session_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT session already connected");
 
     char cmd[48];
     int written = snprintf(cmd, sizeof(cmd), "AT+MCONNECT=%u,%u",
-                           config->clean_session ? 1U : 0U,
-                           (unsigned int)config->keepalive_s);
+                           clean_session ? 1U : 0U,
+                           (unsigned int)keepalive_s);
     ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
                         ESP_ERR_INVALID_ARG, TAG, "AT+MCONNECT command truncated");
 
@@ -2860,14 +3047,20 @@ static esp_err_t air780ep_mqtt_connect(modem_t *me,
         .success_match_count = 1,
     };
 
-    modem_air780ep_t *self = to_air780ep(me);
     air780ep_cmd_ctx_t ctx;
     esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
     if (ret == ESP_OK) {
         ret = ensure_at_ok(&ctx.response, "AT+MCONNECT");
     }
     if (ret == ESP_OK) {
-        set_mqtt_data_enabled(self, true);
+        if (self->base.lock) {
+            xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        }
+        self->mqtt_session_connected = true;
+        self->mqtt_data_enabled = true;
+        if (self->base.lock) {
+            xSemaphoreGive(self->base.lock);
+        }
     }
     return ret;
 }
@@ -2877,12 +3070,66 @@ static esp_err_t air780ep_mqtt_disconnect(modem_t *me)
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
     modem_air780ep_t *self = to_air780ep(me);
-    air780ep_cmd_ctx_t ctx;
+    bool session_connected = false;
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    session_connected = self->mqtt_session_connected;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(session_connected,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT session not connected");
+
     set_mqtt_data_enabled(self, false);
+    air780ep_cmd_ctx_t ctx;
     esp_err_t ret = send_cmd(self, "AT+MDISCONNECT", &ctx,
                              AIR780EP_MQTT_CMD_TIMEOUT_MS);
     if (ret == ESP_OK) {
         ret = ensure_at_ok(&ctx.response, "AT+MDISCONNECT");
+    }
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_session_connected = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    return ret;
+}
+
+static esp_err_t air780ep_mqtt_tcp_disconnect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    bool tcp_connected = false;
+    bool session_connected = false;
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    tcp_connected = self->mqtt_tcp_connected;
+    session_connected = self->mqtt_session_connected;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(tcp_connected,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT TCP not connected");
+    ESP_RETURN_ON_FALSE(!session_connected,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT session still connected");
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+MIPCLOSE", &ctx,
+                             AIR780EP_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MIPCLOSE");
+    }
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_tcp_connected = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
     }
     return ret;
 }
@@ -3651,14 +3898,11 @@ static void cgev_urc_handler(const char *prefix, const char *line, void *user_ct
         return;
     }
 
-    if (!active) {
-        set_mqtt_data_enabled(self, false);
-    }
-
-    if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+    if (!self->base.lock) {
         ESP_LOGW(TAG, "drop +CGEV URC, lock busy");
         return;
     }
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
 
     modem_pdp_context_t *pdp = pdp_by_cid(self, cid);
     if (!pdp) {
@@ -3668,6 +3912,9 @@ static void cgev_urc_handler(const char *prefix, const char *line, void *user_ct
     pdp->active = active;
     if (!active) {
         pdp->ip_addr[0] = '\0';
+        self->mqtt_data_enabled = false;
+        self->mqtt_session_connected = false;
+        self->mqtt_tcp_connected = false;
     }
 
     const modem_event_t event = {
@@ -3697,13 +3944,16 @@ static void pdp_deact_urc_handler(const char *prefix, const char *line,
     }
 
     modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
-    set_mqtt_data_enabled(self, false);
 
     modem_pdp_context_t affected[AIR780EP_MAX_PDP_CONTEXTS];
-    if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+    if (!self->base.lock) {
         ESP_LOGW(TAG, "drop PDP deactivation URC, lock busy");
         return;
     }
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_tcp_connected = false;
     size_t affected_count = clear_all_pdp_cache(self, affected,
                                                 AIR780EP_MAX_PDP_CONTEXTS);
     xSemaphoreGive(self->base.lock);

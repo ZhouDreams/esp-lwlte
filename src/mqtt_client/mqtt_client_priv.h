@@ -57,6 +57,12 @@ typedef enum {
     MQTT_CONNECT_STEP_ERROR,
 } mqtt_connect_step_t;
 
+typedef enum {
+    MQTT_STOP_STEP_IDLE = 0,
+    MQTT_STOP_STEP_DISCONNECT,
+    MQTT_STOP_STEP_TCP_DISCONNECT,
+} mqtt_stop_step_t;
+
 typedef struct {
     bool active;
     core_cmd_type_t type;
@@ -94,12 +100,14 @@ struct mqtt_client {
     SemaphoreHandle_t lock;
     mqtt_client_state_t state;
     mqtt_connect_step_t connect_step;
+    mqtt_stop_step_t stop_step;
     mqtt_pending_cmd_t pending_cmd;
     bool destroying;
     bool started;
     bool net_online;
     bool stop_requested;
     bool transport_open;
+    bool session_connected;
     SemaphoreHandle_t event_callback_done_sema;
     TaskHandle_t event_callback_task;
     int event_callback_active;

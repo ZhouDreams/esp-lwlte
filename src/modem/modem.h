@@ -131,25 +131,11 @@ typedef struct {
     const char *client_id;        /**< 客户端 ID； Client ID */
     const char *username;         /**< 用户名，可为 NULL； Username, can be NULL */
     const char *password;         /**< 密码，可为 NULL； Password, can be NULL */
-} modem_mqtt_config_t;
-
-/**
- * @brief MQTT TCP 连接参数
- * @details MQTT TCP connection parameters
- */
-typedef struct {
     const char *host;             /**< Broker 主机名或 IP； Broker host name or IP */
     uint16_t port;                /**< Broker 端口号； Broker port */
-} modem_mqtt_tcp_config_t;
-
-/**
- * @brief MQTT 连接参数
- * @details MQTT connection parameters
- */
-typedef struct {
     bool clean_session;           /**< 是否使用 clean session； Whether to use clean session */
     uint16_t keepalive_s;         /**< 保活时间（秒）； Keepalive in seconds */
-} modem_mqtt_connect_config_t;
+} modem_mqtt_config_t;
 
 /**
  * @brief MQTT 主题参数
@@ -482,7 +468,6 @@ esp_err_t modem_mqtt_configure(modem_t *me,
  * @brief 建立 MQTT TCP 通道
  * @details Connect MQTT TCP channel
  * @param[in] me 调制解调器句柄
- * @param[in] config MQTT TCP 连接参数
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
@@ -491,14 +476,12 @@ esp_err_t modem_mqtt_configure(modem_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_FAIL: 连接失败
  */
-esp_err_t modem_mqtt_tcp_connect(modem_t *me,
-                                 const modem_mqtt_tcp_config_t *config);
+esp_err_t modem_mqtt_tcp_connect(modem_t *me);
 
 /**
  * @brief 连接 MQTT Broker
  * @details Connect to MQTT broker
  * @param[in] me 调制解调器句柄
- * @param[in] config MQTT 连接参数
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
@@ -506,8 +489,7 @@ esp_err_t modem_mqtt_tcp_connect(modem_t *me,
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - ESP_FAIL: 连接失败
  */
-esp_err_t modem_mqtt_connect(modem_t *me,
-                             const modem_mqtt_connect_config_t *config);
+esp_err_t modem_mqtt_connect(modem_t *me);
 
 /**
  * @brief 断开 MQTT Broker 连接
@@ -521,6 +503,19 @@ esp_err_t modem_mqtt_connect(modem_t *me,
  *         - ESP_FAIL: 断开失败
  */
 esp_err_t modem_mqtt_disconnect(modem_t *me);
+
+/**
+ * @brief 断开 MQTT TCP 通道
+ * @details Disconnect MQTT TCP channel
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_FAIL: 断开失败
+ */
+esp_err_t modem_mqtt_tcp_disconnect(modem_t *me);
 
 /**
  * @brief 订阅 MQTT 主题

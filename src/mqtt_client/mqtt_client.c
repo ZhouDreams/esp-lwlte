@@ -65,7 +65,6 @@ static void handle_signal(mqtt_client_t *me, mqtt_fsm_sig_t *sig);
 static void handle_start(mqtt_client_t *me);
 static void handle_stop(mqtt_client_t *me);
 static void complete_stop(mqtt_client_t *me);
-static bool should_disconnect_for_stop(mqtt_client_t *me);
 static void request_stop_disconnect(mqtt_client_t *me);
 static void handle_core_cmd_done(mqtt_client_t *me, mqtt_fsm_sig_t *sig);
 static void handle_runtime_operation(mqtt_client_t *me, mqtt_fsm_sig_t *sig,
@@ -568,16 +567,15 @@ static esp_err_t submit_core_cmd(mqtt_client_t *me, core_cmd_type_t type,
         cmd.data.mqtt_config.client_id = me->config.client_id;
         cmd.data.mqtt_config.username = me->config.username;
         cmd.data.mqtt_config.password = me->config.password;
+        cmd.data.mqtt_config.host = me->config.host;
+        cmd.data.mqtt_config.port = me->config.port;
+        cmd.data.mqtt_config.clean_session = me->config.clean_session;
+        cmd.data.mqtt_config.keepalive_s = me->config.keepalive_s;
         break;
     case CORE_CMD_MQTT_TCP_CONNECT:
-        cmd.data.mqtt_tcp_connect.host = me->config.host;
-        cmd.data.mqtt_tcp_connect.port = me->config.port;
-        break;
     case CORE_CMD_MQTT_CONNECT:
-        cmd.data.mqtt_connect.clean_session = me->config.clean_session;
-        cmd.data.mqtt_connect.keepalive_s = me->config.keepalive_s;
-        break;
     case CORE_CMD_MQTT_DISCONNECT:
+    case CORE_CMD_MQTT_TCP_DISCONNECT:
         break;
     case CORE_CMD_MQTT_SUBSCRIBE:
         cmd.data.mqtt_subscribe.topic = (const char *)sig->data;
@@ -687,6 +685,7 @@ static void handle_signal(mqtt_client_t *me, mqtt_fsm_sig_t *sig)
     case MQTT_SIG_PROTOCOL_CLOSED:
         me->pending_cmd.active = false;
         me->transport_open = false;
+        me->session_connected = false;
         if (me->stop_requested) {
             complete_stop(me);
         } else {
@@ -750,8 +749,10 @@ static void complete_stop(mqtt_client_t *me)
     me->pending_cmd.active = false;
     me->stop_requested = false;
     me->transport_open = false;
+    me->session_connected = false;
     me->net_online = false;
     me->connect_step = MQTT_CONNECT_STEP_IDLE;
+    me->stop_step = MQTT_STOP_STEP_IDLE;
     set_state(me, MQTT_CLIENT_STATE_STOPPED);
     (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_STOPPED, NULL);
     if (me->stop_done_sema) {
@@ -759,27 +760,34 @@ static void complete_stop(mqtt_client_t *me)
     }
 }
 
-static bool should_disconnect_for_stop(mqtt_client_t *me)
+static void request_stop_disconnect(mqtt_client_t *me)
 {
     mqtt_client_state_t state = MQTT_CLIENT_STATE_STOPPED;
     (void)mqtt_client_get_state(me, &state);
 
-    return me->transport_open || state == MQTT_CLIENT_STATE_CONNECTED;
-}
-
-static void request_stop_disconnect(mqtt_client_t *me)
-{
-    if (!should_disconnect_for_stop(me)) {
-        complete_stop(me);
+    if (me->session_connected && me->stop_step == MQTT_STOP_STEP_IDLE) {
+        me->stop_step = MQTT_STOP_STEP_DISCONNECT;
+        set_state(me, MQTT_CLIENT_STATE_DISCONNECTING);
+        esp_err_t ret = submit_core_cmd(me, CORE_CMD_MQTT_DISCONNECT,
+                                        MQTT_CLIENT_OPERATION_DISCONNECT, NULL);
+        if (ret != ESP_OK) {
+            complete_stop(me);
+        }
         return;
     }
 
-    set_state(me, MQTT_CLIENT_STATE_DISCONNECTING);
-    esp_err_t ret = submit_core_cmd(me, CORE_CMD_MQTT_DISCONNECT,
-                                    MQTT_CLIENT_OPERATION_DISCONNECT, NULL);
-    if (ret != ESP_OK) {
-        complete_stop(me);
+    if (me->transport_open) {
+        me->stop_step = MQTT_STOP_STEP_TCP_DISCONNECT;
+        set_state(me, MQTT_CLIENT_STATE_DISCONNECTING);
+        esp_err_t ret = submit_core_cmd(me, CORE_CMD_MQTT_TCP_DISCONNECT,
+                                        MQTT_CLIENT_OPERATION_DISCONNECT, NULL);
+        if (ret != ESP_OK) {
+            complete_stop(me);
+        }
+        return;
     }
+
+    complete_stop(me);
 }
 
 static void handle_core_cmd_done(mqtt_client_t *me, mqtt_fsm_sig_t *sig)
@@ -794,9 +802,30 @@ static void handle_core_cmd_done(mqtt_client_t *me, mqtt_fsm_sig_t *sig)
         sig->core_result == CORE_CMD_RESULT_OK) {
         me->transport_open = true;
     }
+    if (sig->core_cmd_type == CORE_CMD_MQTT_TCP_DISCONNECT &&
+        sig->core_result == CORE_CMD_RESULT_OK) {
+        me->transport_open = false;
+    }
+    if (sig->core_cmd_type == CORE_CMD_MQTT_CONNECT &&
+        sig->core_result == CORE_CMD_RESULT_OK) {
+        me->session_connected = true;
+    }
+    if (sig->core_cmd_type == CORE_CMD_MQTT_DISCONNECT &&
+        sig->core_result == CORE_CMD_RESULT_OK) {
+        me->session_connected = false;
+    }
 
     if (me->stop_requested) {
-        if (operation == MQTT_CLIENT_OPERATION_DISCONNECT) {
+        if (sig->core_cmd_type == CORE_CMD_MQTT_CONNECT &&
+            sig->core_result == CORE_CMD_RESULT_OK) {
+            me->connect_step = MQTT_CONNECT_STEP_DONE;
+            set_state(me, MQTT_CLIENT_STATE_CONNECTED);
+        }
+        if (sig->core_cmd_type == CORE_CMD_MQTT_DISCONNECT &&
+            sig->core_result == CORE_CMD_RESULT_OK) {
+            set_state(me, MQTT_CLIENT_STATE_DISCONNECTING);
+            request_stop_disconnect(me);
+        } else if (sig->core_cmd_type == CORE_CMD_MQTT_TCP_DISCONNECT) {
             complete_stop(me);
         } else {
             request_stop_disconnect(me);

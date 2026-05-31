@@ -503,7 +503,7 @@ esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
 esp_err_t modem_mqtt_configure(modem_t *me,
                                const modem_mqtt_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && config && config->client_id,
+    ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host && config->port > 0,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -512,31 +512,24 @@ esp_err_t modem_mqtt_configure(modem_t *me,
     return me->ops->mqtt_configure(me, config);
 }
 
-esp_err_t modem_mqtt_tcp_connect(modem_t *me,
-                                 const modem_mqtt_tcp_config_t *config)
+esp_err_t modem_mqtt_tcp_connect(modem_t *me)
 {
-    ESP_RETURN_ON_FALSE(me && config && config->host && config->port > 0,
-                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_tcp_connect,
                         ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_tcp_connect not supported");
-
-    return me->ops->mqtt_tcp_connect(me, config);
+    return me->ops->mqtt_tcp_connect(me);
 }
 
-esp_err_t modem_mqtt_connect(modem_t *me,
-                             const modem_mqtt_connect_config_t *config)
+esp_err_t modem_mqtt_connect(modem_t *me)
 {
-    ESP_RETURN_ON_FALSE(me && config, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_connect,
                         ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_connect not supported");
-
-    return me->ops->mqtt_connect(me, config);
+    return me->ops->mqtt_connect(me);
 }
 
 esp_err_t modem_mqtt_disconnect(modem_t *me)
@@ -549,6 +542,16 @@ esp_err_t modem_mqtt_disconnect(modem_t *me)
                         ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_disconnect not supported");
 
     return me->ops->mqtt_disconnect(me);
+}
+
+esp_err_t modem_mqtt_tcp_disconnect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_tcp_disconnect,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_tcp_disconnect not supported");
+    return me->ops->mqtt_tcp_disconnect(me);
 }
 
 esp_err_t modem_mqtt_subscribe(modem_t *me,

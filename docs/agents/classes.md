@@ -341,9 +341,7 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT 
 | `modem_info_t` | 层间 API | Core + Modem 层 | 值对象 | 模块和 SIM 卡静态信息 |
 | `modem_signal_t` | 层间 API | Core + Modem 层 | 值对象 | 信号质量查询结果 |
 | `modem_pdp_context_t` | 层间 API | Core + Modem 层 | 值对象 | PDP 上下文配置与激活结果 |
-| `modem_mqtt_config_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 配置命令参数，Core 执行 `CORE_CMD_MQTT_CONFIGURE` 时使用 |
-| `modem_mqtt_tcp_config_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT TCP 通道连接参数 |
-| `modem_mqtt_connect_config_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 协议连接参数 |
+| `modem_mqtt_config_t` | 层间 API | Core + Modem 层 | 值对象 | 完整 MQTT 配置命令参数，Core 执行 `CORE_CMD_MQTT_CONFIGURE` 时使用；Air780EP 缓存后供 TCP/协议连接复用 |
 | `modem_mqtt_topic_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 订阅/取消订阅 topic 参数 |
 | `modem_mqtt_publish_t` | 层间 API | Core + Modem 层 | 值对象 | MQTT 发布参数，包含 topic 和 payload 指针 |
 | `modem_ping_request_t` | 层间 API | Core + Modem 层 | 值对象 | Ping 请求参数，Core 执行 `CORE_CMD_PING` 时使用 |
@@ -398,11 +396,10 @@ esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
 
 esp_err_t modem_mqtt_configure(modem_t *me,
                                const modem_mqtt_config_t *config);
-esp_err_t modem_mqtt_tcp_connect(modem_t *me,
-                                 const modem_mqtt_tcp_config_t *config);
-esp_err_t modem_mqtt_connect(modem_t *me,
-                             const modem_mqtt_connect_config_t *config);
+esp_err_t modem_mqtt_tcp_connect(modem_t *me);
+esp_err_t modem_mqtt_connect(modem_t *me);
 esp_err_t modem_mqtt_disconnect(modem_t *me);
+esp_err_t modem_mqtt_tcp_disconnect(modem_t *me);
 esp_err_t modem_mqtt_subscribe(modem_t *me,
                                const modem_mqtt_topic_t *topic);
 esp_err_t modem_mqtt_unsubscribe(modem_t *me,
@@ -444,17 +441,11 @@ typedef struct {
     const char *client_id;
     const char *username;
     const char *password;
-} modem_mqtt_config_t;
-
-typedef struct {
     const char *host;
     uint16_t port;
-} modem_mqtt_tcp_config_t;
-
-typedef struct {
     bool clean_session;
     uint16_t keepalive_s;
-} modem_mqtt_connect_config_t;
+} modem_mqtt_config_t;
 
 typedef struct {
     const char *topic;
@@ -515,11 +506,10 @@ typedef struct modem_ops {
                                   modem_pdp_context_t *pdp);
     esp_err_t (*mqtt_configure)(modem_t *me,
                                 const modem_mqtt_config_t *config);
-    esp_err_t (*mqtt_tcp_connect)(modem_t *me,
-                                  const modem_mqtt_tcp_config_t *config);
-    esp_err_t (*mqtt_connect)(modem_t *me,
-                              const modem_mqtt_connect_config_t *config);
+    esp_err_t (*mqtt_tcp_connect)(modem_t *me);
+    esp_err_t (*mqtt_connect)(modem_t *me);
     esp_err_t (*mqtt_disconnect)(modem_t *me);
+    esp_err_t (*mqtt_tcp_disconnect)(modem_t *me);
     esp_err_t (*mqtt_subscribe)(modem_t *me,
                                 const modem_mqtt_topic_t *topic);
     esp_err_t (*mqtt_unsubscribe)(modem_t *me,
@@ -569,10 +559,11 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
 | `activate_pdp` | 注册和附着已就绪后激活数据面并获得 IP | Air780EP TCPIP 路径使用 `AT+CSTT`、`AT+CIICR`、`AT+CIFSR`；Core 先通过 `get_sim_status`、`get_registration`、`get_packet_attach_status` 等阶段确认前置条件 |
 | `deactivate_pdp` | 关闭数据面并清理 Air780EP TCPIP 场景 | 优先 `AT+CIPSHUT`；标准 PDP 路径需要时可使用 `AT+CGACT=0,<cid>` |
 | `get_pdp_context` | 返回 APN、激活状态和 IP 地址快照 | 组合缓存值、`AT+CGDCONT?`、`AT+CGACT?`、`AT+CGPADDR=<cid>`；TCPIP 路径下也可使用最近一次 `AT+CIFSR` 结果 |
-| `mqtt_configure` | 配置模块内置 MQTT client 参数，不建立网络连接 | `AT+MCONFIG` |
-| `mqtt_tcp_connect` | 建立模块 MQTT TCP 通道 | `AT+MIPSTART`，成功接受 `CONNECT OK` / `ALREADY CONNECT`，失败识别 `CONNECT FAIL` |
-| `mqtt_connect` | 执行 MQTT CONNECT 建立 broker 会话 | `AT+MCONNECT`，成功 `CONNACK OK` |
-| `mqtt_disconnect` | 断开 MQTT broker 会话 | `AT+MDISCONNECT` |
+| `mqtt_configure` | 配置模块内置 MQTT client、broker 和会话参数，并缓存完整配置，不建立网络连接 | `AT+MCONFIG` |
+| `mqtt_tcp_connect` | 使用已缓存的 host/port 建立模块 MQTT TCP 通道 | `AT+MIPSTART`，成功接受 `CONNECT OK` / `ALREADY CONNECT`，失败识别 `CONNECT FAIL` |
+| `mqtt_connect` | 使用已缓存的 clean_session/keepalive_s 执行 MQTT CONNECT 建立 broker 会话 | `AT+MCONNECT`，成功 `CONNACK OK` |
+| `mqtt_disconnect` | 断开 MQTT broker 会话，不关闭底层 TCP 通道 | `AT+MDISCONNECT` |
+| `mqtt_tcp_disconnect` | 关闭 MQTT TCP 通道，应在 MQTT 会话断开后执行 | `AT+MIPCLOSE` |
 | `mqtt_subscribe` | 订阅 MQTT topic | `AT+MSUB`，成功 `SUBACK` |
 | `mqtt_unsubscribe` | 取消订阅 MQTT topic | `AT+MUNSUB`，成功 `UNSUBACK` |
 | `mqtt_publish` | 发布定长 MQTT payload | `AT+MPUBEX` + payload prompt |
@@ -1073,6 +1064,7 @@ typedef enum {
     CORE_CMD_MQTT_TCP_CONNECT,
     CORE_CMD_MQTT_CONNECT,
     CORE_CMD_MQTT_DISCONNECT,
+    CORE_CMD_MQTT_TCP_DISCONNECT,
     CORE_CMD_MQTT_SUBSCRIBE,
     CORE_CMD_MQTT_UNSUBSCRIBE,
     CORE_CMD_MQTT_PUBLISH,
@@ -1120,17 +1112,11 @@ typedef struct {
             const char *client_id;
             const char *username;
             const char *password;
-        } mqtt_config;
-
-        struct {
             const char *host;
             uint16_t port;
-        } mqtt_tcp_connect;
-
-        struct {
             bool clean_session;
             uint16_t keepalive_s;
-        } mqtt_connect;
+        } mqtt_config;
 
         struct {
             const char *topic;
@@ -1669,10 +1655,11 @@ MQTT 所有模块命令都通过 `core_submit_cmd()` 投递给 Core。MQTT 不�
 
 | MQTT 操作 | Core command | Air780EP 第一版底层命令 |
 |-----------|--------------|--------------------------|
-| 配置 MQTT 参数 | `CORE_CMD_MQTT_CONFIGURE` | `AT+MCONFIG` |
-| 建立 MQTT TCP 通道 | `CORE_CMD_MQTT_TCP_CONNECT` | `AT+MIPSTART`，成功接受 `CONNECT OK` / `ALREADY CONNECT` |
-| MQTT 协议连接 | `CORE_CMD_MQTT_CONNECT` | `AT+MCONNECT`，成功接受 `CONNACK OK` |
-| 断开 MQTT | `CORE_CMD_MQTT_DISCONNECT` | `AT+MDISCONNECT` |
+| 配置 MQTT 参数 | `CORE_CMD_MQTT_CONFIGURE` | `AT+MCONFIG`，Modem 缓存 client、broker 和会话参数 |
+| 建立 MQTT TCP 通道 | `CORE_CMD_MQTT_TCP_CONNECT` | `AT+MIPSTART`，使用缓存 host/port，成功接受 `CONNECT OK` / `ALREADY CONNECT` |
+| MQTT 协议连接 | `CORE_CMD_MQTT_CONNECT` | `AT+MCONNECT`，使用缓存 clean_session/keepalive_s，成功接受 `CONNACK OK` |
+| 断开 MQTT 会话 | `CORE_CMD_MQTT_DISCONNECT` | `AT+MDISCONNECT` |
+| 断开 MQTT TCP 通道 | `CORE_CMD_MQTT_TCP_DISCONNECT` | `AT+MIPCLOSE` |
 | 订阅 | `CORE_CMD_MQTT_SUBSCRIBE` | `AT+MSUB`，成功 `SUBACK` |
 | 取消订阅 | `CORE_CMD_MQTT_UNSUBSCRIBE` | `AT+MUNSUB`，成功 `UNSUBACK` |
 | 发布 | `CORE_CMD_MQTT_PUBLISH` | `AT+MPUBEX` + payload prompt |
@@ -1700,7 +1687,8 @@ CONNECTED
 ```text
 CONNECTED 或 transport 已打开
   └─ mqtt_client_stop()
-      ├─ 提交 CORE_CMD_MQTT_DISCONNECT
+      ├─ 若 MQTT 会话已建立，提交 CORE_CMD_MQTT_DISCONNECT
+      ├─ 若 MQTT TCP 通道已建立，提交 CORE_CMD_MQTT_TCP_DISCONNECT
       ├─ 等待 command 完成或 stop 超时
       ├─ 注销 Core event handler
       ├─ 停止 MQTT FSM task
@@ -1758,7 +1746,7 @@ Core FSM task
 - Core command done callback 不直接修改 MQTT 状态，只投递 `MQTT_SIG_CORE_CMD_DONE`。
 - Core event handler 只做校验、深拷贝和入队。
 - MQTT destroy 先停止 FSM，再注销 Core event handler，再释放已排队信号和配置副本。
-- `mqtt_client_stop()` 在连接已建立或 transport 已打开时提交 `CORE_CMD_MQTT_DISCONNECT`，并且必须有超时兜底。
+- `mqtt_client_stop()` 在连接已建立或 transport 已打开时按 `CORE_CMD_MQTT_DISCONNECT` → `CORE_CMD_MQTT_TCP_DISCONNECT` 顺序清理，并且必须有超时兜底。
 
 ### 4.11 错误处理规则
 

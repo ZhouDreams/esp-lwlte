@@ -537,28 +537,25 @@ static void handle_service_cmd(core_t *me, core_cmd_t *cmd)
             .client_id = cmd->data.mqtt_config.client_id,
             .username = cmd->data.mqtt_config.username,
             .password = cmd->data.mqtt_config.password,
+            .host = cmd->data.mqtt_config.host,
+            .port = cmd->data.mqtt_config.port,
+            .clean_session = cmd->data.mqtt_config.clean_session,
+            .keepalive_s = cmd->data.mqtt_config.keepalive_s,
         };
         ret = modem_mqtt_configure(me->modem, &config);
         break;
     }
-    case CORE_CMD_MQTT_TCP_CONNECT: {
-        modem_mqtt_tcp_config_t config = {
-            .host = cmd->data.mqtt_tcp_connect.host,
-            .port = cmd->data.mqtt_tcp_connect.port,
-        };
-        ret = modem_mqtt_tcp_connect(me->modem, &config);
+    case CORE_CMD_MQTT_TCP_CONNECT:
+        ret = modem_mqtt_tcp_connect(me->modem);
         break;
-    }
-    case CORE_CMD_MQTT_CONNECT: {
-        modem_mqtt_connect_config_t config = {
-            .clean_session = cmd->data.mqtt_connect.clean_session,
-            .keepalive_s = cmd->data.mqtt_connect.keepalive_s,
-        };
-        ret = modem_mqtt_connect(me->modem, &config);
+    case CORE_CMD_MQTT_CONNECT:
+        ret = modem_mqtt_connect(me->modem);
         break;
-    }
     case CORE_CMD_MQTT_DISCONNECT:
         ret = modem_mqtt_disconnect(me->modem);
+        break;
+    case CORE_CMD_MQTT_TCP_DISCONNECT:
+        ret = modem_mqtt_tcp_disconnect(me->modem);
         break;
     case CORE_CMD_MQTT_SUBSCRIBE: {
         modem_mqtt_topic_t topic = {

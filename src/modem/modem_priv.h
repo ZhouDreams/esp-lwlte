@@ -59,11 +59,10 @@ typedef struct modem_ops {
                                   modem_pdp_context_t *pdp); /**< 获取 PDP 上下文； Get PDP context */
     esp_err_t (*mqtt_configure)(modem_t *me,
                                 const modem_mqtt_config_t *config);   /**< 配置 MQTT； Configure MQTT */
-    esp_err_t (*mqtt_tcp_connect)(modem_t *me,
-                                  const modem_mqtt_tcp_config_t *config); /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
-    esp_err_t (*mqtt_connect)(modem_t *me,
-                              const modem_mqtt_connect_config_t *config);  /**< 连接 MQTT； Connect MQTT */
-    esp_err_t (*mqtt_disconnect)(modem_t *me);      /**< 断开 MQTT； Disconnect MQTT */
+    esp_err_t (*mqtt_tcp_connect)(modem_t *me); /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
+    esp_err_t (*mqtt_connect)(modem_t *me);     /**< 连接 MQTT； Connect MQTT */
+    esp_err_t (*mqtt_disconnect)(modem_t *me);  /**< 断开 MQTT； Disconnect MQTT */
+    esp_err_t (*mqtt_tcp_disconnect)(modem_t *me); /**< 断开 MQTT TCP 通道； Disconnect MQTT TCP channel */
     esp_err_t (*mqtt_subscribe)(modem_t *me,
                                 const modem_mqtt_topic_t *topic);  /**< 订阅 MQTT 主题； Subscribe MQTT topic */
     esp_err_t (*mqtt_unsubscribe)(modem_t *me,
