@@ -163,6 +163,8 @@ typedef struct at_urc_handler {
 /**
  * @brief 创建 AT 引擎
  * @details Create AT engine
+ * @note 成功后 AT Engine 拥有 UART driver、RX task、内部锁和响应缓存。
+ * @note 调用方必须保证 config 指向的内容在调用期间有效；函数返回后会保存配置副本。
  * @param[in] config AT 引擎配置
  * @return
  *         - AT 引擎句柄: 成功
@@ -174,6 +176,7 @@ at_engine_t *at_engine_create(const at_engine_config_t *config);
  * @brief 销毁 AT 引擎
  * @details Destroy AT engine
  * @note 调用方必须先停止上层用户，且不得与同一句柄上的其他 AT Engine API 并发调用。
+ * @note 销毁会停止 RX task、删除 UART driver 并释放 AT Engine 创建的所有内部资源。
  * @param[in] me AT 引擎句柄
  * @return
  *         - ESP_OK: 成功
@@ -193,6 +196,8 @@ esp_err_t at_engine_destroy(at_engine_t *me);
  * @note response->lines 由调用方分配，response->max_lines 必须大于 0。
  * @note AT 引擎填充 response->lines[i] 为引擎拥有的字符串指针，调用方不得释放或修改。
  * @note response->lines[i] 指向的字符串在同一引擎实例下一次发送命令前有效。
+ * @note 同一实例上的命令发送会被串行化；并发调用会等待上一条命令完成或超时。
+ * @note 函数返回值表示本地发送/等待流程是否完成，AT 业务结果以 response->status 为准。
  * @return
  *         - ESP_OK: 命令流程完成，AT 业务结果见 response->status
  *         - ESP_ERR_INVALID_ARG: 参数无效
@@ -216,6 +221,8 @@ esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
  * @note response->lines[i] 指向的字符串在同一引擎实例下一次发送命令前有效。
  * @note options 必须非 NULL。
  * @note options->success_matches 指向的数组在函数返回前必须保持有效。
+ * @note 自定义成功匹配命中时，该匹配行会作为最终响应行写入 response 后结束命令。
+ * @note 若设置 AT_CMD_FLAG_NO_STANDARD_OK_FINAL，标准 OK 会按中间响应处理。
  * @return
  *         - ESP_OK: 命令流程完成，AT 业务结果见 response->status
  *         - ESP_ERR_INVALID_ARG: 参数无效
@@ -238,6 +245,10 @@ esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
  * @param[in] payload_prompt payload 输入提示符，如 ">"
  * @param[out] response 响应对象
  * @param[in] options payload 写入后继续等待最终响应的命令选项
+ * @note payload 和 options 在函数返回前必须保持有效。
+ * @note payload_prompt 可以是独立响应行，也可以是未带换行的单字符提示符。
+ * @note 收到 payload_prompt 后 AT Engine 立即写入原始 payload，不会自动追加 CRLF。
+ * @note prompt 本身不会写入 response->lines；payload 写入后继续按 options 等待最终响应。
  * @return
  *         - ESP_OK: 命令流程完成，AT 业务结果见 response->status
  *         - ESP_ERR_INVALID_ARG: 参数无效
@@ -258,6 +269,7 @@ esp_err_t at_engine_send_cmd_with_payload(at_engine_t *me, const char *cmd,
  * @details Begin an exclusive AT command path section
  * @note 层间私有 API，用于为非 AT 临界段保留命令路径；不得从同一 AT Engine 的 URC 回调中调用。
  * @note 每次成功调用都必须调用 at_engine_end_exclusive()。
+ * @note 成功后调用方持有命令路径，期间其他命令发送会被阻塞。
  * @param[in] me AT 引擎句柄
  * @return
  *         - ESP_OK: 成功
@@ -270,6 +282,7 @@ esp_err_t at_engine_begin_exclusive(at_engine_t *me);
  * @brief 在独占段中清空 AT RX 输入
  * @details Flush AT RX input while the caller holds an exclusive section
  * @note 调用方必须已成功调用 at_engine_begin_exclusive()，且不得从同一 AT Engine 的 URC 回调中调用。
+ * @note 会丢弃 UART driver 输入、UART 事件队列和当前未完成的行缓冲。
  * @param[in] me AT 引擎句柄
  * @return
  *         - ESP_OK: 成功
@@ -282,6 +295,7 @@ esp_err_t at_engine_flush_rx_exclusive(at_engine_t *me);
  * @brief 结束 AT 命令路径独占段
  * @details End an exclusive AT command path section
  * @note 仅在 at_engine_begin_exclusive() 成功后调用；不得从同一 AT Engine 的 URC 回调中调用。
+ * @note 释放命令路径后，等待中的命令发送调用才可继续执行。
  * @param[in] me AT 引擎句柄
  */
 void at_engine_end_exclusive(at_engine_t *me);
@@ -290,6 +304,7 @@ void at_engine_end_exclusive(at_engine_t *me);
  * @brief 清空 AT RX 输入
  * @details Flush AT RX input and discard pending buffered lines/events
  * @note 调用方不得从同一 AT Engine 的 URC 回调中调用该函数。
+ * @note 该函数内部会临时获取独占段；若当前已有命令执行则返回 ESP_ERR_INVALID_STATE。
  * @param[in] me AT 引擎句柄
  * @return
  *         - ESP_OK: 成功
@@ -306,6 +321,7 @@ esp_err_t at_engine_flush_rx(at_engine_t *me);
  * @param[in] handler URC 处理器节点，生命周期由调用方管理
  * @note handler 和 prefix 均由调用方管理，注销前必须保持有效。
  * @note 同一 handler 节点不可同时注册多次。
+ * @note URC 回调在 RX task 中同步执行，必须短小且不得调用同一 AT Engine 的加锁 API。
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
@@ -317,6 +333,8 @@ esp_err_t at_engine_register_urc(at_engine_t *me, const char *prefix,
 /**
  * @brief 注销 URC 处理器
  * @details Unregister URC handler
+ * @note 返回 ESP_OK 后 AT Engine 不再持有该 handler 节点，调用方可复用或释放节点。
+ * @note 不得从同一 AT Engine 的 URC 回调中调用该函数。
  * @param[in] me AT 引擎句柄
  * @param[in] prefix URC 前缀
  * @return

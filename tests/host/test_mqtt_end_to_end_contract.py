@@ -743,6 +743,13 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIn("write_payload", self.at_engine_c)
         self.assertIn("uart_write_bytes", self.at_engine_c)
 
+    def test_at_engine_uses_config_uart_num_as_single_source(self):
+        match = re.search(r"struct\s+at_engine\s*\{(?P<body>[\s\S]*?)\};", self.at_engine_c)
+        self.assertIsNotNone(match, "missing struct at_engine definition")
+        body = match.group("body")
+        self.assertNotIn("uart_port_t uart_num", body)
+        self.assertIn("me->config.uart_num", self.at_engine_c)
+
     def test_protocol_data_path_symbols_exist(self):
         self.assertIn("MODEM_EVENT_PROTOCOL_DATA", self.air780ep_c)
         self.assertIn("clone_protocol_data", self.core_c)

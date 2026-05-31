@@ -49,100 +49,414 @@ _Static_assert(AT_ENGINE_DEFAULT_MAX_RESP_LINES >= 101,
 /**********************
  *      TYPEDEFS
  **********************/
+/**
+ * @brief AT Engine 内部状态
+ * @details AT Engine internal state
+ */
 typedef enum {
-    AT_STATE_IDLE = 0,
-    AT_STATE_SENDING,
-    AT_STATE_WAITING,
-    AT_STATE_RECEIVING,
-    AT_STATE_ABORTING,
+    AT_STATE_IDLE = 0,                  /**< 空闲，无活动命令； Idle, no active command */
+    AT_STATE_SENDING,                   /**< 正在写入命令； Writing command */
+    AT_STATE_WAITING,                   /**< 等待响应或 prompt； Waiting for response or prompt */
+    AT_STATE_RECEIVING,                 /**< 正在接收响应行； Receiving response lines */
+    AT_STATE_ABORTING,                  /**< 正在中止当前命令； Aborting current command */
 } at_state_t;
 
+/**
+ * @brief 当前 AT 命令上下文
+ * @details Current AT command context
+ * @note 该结构只在命令执行期间有效，由 at_engine_t 内嵌存储，不单独分配。
+ */
 typedef struct {
-    const char *cmd;
-    const uint8_t *payload;
-    size_t payload_len;
-    const char *payload_prompt;
-    uint32_t timeout_ms;
-    esp_err_t io_error;
-    at_response_t *response;
-    at_cmd_options_t options;
-    int echo_consumed;
-    int data_line_index;
-    bool result_received;
-    bool payload_sent;
+    const char *cmd;                    /**< AT 命令字符串，借用调用方内存； AT command string, borrowed */
+    const uint8_t *payload;             /**< 原始 payload，借用调用方内存； Raw payload, borrowed */
+    size_t payload_len;                 /**< payload 字节数； Payload length in bytes */
+    const char *payload_prompt;         /**< payload 输入提示符，借用调用方内存； Payload prompt, borrowed */
+    uint32_t timeout_ms;                /**< 本次命令总超时； Total command timeout */
+    esp_err_t io_error;                 /**< RX task 侧记录的 UART 写入错误； UART write error recorded by RX task */
+    at_response_t *response;            /**< 响应对象，借用调用方内存； Response object, borrowed */
+    at_cmd_options_t options;           /**< 命令选项副本； Command options copy */
+    int echo_consumed;                  /**< 命令 echo 是否已消费； Whether command echo has been consumed */
+    int data_line_index;                /**< 下一个响应行写入索引； Next response line write index */
+    bool result_received;               /**< 是否已收到最终结果； Whether final result has been received */
+    bool payload_sent;                  /**< payload 是否已写入 UART； Whether payload has been written to UART */
 } at_cmd_ctx_t;
 
+/**
+ * @brief AT Engine 句柄实际定义
+ * @details Actual definition of the opaque AT Engine handle
+ * @note 该结构只在本文件可见，对外通过 at_engine_t opaque pointer 暴露。
+ */
 struct at_engine {
-    at_engine_config_t config;
-    uart_port_t uart_num;
-    QueueHandle_t uart_queue;
-    TaskHandle_t rx_task;
-    SemaphoreHandle_t rx_task_done_sema;
-    SemaphoreHandle_t cmd_mutex;
-    SemaphoreHandle_t cmd_done_sema;
-    SemaphoreHandle_t lock;
-    at_state_t state;
-    bool destroying;
-    int active_callers;
-    at_cmd_ctx_t cmd_ctx_storage;
-    at_cmd_ctx_t *cmd_ctx;
-    at_urc_handler_t *urc_handlers;
-    int urc_handler_count;
-    char *line_buf;
-    char *line_work_buf;
-    int line_buf_pos;
-    bool line_overflow;
-    uint32_t rx_epoch;
-    char *response_pool;
-    int response_pool_lines;
-    int response_line_size;
-    bool uart_driver_installed;
-    volatile bool rx_task_stop_requested;
+    at_engine_config_t config;          /**< 归一化后的配置副本； Normalized configuration copy */
+    QueueHandle_t uart_queue;           /**< UART driver 事件队列； UART driver event queue */
+    TaskHandle_t rx_task;               /**< UART RX task 句柄； UART RX task handle */
+    SemaphoreHandle_t rx_task_done_sema; /**< RX task 退出完成信号； RX task exit completion signal */
+    SemaphoreHandle_t cmd_mutex;        /**< 命令路径串行化互斥锁； Command path serialization mutex */
+    SemaphoreHandle_t cmd_done_sema;    /**< 当前命令完成信号； Current command completion signal */
+    SemaphoreHandle_t lock;             /**< 保护状态、上下文、缓冲和 URC 链表的互斥锁； Mutex for state, context, buffers and URC list */
+    at_state_t state;                   /**< 当前内部状态； Current internal state */
+    bool destroying;                    /**< 正在销毁标志； Destroy in progress flag */
+    int active_callers;                 /**< 已进入命令路径的调用方数量； Number of active command-path callers */
+    at_cmd_ctx_t cmd_ctx_storage;       /**< 当前命令上下文内嵌存储； Embedded current command context storage */
+    at_cmd_ctx_t *cmd_ctx;              /**< 当前活动命令上下文，空闲时为 NULL； Active command context, NULL when idle */
+    at_urc_handler_t *urc_handlers;     /**< URC handler 单向链表头； Head of URC handler singly linked list */
+    int urc_handler_count;              /**< 已注册 URC handler 数量； Registered URC handler count */
+    char *line_buf;                     /**< RX 行组装缓冲； RX line assembly buffer */
+    char *line_work_buf;                /**< 完整行处理工作缓冲； Complete-line work buffer */
+    int line_buf_pos;                   /**< RX 行缓冲当前写入位置； Current RX line buffer write position */
+    bool line_overflow;                 /**< 当前 RX 行已溢出标志； Current RX line overflow flag */
+    uint32_t rx_epoch;                  /**< RX 输入代次，用于丢弃 flush 前旧数据； RX epoch for discarding stale data before flush */
+    char *response_pool;                /**< 响应行文本池； Response line text pool */
+    int response_pool_lines;            /**< 响应文本池行数； Response text pool line count */
+    int response_line_size;             /**< 单条响应文本容量； Capacity of one response text line */
+    bool uart_driver_installed;         /**< UART driver 已安装标志； UART driver installed flag */
+    volatile bool rx_task_stop_requested; /**< RX task 停止请求标志； RX task stop request flag */
 };
 
 /**********************
  *  STATIC PROTOTYPES
  **********************/
+/**
+ * @brief 归一化 AT Engine 配置
+ * @details Normalize AT Engine configuration
+ * @param[in] in 调用方输入配置
+ * @param[out] out 应用默认值后的配置副本
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 配置无效
+ */
 static esp_err_t normalize_config(const at_engine_config_t *in, at_engine_config_t *out);
+
+/**
+ * @brief 初始化 UART driver
+ * @details Initialize UART driver
+ * @param[in] me AT Engine 实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - other: UART driver 返回的错误码
+ */
 static esp_err_t init_uart(at_engine_t *me);
+
+/**
+ * @brief 初始化 AT Engine 内部资源
+ * @details Initialize AT Engine internal resources
+ * @param[in] me AT Engine 实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存或同步对象不足
+ */
 static esp_err_t init_resources(at_engine_t *me);
+
+/**
+ * @brief 清理 AT Engine 内部资源
+ * @details Clean up AT Engine internal resources
+ * @param[in] me AT Engine 实例，可为 NULL
+ */
 static void cleanup_resources(at_engine_t *me);
+
+/**
+ * @brief UART RX 任务入口
+ * @details UART RX task entry
+ * @note 运行在 AT Engine RX task 上，负责读取 UART 事件并驱动行解析。
+ * @param[in] arg AT Engine 实例指针
+ */
 static void rx_task(void *arg);
+
+/**
+ * @brief 标记一次命令路径调用开始
+ * @details Mark one command-path caller as active
+ * @note 内部会获取 me->lock；成功后必须调用 end_send_call() 配对释放计数。
+ * @param[in] me AT Engine 实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_STATE: 实例正在销毁
+ */
 static esp_err_t begin_send_call(at_engine_t *me);
+
+/**
+ * @brief 标记一次命令路径调用结束
+ * @details Mark one command-path caller as inactive
+ * @note 内部会获取 me->lock，并减少 active_callers 计数。
+ * @param[in] me AT Engine 实例
+ */
 static void end_send_call(at_engine_t *me);
+
+/**
+ * @brief 执行通用命令发送流程
+ * @details Execute common command send flow
+ * @note 调用方任务中执行；负责串行化命令、建立命令上下文、等待 RX task 完成通知。
+ * @param[in] me AT Engine 实例
+ * @param[in] cmd AT 命令字符串
+ * @param[in] payload 可选原始 payload，无 payload 时为 NULL
+ * @param[in] payload_len payload 字节数
+ * @param[in] payload_prompt payload 输入提示符，无 payload 时为 NULL
+ * @param[out] response 响应对象
+ * @param[in] options 命令选项
+ * @return
+ *         - ESP_OK: 命令流程完成
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_TIMEOUT: 等待命令路径或响应超时
+ *         - ESP_FAIL: UART 写入失败
+ */
 static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
                                    const uint8_t *payload, size_t payload_len,
                                    const char *payload_prompt,
                                    at_response_t *response,
                                    const at_cmd_options_t *options);
+
+/**
+ * @brief 写入 AT 命令
+ * @details Write AT command
+ * @note 若 cmd 未带 CR/LF，函数会自动追加 CRLF 后写入 UART。
+ * @param[in] me AT Engine 实例
+ * @param[in] cmd AT 命令字符串
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 临时缓冲分配失败
+ *         - ESP_FAIL: UART 写入失败
+ */
 static esp_err_t write_cmd(at_engine_t *me, const char *cmd);
+
+/**
+ * @brief 写入原始 payload
+ * @details Write raw payload
+ * @note 不自动追加 CRLF；调用方必须提供完整 payload 字节流。
+ * @param[in] me AT Engine 实例
+ * @param[in] payload payload 字节流
+ * @param[in] payload_len payload 字节数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_FAIL: UART 写入失败
+ */
 static esp_err_t write_payload(at_engine_t *me, const uint8_t *payload,
                                size_t payload_len);
+
+/**
+ * @brief 将毫秒超时转换为 FreeRTOS tick
+ * @details Convert timeout in milliseconds to FreeRTOS ticks
+ * @param[in] timeout_ms 超时时间，单位毫秒
+ * @return FreeRTOS tick 数，正超时时间至少返回 1 tick
+ */
 static TickType_t timeout_ticks_from_ms(uint32_t timeout_ms);
+
+/**
+ * @brief 计算剩余超时 tick
+ * @details Calculate remaining timeout ticks
+ * @param[in] start_ticks 起始 tick
+ * @param[in] total_ticks 总超时 tick
+ * @return 剩余 tick，已超时则返回 0
+ */
 static TickType_t remaining_timeout_ticks(TickType_t start_ticks,
                                           TickType_t total_ticks);
+
+/**
+ * @brief 重置响应对象
+ * @details Reset response object
+ * @note 会清空调用方提供的 lines 指针数组。
+ * @param[in,out] response 响应对象
+ */
 static void reset_response(at_response_t *response);
+
+/**
+ * @brief 清空响应文本池
+ * @details Clear response text pool
+ * @note 调用方必须持有 me->lock。
+ * @param[in] me AT Engine 实例
+ */
 static void clear_response_pool(at_engine_t *me);
+
+/**
+ * @brief 清空命令完成信号
+ * @details Clear command completion signal
+ * @param[in] me AT Engine 实例
+ */
 static void clear_done_signal(at_engine_t *me);
+
+/**
+ * @brief 清空 UART RX 输入和行缓冲
+ * @details Flush UART RX input and line buffers
+ * @note 调用方必须持有 me->lock；函数会递增 rx_epoch 使旧 RX 数据失效。
+ * @param[in] me AT Engine 实例
+ */
 static void flush_rx_input_locked(at_engine_t *me);
+
+/**
+ * @brief 处理一批 RX 字节
+ * @details Process a batch of RX bytes
+ * @note 由 RX task 调用；逐字节交给 process_rx_char()。
+ * @param[in] me AT Engine 实例
+ * @param[in] data RX 字节缓冲
+ * @param[in] len RX 字节数
+ * @param[in] epoch 本批数据所属 RX epoch
+ */
 static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint32_t epoch);
+
+/**
+ * @brief 处理单个 RX 字符
+ * @details Process one RX character
+ * @note 由 RX task 调用；负责行组装、溢出处理和裸 prompt 识别。
+ * @param[in] me AT Engine 实例
+ * @param[in] c RX 字符
+ * @param[in] epoch 当前字符所属 RX epoch
+ */
 static void process_rx_char(at_engine_t *me, char c, uint32_t epoch);
+
+/**
+ * @brief 处理完整响应行
+ * @details Handle one complete response line
+ * @note 由 RX task 调用；有活动命令时优先按命令响应处理，否则分发 URC。
+ * @param[in] me AT Engine 实例
+ * @param[in] line 完整响应行，不含 CR/LF
+ * @param[in] epoch 当前行所属 RX epoch
+ */
 static void handle_line(at_engine_t *me, const char *line, uint32_t epoch);
+
+/**
+ * @brief 判断响应行是否为命令 echo
+ * @details Check whether a response line is command echo
+ * @param[in] ctx 当前命令上下文
+ * @param[in] line 响应行
+ * @return true 表示匹配命令 echo，false 表示不匹配
+ */
 static bool is_echo_line(const at_cmd_ctx_t *ctx, const char *line);
+
+/**
+ * @brief 校验命令选项
+ * @details Validate command options
+ * @param[in] options 命令选项
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 选项无效
+ */
 static esp_err_t validate_options(const at_cmd_options_t *options);
+
+/**
+ * @brief 解析标准错误最终响应
+ * @details Parse standard error final response
+ * @param[in,out] response 响应对象
+ * @param[in] line 响应行
+ * @return true 表示 line 是 ERROR/CME/CMS 最终响应，false 表示不是
+ */
 static bool parse_error_result(at_response_t *response, const char *line);
+
+/**
+ * @brief 匹配自定义成功规则
+ * @details Match custom success rules
+ * @param[in] ctx 当前命令上下文
+ * @param[in] line 响应行
+ * @return true 表示任一自定义成功规则命中，false 表示未命中
+ */
 static bool match_custom_success(const at_cmd_ctx_t *ctx, const char *line);
+
+/**
+ * @brief 匹配单条成功规则
+ * @details Match one success rule
+ * @param[in] rule 成功匹配规则
+ * @param[in] line 响应行
+ * @return true 表示匹配成功，false 表示未匹配
+ */
 static bool match_success_rule(const at_cmd_success_match_t *rule, const char *line);
+
+/**
+ * @brief 判断单字符裸 payload prompt
+ * @details Check single-character bare payload prompt
+ * @note 用于处理模块返回不带 CR/LF 的 ">" 这类输入提示符。
+ * @param[in] ctx 当前命令上下文
+ * @param[in] c RX 字符
+ * @return true 表示当前字符是 payload prompt，false 表示不是
+ */
 static bool is_bare_payload_prompt(const at_cmd_ctx_t *ctx, char c);
+
+/**
+ * @brief 判断整行 payload prompt
+ * @details Check line-based payload prompt
+ * @param[in] ctx 当前命令上下文
+ * @param[in] line 响应行
+ * @return true 表示当前行是 payload prompt，false 表示不是
+ */
 static bool is_payload_prompt(const at_cmd_ctx_t *ctx, const char *line);
+
+/**
+ * @brief 判断 OK 是否为中间响应
+ * @details Check whether OK is an intermediate response
+ * @param[in] ctx 当前命令上下文
+ * @param[in] line 响应行
+ * @return true 表示 OK 应按中间响应处理，false 表示 OK 是最终成功响应
+ */
 static bool is_intermediate_ok(const at_cmd_ctx_t *ctx, const char *line);
+
+/**
+ * @brief 解析 CME/CMS 错误码
+ * @details Parse CME/CMS error code
+ * @param[in] line 错误响应行
+ * @return 解析出的错误码，无法解析时返回 0
+ */
 static int parse_error_code(const char *line);
+
+/**
+ * @brief 追加普通响应行
+ * @details Append normal response line
+ * @note 调用方必须持有 me->lock；超过 response 容量时静默截断。
+ * @param[in] me AT Engine 实例
+ * @param[in,out] ctx 当前命令上下文
+ * @param[in] line 响应行
+ */
 static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line);
+
+/**
+ * @brief 追加最终成功匹配响应行
+ * @details Append final success-matched response line
+ * @note 调用方必须持有 me->lock；容量已满时覆盖最后一个槽位以保留最终匹配行。
+ * @param[in] me AT Engine 实例
+ * @param[in,out] ctx 当前命令上下文
+ * @param[in] line 响应行
+ */
 static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line);
+
+/**
+ * @brief 完成当前命令
+ * @details Finish current command
+ * @note 调用方必须持有 me->lock；函数会清除 cmd_ctx、恢复 IDLE 并释放完成信号量。
+ * @param[in] me AT Engine 实例
+ * @param[in] status 响应状态
+ * @param[in] error_code CME/CMS 错误码，无错误时为 0
+ */
 static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int error_code);
+
+/**
+ * @brief 分发 URC 行
+ * @details Dispatch URC line
+ * @note 由 RX task 在无活动命令时调用；回调在持有 me->lock 时同步执行。
+ * @param[in] me AT Engine 实例
+ * @param[in] line URC 行
+ * @param[in] epoch 当前行所属 RX epoch
+ * @return true 表示找到并调用匹配 handler，false 表示未分发
+ */
 static bool dispatch_urc(at_engine_t *me, const char *line, uint32_t epoch);
+
+/**
+ * @brief 判断字符串前缀
+ * @details Check string prefix
+ * @param[in] str 待检查字符串
+ * @param[in] prefix 前缀字符串
+ * @return true 表示 str 以前缀 prefix 开头，false 表示不是
+ */
 static bool starts_with(const char *str, const char *prefix);
 #ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
+
+/**
+ * @brief 记录 UART IO 行
+ * @details Log UART IO line
+ * @note 仅在 CONFIG_LWLTE_AT_ENGINE_LOG_IO 启用时编译；会去除末尾 CR/LF 后输出。
+ * @param[in] prefix 日志前缀
+ * @param[in] data 数据缓冲
+ * @param[in] len 数据长度
+ */
 static void log_uart_line(const char *prefix, const char *data, size_t len);
 #endif
 
@@ -176,7 +490,6 @@ at_engine_t *at_engine_create(const at_engine_config_t *config)
     }
 
     me->config = normalized;
-    me->uart_num = normalized.uart_num;
     me->state = AT_STATE_IDLE;
 
     ret = init_resources(me);
@@ -194,7 +507,7 @@ at_engine_t *at_engine_create(const at_engine_config_t *config)
 
 err:
     if (me->uart_driver_installed) {
-        esp_err_t del_ret = uart_driver_delete(me->uart_num);
+        esp_err_t del_ret = uart_driver_delete(me->config.uart_num);
         if (del_ret != ESP_OK) {
             ESP_LOGW(TAG, "uart_driver_delete during create rollback failed: %s", esp_err_to_name(del_ret));
         }
@@ -231,7 +544,7 @@ esp_err_t at_engine_destroy(at_engine_t *me)
         xSemaphoreTake(me->rx_task_done_sema, portMAX_DELAY);
     }
 
-    esp_err_t ret = uart_driver_delete(me->uart_num);
+    esp_err_t ret = uart_driver_delete(me->config.uart_num);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "uart_driver_delete failed: %s", esp_err_to_name(ret));
         return ret;
@@ -604,7 +917,7 @@ static void rx_task(void *arg)
                 xSemaphoreTake(me->lock, portMAX_DELAY);
                 uint32_t read_epoch = me->rx_epoch;
                 xSemaphoreGive(me->lock);
-                int len = uart_read_bytes(me->uart_num, rx_buf, chunk,
+                int len = uart_read_bytes(me->config.uart_num, rx_buf, chunk,
                                           pdMS_TO_TICKS(AT_ENGINE_RX_WAIT_MS));
                 if (len <= 0) {
                     break;
@@ -974,7 +1287,7 @@ static esp_err_t write_cmd(at_engine_t *me, const char *cmd)
 #ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
         log_uart_line("TX", cmd, len);
 #endif
-        int written = uart_write_bytes(me->uart_num, cmd, len);
+        int written = uart_write_bytes(me->config.uart_num, cmd, len);
         ESP_RETURN_ON_FALSE(written == (int)len, ESP_FAIL, TAG, "uart_write_bytes failed");
         return ESP_OK;
     }
@@ -989,7 +1302,7 @@ static esp_err_t write_cmd(at_engine_t *me, const char *cmd)
 #ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
     log_uart_line("TX", buf, len + 2);
 #endif
-    int written = uart_write_bytes(me->uart_num, buf, len + 2);
+    int written = uart_write_bytes(me->config.uart_num, buf, len + 2);
     free(buf);
     ESP_RETURN_ON_FALSE(written == (int)(len + 2), ESP_FAIL, TAG, "uart_write_bytes failed");
     return ESP_OK;
@@ -1003,7 +1316,7 @@ static esp_err_t write_payload(at_engine_t *me, const uint8_t *payload,
 #ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
     log_uart_line("TX_PAYLOAD", (const char *)payload, payload_len);
 #endif
-    int written = uart_write_bytes(me->uart_num, payload, payload_len);
+    int written = uart_write_bytes(me->config.uart_num, payload, payload_len);
     ESP_RETURN_ON_FALSE(written == (int)payload_len, ESP_FAIL, TAG,
                         "uart_write_bytes payload failed");
     return ESP_OK;
@@ -1051,7 +1364,7 @@ static void clear_done_signal(at_engine_t *me)
 
 static void flush_rx_input_locked(at_engine_t *me)
 {
-    (void)uart_flush_input(me->uart_num);
+    (void)uart_flush_input(me->config.uart_num);
     if (me->uart_queue) {
         xQueueReset(me->uart_queue);
     }
@@ -1141,16 +1454,16 @@ static esp_err_t init_uart(at_engine_t *me)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    ESP_RETURN_ON_ERROR(uart_driver_install(me->uart_num,
+    ESP_RETURN_ON_ERROR(uart_driver_install(me->config.uart_num,
                                             me->config.rx_buf_size,
                                             AT_ENGINE_UART_TX_BUF_SIZE,
                                             AT_ENGINE_UART_EVENT_QUEUE_SIZE,
                                             &me->uart_queue, 0),
                         TAG, "uart_driver_install failed");
     me->uart_driver_installed = true;
-    ESP_RETURN_ON_ERROR(uart_param_config(me->uart_num, &uart_config),
+    ESP_RETURN_ON_ERROR(uart_param_config(me->config.uart_num, &uart_config),
                         TAG, "uart_param_config failed");
-    ESP_RETURN_ON_ERROR(uart_set_pin(me->uart_num, me->config.tx_pin, me->config.rx_pin,
+    ESP_RETURN_ON_ERROR(uart_set_pin(me->config.uart_num, me->config.tx_pin, me->config.rx_pin,
                                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
                         TAG, "uart_set_pin failed");
 
