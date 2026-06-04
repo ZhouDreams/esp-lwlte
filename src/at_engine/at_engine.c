@@ -87,30 +87,45 @@ typedef struct {
  * @note 该结构只在本文件可见，对外通过 at_engine_t opaque pointer 暴露。
  */
 struct at_engine {
+    /* ── Configuration ─────────────────────────────────────────── */
     at_engine_config_t config;          /**< 归一化后的配置副本； Normalized configuration copy */
+
+    /* ── UART & RX Task ────────────────────────────────────────── */
     QueueHandle_t uart_queue;           /**< UART driver 事件队列； UART driver event queue */
     TaskHandle_t rx_task;               /**< UART RX task 句柄； UART RX task handle */
     SemaphoreHandle_t rx_task_done_sema; /**< RX task 退出完成信号； RX task exit completion signal */
+    bool uart_driver_installed;         /**< UART driver 已安装标志； UART driver installed flag */
+    volatile bool rx_task_stop_requested; /**< RX task 停止请求标志； RX task stop request flag */
+
+    /* ── Synchronization ───────────────────────────────────────── */
     SemaphoreHandle_t cmd_mutex;        /**< 命令路径串行化互斥锁； Command path serialization mutex */
     SemaphoreHandle_t cmd_done_sema;    /**< 当前命令完成信号； Current command completion signal */
     SemaphoreHandle_t lock;             /**< 保护状态、上下文、缓冲和 URC 链表的互斥锁； Mutex for state, context, buffers and URC list */
+
+    /* ── State ─────────────────────────────────────────────────── */
     at_state_t state;                   /**< 当前内部状态； Current internal state */
     bool destroying;                    /**< 正在销毁标志； Destroy in progress flag */
     int active_callers;                 /**< 已进入命令路径的调用方数量； Number of active command-path callers */
+
+    /* ── Command Context ───────────────────────────────────────── */
     at_cmd_ctx_t cmd_ctx_storage;       /**< 当前命令上下文内嵌存储； Embedded current command context storage */
     at_cmd_ctx_t *cmd_ctx;              /**< 当前活动命令上下文，空闲时为 NULL； Active command context, NULL when idle */
+
+    /* ── URC ───────────────────────────────────────────────────── */
     at_urc_handler_t *urc_handlers;     /**< URC handler 单向链表头； Head of URC handler singly linked list */
     int urc_handler_count;              /**< 已注册 URC handler 数量； Registered URC handler count */
+
+    /* ── RX Line Parsing ───────────────────────────────────────── */
     char *line_buf;                     /**< RX 行组装缓冲； RX line assembly buffer */
     char *line_work_buf;                /**< 完整行处理工作缓冲； Complete-line work buffer */
     int line_buf_pos;                   /**< RX 行缓冲当前写入位置； Current RX line buffer write position */
     bool line_overflow;                 /**< 当前 RX 行已溢出标志； Current RX line overflow flag */
     uint32_t rx_epoch;                  /**< RX 输入代次，用于丢弃 flush 前旧数据； RX epoch for discarding stale data before flush */
+
+    /* ── Response Pool ─────────────────────────────────────────── */
     char *response_pool;                /**< 响应行文本池； Response line text pool */
     int response_pool_lines;            /**< 响应文本池行数； Response text pool line count */
     int response_line_size;             /**< 单条响应文本容量； Capacity of one response text line */
-    bool uart_driver_installed;         /**< UART driver 已安装标志； UART driver installed flag */
-    volatile bool rx_task_stop_requested; /**< RX task 停止请求标志； RX task stop request flag */
 };
 
 /**********************
@@ -665,21 +680,37 @@ esp_err_t at_engine_flush_rx(at_engine_t *me)
 esp_err_t at_engine_register_urc(at_engine_t *me, const char *prefix,
                                  at_urc_handler_t *handler)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：参数校验
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* handler 与 prefix 由调用方持有生命周期，callback 不能为空否则
+     * RX task 派发 URC 时会崩溃 */
     ESP_RETURN_ON_FALSE(me && prefix && handler && handler->callback,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：加锁并做状态 / 去重校验
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 与 RX task 的 URC 派发以及 destroy 流程互斥访问 urc_handlers 链表 */
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->destroying) {
+        /* 引擎正在销毁，不允许再向链表中追加新节点 */
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
     for (at_urc_handler_t *it = me->urc_handlers; it; it = it->next) {
+        /* 拒绝重复挂入同一节点（链表完整性），以及相同 prefix 重复注册
+         * （避免一条 URC 派发到多个 handler 造成歧义） */
         if (it == handler || strcmp(it->prefix, prefix) == 0) {
             xSemaphoreGive(me->lock);
             return ESP_ERR_INVALID_STATE;
         }
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：头插链表并释放锁
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 头插 O(1)，新注册的 handler 优先匹配；prefix 指针由调用方保证有效 */
     handler->prefix = prefix;
     handler->next = me->urc_handlers;
     me->urc_handlers = handler;
@@ -690,17 +721,31 @@ esp_err_t at_engine_register_urc(at_engine_t *me, const char *prefix,
 
 esp_err_t at_engine_unregister_urc(at_engine_t *me, const char *prefix)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：参数校验
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     ESP_RETURN_ON_FALSE(me && prefix, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：加锁并校验销毁状态
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 与 RX task 的 URC 派发以及 register/destroy 流程互斥访问链表 */
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->destroying) {
+        /* destroy 流程会统一清空链表，不允许并发摘除避免链表竞争 */
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
     }
+
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：遍历链表，按 prefix 摘除匹配节点
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 使用二级指针消除头节点 / 中间节点的特殊判断，统一摘链路径 */
     at_urc_handler_t **link = &me->urc_handlers;
     while (*link) {
         at_urc_handler_t *node = *link;
         if (strcmp(node->prefix, prefix) == 0) {
+            /* 摘链后清空 next，方便调用方安全复用或重新注册该节点 */
             *link = node->next;
             node->next = NULL;
             me->urc_handler_count--;
@@ -709,6 +754,7 @@ esp_err_t at_engine_unregister_urc(at_engine_t *me, const char *prefix)
         }
         link = &node->next;
     }
+    /* 未找到匹配 prefix；handler 节点所有权仍在调用方手中 */
     xSemaphoreGive(me->lock);
     return ESP_ERR_NOT_FOUND;
 }
@@ -767,6 +813,9 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
                                    at_response_t *response,
                                    const at_cmd_options_t *options)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：参数校验与登记
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     ESP_RETURN_ON_FALSE(me && cmd && response && options,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(response->lines && response->max_lines > 0,
@@ -775,11 +824,15 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
     esp_err_t ret = validate_options(options);
     ESP_RETURN_ON_ERROR(ret, TAG, "invalid command options");
 
+    /* 登记 active_callers，阻止 destroy 期间释放资源 */
     ret = begin_send_call(me);
     if (ret != ESP_OK) {
         return ret;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：计算超时并获取命令串行锁
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     uint32_t wait_ms = options->timeout_ms ? options->timeout_ms :
                        (uint32_t)me->config.cmd_default_timeout_ms;
     if (wait_ms == 0) {
@@ -789,11 +842,13 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
     TickType_t total_timeout_ticks = timeout_ticks_from_ms(wait_ms);
     TickType_t start_ticks = xTaskGetTickCount();
 
+    /* cmd_mutex 保证同一时刻只有一个调用方进入命令流程 */
     if (xSemaphoreTake(me->cmd_mutex, total_timeout_ticks) != pdTRUE) {
         end_send_call(me);
         return ESP_ERR_TIMEOUT;
     }
 
+    /* 拿到锁后计算剩余超时；如果等锁本身已耗尽时间则直接返回 */
     TickType_t remaining_ticks = remaining_timeout_ticks(start_ticks,
                                                         total_timeout_ticks);
     if (remaining_ticks == 0) {
@@ -802,6 +857,10 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         return ESP_ERR_TIMEOUT;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：建立命令上下文
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 预设 response 为超时状态（最坏情况预设），清空残留信号量 */
     reset_response(response);
     clear_done_signal(me);
 
@@ -827,8 +886,12 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
     me->state = AT_STATE_SENDING;
     xSemaphoreGive(me->lock);
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 4：写入 AT 命令到 UART
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     ret = write_cmd(me, cmd);
     if (ret != ESP_OK) {
+        /* 写入失败：回滚上下文、flush RX、释放所有锁后返回 */
         xSemaphoreTake(me->lock, portMAX_DELAY);
         me->cmd_ctx = NULL;
         me->state = AT_STATE_IDLE;
@@ -839,14 +902,19 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         return ret;
     }
 
+    /* 写入成功，迁移到 WAITING 状态 */
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->cmd_ctx == ctx) {
         me->state = AT_STATE_WAITING;
     }
     xSemaphoreGive(me->lock);
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 5：阻塞等待 RX task 通过 cmd_done_sema 唤醒
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     remaining_ticks = remaining_timeout_ticks(start_ticks, total_timeout_ticks);
     if (xSemaphoreTake(me->cmd_done_sema, remaining_ticks) != pdTRUE) {
+        /* 超时路径：标记超时、清除上下文、递增 rx_epoch 丢弃残留数据 */
         xSemaphoreTake(me->lock, portMAX_DELAY);
         response->status = AT_RESP_TIMEOUT;
         response->error_code = 0;
@@ -862,6 +930,9 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
         return ESP_ERR_TIMEOUT;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 6：命令完成，收尾清理
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     esp_err_t io_error = ESP_OK;
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
@@ -905,48 +976,73 @@ static void rx_task(void *arg)
     uint8_t rx_buf[128];
     uart_event_t event;
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 主循环：UART 事件驱动的 RX 字节派发
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     while (!me->rx_task_stop_requested) {
+        /*──── 步骤 1：阻塞等待 UART 事件 ────
+         * 带超时以便周期性检查停止标志，否则 destroy 流程无法及时唤醒退出 */
         if (xQueueReceive(me->uart_queue, &event, pdMS_TO_TICKS(AT_ENGINE_RX_WAIT_MS)) != pdTRUE) {
             continue;
         }
 
         if (event.type == UART_DATA) {
+            /*──── 步骤 2：分块读取 UART 数据，并通过 epoch 双重校验后派发 ────*/
             int to_read = event.size;
             while (to_read > 0) {
                 int chunk = to_read > (int)sizeof(rx_buf) ? (int)sizeof(rx_buf) : to_read;
+
+                /* 读之前快照 epoch：若期间发生 flush / destroy，epoch 会被递增 */
                 xSemaphoreTake(me->lock, portMAX_DELAY);
                 uint32_t read_epoch = me->rx_epoch;
                 xSemaphoreGive(me->lock);
+
                 int len = uart_read_bytes(me->config.uart_num, rx_buf, chunk,
                                           pdMS_TO_TICKS(AT_ENGINE_RX_WAIT_MS));
                 if (len <= 0) {
+                    /* 驱动层无数据 / 出错，结束本批，下一轮事件再处理 */
                     break;
                 }
+
+                /* 再次取 epoch 与快照对比：不一致说明这批字节属于已作废的轮次，
+                 * 直接丢弃，避免污染下一条命令的解析上下文 */
                 xSemaphoreTake(me->lock, portMAX_DELAY);
                 uint32_t epoch = me->rx_epoch;
                 xSemaphoreGive(me->lock);
                 if (epoch == read_epoch) {
+                    /* 唯一进入按行解析 / URC 派发 / payload 提示符识别的入口 */
                     process_rx_bytes(me, rx_buf, len, epoch);
                 }
                 to_read -= len;
             }
         } else if (event.type == UART_FIFO_OVF || event.type == UART_BUFFER_FULL) {
+            /*──── 步骤 3：UART 溢出 ────
+             * flush 行缓冲并递增 epoch，丢弃残留半行避免污染下一条命令 */
             ESP_LOGW(TAG, "UART RX overflow, flushing input");
             xSemaphoreTake(me->lock, portMAX_DELAY);
             flush_rx_input_locked(me);
             xSemaphoreGive(me->lock);
         }
+        /* 其它 UART 事件类型（如 PARITY_ERR、FRAME_ERR）暂不处理，静默忽略 */
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 退出收尾：通知 destroy 路径并自删任务
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 在锁内清空 rx_task 句柄，destroy 路径据此判断任务已退出 */
     xSemaphoreTake(me->lock, portMAX_DELAY);
     me->rx_task = NULL;
     xSemaphoreGive(me->lock);
+    /* 释放 done 信号量，让 at_engine_destroy() 安全 join 后继续释放队列 / 互斥量 */
     xSemaphoreGive(me->rx_task_done_sema);
     vTaskDelete(NULL);
 }
 
 static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint32_t epoch)
 {
+    /* 字节数组的 trampoline：逐字节交给 process_rx_char 做行解析；
+     * epoch 透传下去，让每个字符都能在临界区内做幂等校验，
+     * 防止本批次中途发生 flush / destroy 后仍把残留字节并入行缓冲 */
     for (int i = 0; i < len; i++) {
         process_rx_char(me, (char)data[i], epoch);
     }
@@ -954,27 +1050,42 @@ static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint
 
 static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
 {
+    /* 局部捕获用于"在临界区外"调用 write_payload 时的快照（避免持锁阻塞写 UART） */
     bool line_ready = false;
     at_cmd_ctx_t *payload_ctx = NULL;
     const uint8_t *payload = NULL;
     size_t payload_len = 0;
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：加锁并做 epoch 幂等校验
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     xSemaphoreTake(me->lock, portMAX_DELAY);
 
+    /* 与 rx_task 的双重 epoch 校验形成最终防线：若 flush 在 rx_task 校验之后
+     * 才发生，本字符仍可能携带过期数据，丢弃避免污染行缓冲 */
     if (epoch != me->rx_epoch) {
         xSemaphoreGive(me->lock);
         return;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：裸 payload prompt 快速路径
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 部分模组的 payload 提示符（如 "> "）不带 \r\n，无法走行解析；
+     * 仅在行缓冲为空时识别裸 prompt 字符，避免误伤普通响应行内的 '>' */
     if (me->line_buf_pos == 0 && is_bare_payload_prompt(me->cmd_ctx, c)) {
+        /* 快照 payload 引用并预先标记 payload_sent，防止重复触发 */
         payload_ctx = me->cmd_ctx;
         payload = payload_ctx->payload;
         payload_len = payload_ctx->payload_len;
         payload_ctx->payload_sent = true;
+        /* 释放锁后再写 payload：write_payload 内部会阻塞 UART，
+         * 持锁写会阻塞所有 register/send/destroy 调用方 */
         xSemaphoreGive(me->lock);
 
         esp_err_t payload_ret = write_payload(me, payload, payload_len);
         if (payload_ret != ESP_OK) {
+            /* 写 payload 失败：重新加锁后回滚 ctx 并以 ERROR 结束当前命令 */
             xSemaphoreTake(me->lock, portMAX_DELAY);
             if (epoch == me->rx_epoch && me->cmd_ctx == payload_ctx) {
                 payload_ctx->io_error = payload_ret;
@@ -985,13 +1096,19 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
         return;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：按字符驱动的行缓冲状态机
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 协议行尾固定为 "\r\n"，单独的 '\r' 不视为分隔符，直接吞掉 */
     if (c == '\r') {
         xSemaphoreGive(me->lock);
         return;
     }
 
+    /* overflow 模式：之前某一行超过 rx_line_buf_size，丢弃剩余字节直到下一个 '\n' */
     if (me->line_overflow) {
         if (c == '\n') {
+            /* 撞到行尾，复位 overflow 状态，从下一行重新开始累 */
             me->line_overflow = false;
             me->line_buf_pos = 0;
             me->line_buf[0] = '\0';
@@ -1000,6 +1117,8 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
         return;
     }
 
+    /* '\n' 触发行交付：拷贝到 work buffer，复位 line_buf，释放锁后再 handle_line，
+     * 避免在 handle_line 期间持有 lock 调用 dispatch_urc 等可能耗时的回调 */
     if (c == '\n') {
         if (me->line_buf_pos > 0) {
             me->line_buf[me->line_buf_pos] = '\0';
@@ -1019,6 +1138,8 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
         return;
     }
 
+    /* 缓冲将满（预留 1 字节给 '\0'）：丢弃当前行并进入 overflow 模式，
+     * 等待下一个 '\n' 才能恢复正常累行 */
     if (me->line_buf_pos + 1 >= me->config.rx_line_buf_size) {
         ESP_LOGW(TAG, "RX line too long, drop current line");
         me->line_buf_pos = 0;
@@ -1028,6 +1149,7 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
         return;
     }
 
+    /* 普通字符追加到行缓冲并保持 NUL 结尾，方便随时被诊断代码读取 */
     me->line_buf[me->line_buf_pos++] = c;
     me->line_buf[me->line_buf_pos] = '\0';
     xSemaphoreGive(me->lock);
@@ -1035,35 +1157,53 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
 
 static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：加锁并做 epoch 幂等校验
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 与 process_rx_char 同样的最终防线：从 char 处理到本函数之间
+     * 仍可能发生 flush / destroy，epoch 不一致直接丢弃该行 */
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (epoch != me->rx_epoch) {
         xSemaphoreGive(me->lock);
         return;
     }
 
+    /* 快照当前活动命令上下文：非 NULL → 命令响应模式；NULL → URC 模式 */
     at_cmd_ctx_t *ctx = me->cmd_ctx;
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：命令响应模式 — 按优先级分类处理
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     if (ctx) {
+        /*──── 2a：吞掉本命令的首次回显 ────
+         * 大多数模组开机默认 ATE1，命令首行会被原样回显，
+         * echo_consumed 保证每个命令只吞一次，避免把后续同字串的响应误判为回显 */
         if (!ctx->echo_consumed && is_echo_line(ctx, line)) {
             ctx->echo_consumed = 1;
             xSemaphoreGive(me->lock);
             return;
         }
 
+        /*──── 2b：错误响应（ERROR / +CME ERROR / +CMS ERROR）→ 终结命令 ────
+         * parse_error_result 内部已把 status 与 error_code 写入 response */
         if (parse_error_result(ctx->response, line)) {
             finish_cmd_locked(me, ctx->response->status, ctx->response->error_code);
             xSemaphoreGive(me->lock);
             return;
         }
 
+        /*──── 2c：独立成行的 payload prompt（如 "> "）→ 释放锁后写 payload ────
+         * 与 process_rx_char 的"裸 prompt 快速路径"对应，处理带 \r\n 的 prompt 形式 */
         if (is_payload_prompt(ctx, line)) {
             const uint8_t *payload = ctx->payload;
             size_t payload_len = ctx->payload_len;
             ctx->payload_sent = true;
+            /* 释放锁再写 payload，避免持锁阻塞 UART 影响并发调用方 */
             xSemaphoreGive(me->lock);
 
             esp_err_t payload_ret = write_payload(me, payload, payload_len);
             if (payload_ret != ESP_OK) {
+                /* 写失败：重新加锁后回滚 ctx 并以 ERROR 结束当前命令 */
                 xSemaphoreTake(me->lock, portMAX_DELAY);
                 if (epoch == me->rx_epoch && me->cmd_ctx == ctx) {
                     ctx->io_error = payload_ret;
@@ -1074,12 +1214,16 @@ static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
             return;
         }
 
+        /*──── 2d：纯 "OK" ────
+         * 默认视为命令终结；除非命令设了 NO_STANDARD_OK_FINAL flag（如某些
+         * 数据传输命令在数据之前先返回 OK 作为中间结果） */
         if (strcmp(line, "OK") == 0) {
             if (!is_intermediate_ok(ctx, line)) {
                 finish_cmd_locked(me, AT_RESP_OK, 0);
                 xSemaphoreGive(me->lock);
                 return;
             }
+            /* 中间 OK：根据 SKIP_INTERMEDIATE_OK flag 决定丢弃还是保留进响应池 */
             if ((ctx->options.flags & AT_CMD_FLAG_SKIP_INTERMEDIATE_OK) != 0) {
                 xSemaphoreGive(me->lock);
                 return;
@@ -1089,6 +1233,9 @@ static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
             return;
         }
 
+        /*──── 2e：自定义成功标记（success_match） ────
+         * 某些命令不以 "OK" 结束（如 SEND OK / CONNECT），由调用方在 options 注册
+         * 匹配模式；命中后把本行作为最终一行落入响应池并以 OK 状态结束 */
         if (match_custom_success(ctx, line)) {
             append_final_response_line_locked(me, ctx, line);
             finish_cmd_locked(me, AT_RESP_OK, 0);
@@ -1096,11 +1243,18 @@ static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
             return;
         }
 
+        /*──── 2f：默认 → 累积为中间响应行 ────
+         * 命令的数据行（如 +CSQ: 19,99）暂存到响应池，等终结时统一交给调用方 */
         append_response_line_locked(me, ctx, line);
         xSemaphoreGive(me->lock);
         return;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：URC 模式 — 没有活动命令时按 prefix 派发到注册的 handler
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 释放锁再 dispatch_urc：dispatch_urc 内部会持锁遍历链表并同步调用 callback，
+     * 此处提前释放避免锁的嵌套获取与持锁时间过长 */
     xSemaphoreGive(me->lock);
     (void)dispatch_urc(me, line, epoch);
 }

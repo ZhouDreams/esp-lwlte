@@ -2109,11 +2109,21 @@ err_before_en_low:
 
 static esp_err_t register_urcs(modem_air780ep_t *self)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：参数校验 + 幂等保护
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     ESP_RETURN_ON_FALSE(self && self->base.at, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    /* 避免重复注册：urc_registered 保证 start / reconnect 等多次调用路径幂等 */
     if (self->urc_registered) {
         return ESP_OK;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：构造 URC 注册表
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 每个 URC 由三元组组成：前缀（用于 RX task 行匹配）、handler 节点（生命周期
+     * 由 self 持有）、callback（URC 派发时实际调用的函数）。
+     * handler->user_ctx 统一指向 self，callback 内部通过 user_ctx 取回 modem 实例。 */
     const struct {
         const char *prefix;
         at_urc_handler_t *handler;
@@ -2131,6 +2141,11 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
         { AIR780EP_URC_MSUB, &self->msub_handler, handle_msub_urc },
     };
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：批量初始化 handler 节点
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 预先填好所有 handler 字段，之后注册时只传指针；at_engine_register_urc
+     * 内部只做链表插入不修改字段（除了 next），所以先初始化更干净 */
     size_t urc_count = sizeof(urcs) / sizeof(urcs[0]);
     for (size_t i = 0; i < urc_count; i++) {
         *urcs[i].handler = (at_urc_handler_t) {
@@ -2141,11 +2156,15 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
         };
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 4：逐个注册到 AT Engine，失败时回滚已注册项
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     size_t registered_count = 0;
     for (size_t i = 0; i < urc_count; i++) {
         esp_err_t ret = at_engine_register_urc(self->base.at, urcs[i].prefix,
-                                              urcs[i].handler);
+                                               urcs[i].handler);
         if (ret != ESP_OK) {
+            /*── 回滚：逆序注销已注册的 handler，避免引擎残留只注册了一半的 URC ──*/
             esp_err_t rollback_ret = ESP_OK;
             for (size_t j = 0; j < registered_count; j++) {
                 esp_err_t err = at_engine_unregister_urc(self->base.at, urcs[j].prefix);
@@ -2158,11 +2177,13 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
                 }
             }
             if (rollback_ret == ESP_OK) {
+                /* 回滚成功：清空所有 handler 节点，下次 start 可重试 */
                 for (size_t j = 0; j < urc_count; j++) {
                     memset(urcs[j].handler, 0, sizeof(*urcs[j].handler));
                 }
                 self->urc_registered = false;
             } else {
+                /* 回滚失败：部分 handler 仍留在引擎链表中，标记已注册防止重入 */
                 self->urc_registered = true;
             }
             return ret;
@@ -2170,6 +2191,9 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
         registered_count++;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 5：全部注册成功，标记已注册
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     self->urc_registered = true;
     return ESP_OK;
 }
