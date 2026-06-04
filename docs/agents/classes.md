@@ -413,6 +413,8 @@ esp_err_t modem_ping(modem_t *me,
                      modem_ping_summary_t *summary);
 ```
 
+`modem_start()` 只表示模块动态开机到基础 AT ready：注册 URC、硬复位/等待 RDY、基础 AT 初始化。它不负责 SIM 检查、网络注册等待、APN/PDP 激活或 IP 查询；这些网络上线步骤由 Core 在处理 `CORE_SIG_START` 时继续执行。
+
 **关键内部字段类别**（非完整代码快照，实际以 `src/modem/modem_priv.h` 为准）：
 
 - `ops`：指向具体模块 `modem_ops_t` 的 vptr。
@@ -492,7 +494,7 @@ typedef struct {
 ```c
 typedef struct modem_ops {
     esp_err_t (*destroy)(modem_t *me);
-    esp_err_t (*init)(modem_t *me);
+    esp_err_t (*start)(modem_t *me);
     esp_err_t (*reset)(modem_t *me);
     esp_err_t (*get_info)(modem_t *me, modem_info_t *info);
     esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);
@@ -548,7 +550,7 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
 
 | ops 方法 | 语义边界 | Air780EP 第一版命令 |
 |----------|----------|---------------------|
-| `init` | 建立 AT 口基础工作环境，注册 URC，不激活 PDP | `ATE0`、`AT+CMEE=1`、`AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2`，注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT` |
+| `start` | 模块动态开机到基础 AT ready：注册 URC、硬复位/等待 RDY、基础 AT 初始化；不激活 PDP | 注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT`，通过 EN 等待 RDY 后执行 `ATE0`、`AT+CMEE=1`、`AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2` |
 | `reset` | 通过 EN 执行硬复位，并在 RDY 后恢复基础 AT 工作环境 | 注册 URC 后拉低 EN、等待 `reset_pulse_ms`、拉高 EN、等待 RDY URC，再执行基础 AT 初始化命令 |
 | `get_info` | 读取模块/SIM 静态标识，Core 不解析原始 AT 行 | `AT+CGSN`、`AT+CIMI`、`AT+ICCID`、`AT+CGMM`、`AT+CGMR`；`ATI`/`AT+VER` 可作为固件信息补充 |
 | `get_sim_status` | 查询 SIM/PIN 可用性 | `AT+CPIN?` |
@@ -800,7 +802,7 @@ typedef struct {
     modem_signal_t           last_signal;   // 最近一次信号质量
     modem_pdp_context_t      pdp[AIR780EP_MAX_PDP_CONTEXTS];
     SemaphoreHandle_t        rdy_sema;      // RDY 等待同步信号量
-    bool                     rdy_seen;      // 本轮 init/reset 是否收到 RDY
+    bool                     rdy_seen;      // 本轮 start/reset 是否收到 RDY
     bool                     waiting_rdy;   // 是否处于受控 RDY 等待窗口
     bool                     urc_registered;
     bool                     initialized;
@@ -810,7 +812,7 @@ typedef struct {
 **关键设计决策**：
 - `base` 必须位于结构体第一个字段，子类返回给上层时使用 `&self->base`。
 - 从 `modem_t *` 反推 `modem_air780ep_t *` 时使用 `container_of(me, modem_air780ep_t, base)`，禁止裸强转。
-- URC handler 节点生命周期由 Air780EP 对象拥有，`init` 时注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT`，`destroy` 时注销。
+- URC handler 节点生命周期由 Air780EP 对象拥有，`start` 时注册 `RDY`、`+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT`，`destroy` 时注销。
 - `+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:` 既可能是查询响应，也可能是空闲期 URC；Air780EP handler 只处理 AT Engine 分发出来的空闲期 URC，命令响应由对应 ops 方法解析。
 
 ### 2.13 `air780ep_cmd_ctx_t` — Air780EP 命令上下文
@@ -846,7 +848,7 @@ typedef struct {
 │  AT Engine RX task                                          │
 │  ┌────────────────┐                                         │
 │  │ URC callback   │──→ Air780EP URC handler                  │
-│  └───────┬────────┘    ──→ RDY 释放 init/reset 等待           │
+│  └───────┬────────┘    ──→ RDY 释放 start/reset 等待          │
 │          │          ──→ 解析 +CPIN/+CREG/+CEREG/+CGREG       │
 │          │              /+CGEV/+PDP DEACT 并生成 modem_event_t│
 │          │          ──→ xQueueSend(event_queue, ..., 0)      │
@@ -932,14 +934,13 @@ typedef struct {
     uint8_t     primary_cid;             // 主 PDP context ID，默认 1
     uint32_t    net_activate_timeout_ms; // 网络激活总超时（毫秒），默认 120000
     uint32_t    reconnect_delay_ms;      // 掉线重连固定延迟（毫秒），默认 5000
-    bool        auto_connect;            // Core 内部自动连接选项；Facade factory 通常设为 false，由用户公共配置决定是否 ready 后调用 lwlte_connect()
     int         fsm_queue_size;          // FSM 信号队列长度
     int         fsm_task_stack;          // FSM 任务栈大小（字节）
     int         fsm_task_priority;       // FSM 任务优先级
 } core_config_t;
 ```
 
-Event loop 参数不放入 config，Core 内部用默认值创建。Modem 引用在 `core_create()` 参数中单独传入。`auto_connect` 是 Core 层间选项，不等同于用户公共 `lwlte_air780ep_config_t.auto_connect`；Facade 模块 factory 通常把 Core `auto_connect` 设为 false，并在 Core ready 后按用户公共配置决定是否调用 `lwlte_connect()`。
+Event loop 参数不放入 config，Core 内部用默认值创建。Modem 引用在 `core_create()` 参数中单独传入。Facade factory 只注入 APN、PDP 和 FSM 参数；用户通过 `lwlte_start()` 显式提交启动请求。
 
 ### 3.3 `core_t` — Core 句柄
 
@@ -968,9 +969,13 @@ esp_err_t core_disconnect(core_t *me);
 esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
 ```
 
+`core_start()` 是 Facade `lwlte_start()` 的内部入口，只投递 `CORE_SIG_START` 后返回。Core FSM 在 `CORE_SIG_START` 中调用 `modem_start()`，随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程；最终网络 online 通过 `CORE_EVENT_NET_ONLINE` 传给 Facade，再映射为 `LWLTE_EVENT_NET_ONLINE`。
+
+`core_connect()` 保留为 Core 内部 command helper，不是用户 API；App 不直接调用，也不通过 Facade 暴露为用户连接函数。
+
 **关键内部字段类别**（非完整代码快照，实际以 `src/core/core_priv.h` 为准）：
 
-- `config`：Core 层间配置快照；`auto_connect` 为内部选项，Facade 通常设为 false。
+- `config`：Core 层间配置快照，保存 APN、PDP 和 FSM 参数。
 - `modem`：Facade factory 注入的 `modem_t` 句柄，Core 借用但不拥有生命周期。
 - `event_loop`、`event_callback`、`event_user_ctx`：Core 事件分发和 Facade 桥接回调。
 - `fsm`、`net_mgr`、`pdp_mgr`：`core_t` 的组合成员，分别负责信号串行化、网络激活/重连、PDP 缓存。
@@ -981,7 +986,7 @@ esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
 - `modem` 句柄由 Facade 模块 factory 传入，Core 不拥有 Modem 生命周期。
 - `event_loop` 由 Core 在 `core_create()` 中创建，在 `destroy` 中删除。
 - `lock` 只保护 `state`/`destroying` 等短字段访问，FSM 线程调用 `modem_*` API 时不持锁。
-- Facade 调用的 `start`、`connect`、`disconnect` 只投递信号到 FSM 队列即返回，不阻塞。
+- Facade 调用的 `start`、`disconnect` 只投递信号到 FSM 队列即返回，不阻塞。
 
 ### 3.4 Core 状态和事件类型
 
@@ -1336,13 +1341,13 @@ Core FSM 处理 `CORE_SIG_SERVICE_CMD` 时执行 Core-owned `core_cmd_t`，按�
 | Modem 回调不调 Core API | Modem event_task 中只 `xQueueSend` 到 FSM 队列，与 Modem 层"URC handler 不调 Core 回调"约束一致 |
 | FSM 线程不持锁跨阻塞 | `core->lock` 只保护短字段，调用 `modem_*` API 时不持锁 |
 | esp_event_post_to 不阻塞 | 投递事件不阻塞 FSM 线程 |
-| 网络控制 Facade API 不阻塞 | `start`/`connect`/`disconnect` 等网络控制 API 只投递信号即返回；同步 `lwlte_ping()` 是用户诊断 API 例外 |
+| 网络控制 Facade API 不阻塞 | `start`/`disconnect` 等网络控制 API 只投递信号即返回；`start` 是用户显式 LTE online 动作，同步 `lwlte_ping()` 是用户诊断 API 例外 |
 
 **Modem 事件 → Core 行为映射**：
 
 | Modem Event | Core 行为 |
 |-------------|----------|
-| `MODEM_EVENT_READY` | core_state → READY，发布 `CORE_EVENT_READY`；Facade 可在 ready 后按用户公共配置提交 `lwlte_connect()` |
+| `MODEM_EVENT_READY` | core_state → READY，发布 `CORE_EVENT_READY`；Core 启动流程继续推进网络激活 |
 | `MODEM_EVENT_SIM_CHANGED` | 更新 net_mgr 可用的 SIM 状态 |
 | `MODEM_EVENT_REG_CHANGED` | 更新 net_mgr 可用的注册状态 |
 | `MODEM_EVENT_PDP_ACTIVATED` | net_state → ONLINE，发布 `CORE_EVENT_NET_ONLINE` |
@@ -1363,7 +1368,6 @@ core_config_t core_cfg = {
     .primary_cid             = 1,
     .net_activate_timeout_ms = 120000,
     .reconnect_delay_ms      = 5000,
-    .auto_connect            = false,  /* Facade 持有用户级 auto-connect 策略 */
     .fsm_queue_size          = 16,
     .fsm_task_stack          = 4096,
     .fsm_task_priority       = 8,
@@ -1371,11 +1375,22 @@ core_config_t core_cfg = {
 
 core_t *core = core_create(&core_cfg, modem);
 core_register_event_callback(core, facade_core_event_handler, lte);
-core_start(core);  // 异步，结果通过事件通知 Facade
+```
 
-/* Facade 等待 CORE_EVENT_READY 后，如果用户公共 config 要求自动联网，再提交连接请求。 */
-if (user_config->auto_connect) {
-    lwlte_connect(lte);
+Facade 模块 factory 到这里结束，只完成装配和事件桥接，不启动模块。用户调用 `lwlte_start()` 后，Facade 通用 API 再把启动请求交给 Core：
+
+```c
+esp_err_t lwlte_start(lwlte_t *me)
+{
+    core_t *core = NULL;
+    esp_err_t ret = begin_api_call(me, true, &core);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = core_start(core);
+    end_api_call(me);
+    return ret;
 }
 ```
 
@@ -1918,6 +1933,17 @@ esp_err_t lwlte_ping_async(lwlte_t *me,
 ## 6. App（应用层）
 
 > App 层不定义内部框架类，只有用户自己的业务类型。LWLTE Facade 暴露的用户 API 类型位于 `src/include/lwlte.h`，用于把 App 请求映射到内部 service。
+
+基础生命周期用户 API：
+
+```c
+esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
+                              lwlte_t **out_lte);
+esp_err_t lwlte_start(lwlte_t *me);
+esp_err_t lwlte_destroy(lwlte_t *me);
+```
+
+`lwlte_air780ep_init()` 只创建和装配 Facade、AT Engine、Modem、Core、Ping/MQTT service；`lwlte_start()` 才是用户显式启动入口，异步提交启动请求，最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
 
 MQTT 第一版会增加这些用户可见类型和函数：
 

@@ -9,7 +9,7 @@
 ### 1.1 所有公共 API 返回 `esp_err_t`
 
 ```c
-esp_err_t lwlte_connect(lwlte_t *me);
+esp_err_t lwlte_start(lwlte_t *me);
 esp_err_t lwlte_disconnect(lwlte_t *me);
 esp_err_t lwlte_destroy(lwlte_t *me);
 ```
@@ -83,14 +83,14 @@ ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_
 用于无需清理资源的场景：
 
 ```c
-esp_err_t core_connect(core_t *me)
+esp_err_t core_start(core_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-    ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_NET_ACTIVATE),
-                        ESP_ERR_INVALID_STATE, TAG, "connect not allowed");
+    ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_START),
+                        ESP_ERR_INVALID_STATE, TAG, "start not allowed");
 
-    esp_err_t ret = send_simple_signal(me, CORE_SIG_NET_ACTIVATE);
-    ESP_RETURN_ON_ERROR(ret, TAG, "send connect signal failed");
+    esp_err_t ret = send_simple_signal(me, CORE_SIG_START);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send start signal failed");
 
     return ESP_OK;
 }

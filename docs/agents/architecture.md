@@ -73,7 +73,7 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 
 | 层 | 可以调用的层 | 可以使用的 ESP-IDF API | 可以知道的符号 |
 |----|------------|----------------------|-------------|
-| App 业务代码 | LWLTE Facade 用户操作 API | 不限（但不应掺入 LTE 硬件装配逻辑） | `lwlte.h`、`lwlte_t`、`lwlte_connect()` 等 |
+| App 业务代码 | LWLTE Facade 用户操作 API | 不限（但不应掺入 LTE 硬件装配逻辑） | `lwlte.h`、`lwlte_t`、`lwlte_start()` 等 |
 | 板级初始化 / App 配置代码 | LWLTE Facade 模块 factory | 不限（用于准备公开配置） | `lwlte_air780ep_config_t` 中的 UART/GPIO 字段 |
 | Facade 通用文件 | Core/MQTT/TCP/HTTP 等 service API | 不限 | `lwlte_t`、`core_t`、service 层间类型 |
 | Facade 模块 factory | AT Engine、Modem、具体 Modem factory、Core | 不限（driver/gpio.h、driver/uart.h 等用于配置装配） | 完整装配 API，但不 include 任意 `_priv.h` |
@@ -90,12 +90,12 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 ### 4.1 AT 指令下行（调用链）
 
 ```
-App:    lwlte_connect(lte)，不需要知道 AT 指令存在
+App:    lwlte_start(lte)，不需要知道 AT 指令存在
           │
-Facade: core_connect(core)
-          │  用户门面只调用 service API
+Facade: core_start(core)
+          │  用户门面只调用 service API，异步提交启动请求
           ▼
-Core:   modem_set_apn(modem, 1, "cmnet")
+Core:   modem_start(modem) → modem_set_apn(modem, 1, "cmnet") → modem_activate_pdp(modem, 1)
           │  通过 modem_* 包装 API 调用（不知道下面是哪个模块）
           ▼
 Modem:  at_engine_send_cmd(at, "AT+CGDCONT=1,\"IP\",\"cmnet\"", &resp, 3000)
@@ -143,9 +143,6 @@ modem_air780ep_config_t modem_cfg = {
     .event_queue_size       = 8,
 };
 modem_t *modem = modem_air780ep_create(at, &modem_cfg);
-
-/* Facade factory：通用 API 启动具体模块，Air780EP 内部注册 URC handler。 */
-modem_start(modem);  /* 内部调用 at_engine_register_urc(me->at, "+CGEV:", ...) */
 
 esp_err_t core_init(core_t *me, modem_t *modem)
 {
@@ -300,7 +297,6 @@ lwlte_air780ep_config_t config = {
     .uart_baud_rate = 115200,
     .apn            = CONFIG_LWLTE_APN,
     .primary_cid    = 1,
-    .auto_connect   = true,
     .mqtt_client = {
         .enabled   = true,
         .host      = CONFIG_LWLTE_MQTT_HOST,
@@ -312,13 +308,21 @@ lwlte_air780ep_config_t config = {
 lwlte_t *lte = NULL;
 ESP_ERROR_CHECK(lwlte_air780ep_init(&config, &lte));
 ESP_ERROR_CHECK(lwlte_register_event_callback(lte, app_event_handler, NULL));
+ESP_ERROR_CHECK(lwlte_start(lte));
 ```
 
 ### 6.2 Facade Factory 模式
 
 Facade 模块 factory 是 composition root，是唯一认识所有装配 API 和具体模块 factory 的文件：
 
-Air780EP modem 初始化时先完成 AT Engine 和 URC 注册，再通过 EN 执行硬复位，等待 RDY URC 后发送基础 AT 初始化命令。Facade 的 init_ready_timeout_ms 是 RDY 等待和 Core ready 等待的初始化总超时。
+生命周期职责边界：
+
+- `lwlte_air780ep_init()` 只负责创建和装配 `lwlte_t`、AT Engine、Modem、Core、Ping/MQTT service，不启动模块、不等待 RDY、不激活 PDP。
+- `lwlte_start()` 是用户显式启动入口，异步提交启动请求；最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
+- Core 在 `CORE_SIG_START` 中调用 `modem_start()`，随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程。
+- `modem_start()` 表示模块动态开机到基础 AT ready：注册 URC、硬复位/等待 RDY、基础 AT 初始化；不负责 APN/PDP/IP。
+
+Air780EP modem 的动态开机由 Core 启动流程触发。Facade factory 只装配依赖并注册事件桥接，不在 init 中等待模块 ready。
 
 ```
 Facade factory
@@ -329,20 +333,17 @@ Facade factory
     ├─ 2. modem_air780ep_create(at, &modem_cfg) → 创建 Modem 实例
     │       └─ 传入 at 句柄和模块硬件配置，工厂保存依赖
     │
-    ├─ 3. modem_start(modem)                    → 启动模块并注册 URC
-    │       └─ modem 内部注册 URC handler 到 at engine
-    │
-    ├─ 4. core_create(&core_cfg, modem)         → 创建 Core Service
+    ├─ 3. core_create(&core_cfg, modem)         → 创建 Core Service
     │       ├─ 传入 modem 句柄，Core 通过 modem_* API 操作模块
     │       └─ core 内部注册事件回调到 modem
     │
-    ├─ 5. core_register_event_callback(core, facade_core_event_handler, lte)
+    ├─ 4. core_register_event_callback(core, facade_core_event_handler, lte)
     │       └─ Facade 把 CORE_EVENT 翻译为 LWLTE 用户事件
     │
-    ├─ 6. 可选：mqtt_client_create(&mqtt_cfg, core)
-    │       └─ MQTT service 启用/编译进 Facade 时，在 Core start 前创建并注册事件回调
+    ├─ 5. 可选：mqtt_client_create(&mqtt_cfg, core)
+    │       └─ MQTT service 启用/编译进 Facade 时创建并注册事件回调
     │
-    └─ 7. core_start(core)                      → 启动基础 LTE service
+    └─ 6. 返回 lwlte_t，等待用户调用 lwlte_start(lte)
 ```
 
 ```c
@@ -377,13 +378,10 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     modem_t *modem = modem_air780ep_create(at, &modem_cfg);
     if (!modem) goto err_at;
 
-    if (modem_start(modem) != ESP_OK) goto err_modem;
-
-    /* 3. 核心服务：auto_connect 由 Facade 在 ready 后显式触发。 */
+    /* 3. 核心服务：启动请求由 lwlte_start() 异步提交给 Core。 */
     core_config_t core_cfg = {
         .apn          = config->apn,
         .primary_cid  = config->primary_cid,
-        .auto_connect = false,
     };
     core_t *core = core_create(&core_cfg, modem);
     if (!core) goto err_modem;
@@ -415,10 +413,6 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         mqtt_client_register_event_callback(lte->mqtt, facade_mqtt_event_handler, lte);
     }
 #endif
-
-    if (core_start(core) != ESP_OK) goto err_core;
-    if (lwlte_wait_ready(lte, config->init_ready_timeout_ms) != ESP_OK) goto err_core;
-    if (config->auto_connect && lwlte_connect(lte) != ESP_OK) goto err_core;
 
     *out_lte = lte;
     return ESP_OK;

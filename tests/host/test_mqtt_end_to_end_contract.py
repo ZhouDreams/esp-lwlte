@@ -830,7 +830,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
 
         for function_name, next_function in [
             ("esp_err_t lwlte_destroy", "esp_err_t lwlte_register_event_callback"),
-            ("esp_err_t lwlte_register_event_callback", "esp_err_t lwlte_connect"),
+            ("esp_err_t lwlte_register_event_callback", "esp_err_t lwlte_start"),
             ("static esp_err_t wait_callbacks_idle", "static bool callback_task_active_locked"),
         ]:
             function_start = self.lwlte_c.rindex(function_name)
@@ -955,7 +955,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
 
         init_body = self.lwlte_air780ep_c[
             self.lwlte_air780ep_c.index("core_register_event_callback"):
-            self.lwlte_air780ep_c.index("core_start(me->core)")
+            self.lwlte_air780ep_c.index("*out_lte = me;")
         ]
         for token in [
             "if (config->mqtt_client.enabled) {",
@@ -965,6 +965,13 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "cleanup_after_failure(me, ret)",
         ]:
             self.assertIn(token, init_body)
+
+        self.assertNotIn("core_start", self.lwlte_air780ep_c)
+        start_body = self.lwlte_c[
+            self.lwlte_c.index("esp_err_t lwlte_start"):
+            self.lwlte_c.index("esp_err_t lwlte_disconnect")
+        ]
+        self.assertIn("core_start(core)", start_body)
 
     def test_facade_mqtt_event_mapping_and_data_pointer_scope(self):
         self.assertIn("void lwlte_handle_mqtt_event", self.lwlte_c)

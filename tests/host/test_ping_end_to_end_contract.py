@@ -196,12 +196,11 @@ class PingEndToEndContractTest(unittest.TestCase):
             r"\b\w+->ping\s*=\s*ping_client_create\s*\(\s*\w+->core\s*\)",
             air780ep_factory,
         )
-        core_start_match = re.search(r"\bcore_start\s*\(\s*\w+->core\s*\)", air780ep_factory)
         self.assertIsNotNone(core_create_match, "missing core_create assignment")
         self.assertIsNotNone(ping_create_match, "missing ping_client_create assignment")
-        self.assertIsNotNone(core_start_match, "missing core_start call")
         self.assertLess(core_create_match.start(), ping_create_match.start())
-        self.assertLess(ping_create_match.start(), core_start_match.start())
+        self.assertNotIn("core_start", air780ep_factory)
+        self.assertNotIn("modem_start", air780ep_factory)
 
         self.assertIn("ping_client_destroy(me->ping)", lwlte_c)
         self.assertRegex(lwlte_ping_body, r"ping_client_request_t\s+\w+")
@@ -361,7 +360,17 @@ class PingEndToEndContractTest(unittest.TestCase):
             r"modem_ping_summary_t\s*\*\s*summary",
         ])
 
-        self.assertRegex(modem_priv_h, r"esp_err_t\s*\(\s*\*\s*ping\s*\)\s*\(")
+        self.assertRegex(
+            modem_priv_h,
+            r"typedef\s+esp_err_t\s*\(\s*\*\s*modem_ping_fn\s*\)\s*\("
+            r"[\s\S]*modem_t\s*\*\s*me"
+            r"[\s\S]*const\s+modem_ping_request_t\s*\*\s*request"
+            r"[\s\S]*modem_ping_reply_t\s*\*\s*replies"
+            r"[\s\S]*size_t\s+max_replies"
+            r"[\s\S]*modem_ping_summary_t\s*\*\s*summary"
+            r"[\s\S]*\)\s*;",
+        )
+        self.assertIn("modem_ping_fn ping;", modem_priv_h)
         modem_ping_body = self.assert_function_body(modem_c, "modem_ping")
         for pattern in [
             r"request->host[\s\S]*request->host\s*\[\s*0\s*\]",

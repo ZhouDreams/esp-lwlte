@@ -337,7 +337,7 @@ typedef esp_err_t (*modem_pdp_cid_fn)(modem_t *me, uint8_t cid);
 
 typedef struct modem_ops {
     modem_no_arg_fn destroy;
-    modem_no_arg_fn init;
+    modem_no_arg_fn start;
     modem_no_arg_fn reset;
     modem_get_signal_fn get_signal;
     modem_set_apn_fn set_apn;
@@ -347,7 +347,7 @@ typedef struct modem_ops {
 ```
 
 **设计原则**：ops 表中区分必填和选填字段（教程第14章）：
-- **必填**：没有合理默认行为的操作（如 `init`、`get_signal`、`activate_pdp`）
+- **必填**：没有合理默认行为的操作（如 `start`、`get_signal`、`activate_pdp`）
 - **选填**：有合理默认行为或模块可能不支持的操作（如 `reset` 可返回 `ESP_ERR_NOT_SUPPORTED`）
 
 ### 3.3 vptr 落地
@@ -681,9 +681,11 @@ int lwlte_board_init(void)
         .uart_baud_rate = 115200,
         .apn            = CONFIG_LWLTE_APN,
         .primary_cid    = 1,
-        .auto_connect   = true,
     };
-    if (lwlte_air780ep_init(&config, &g_lte) != ESP_OK) return -1;
+
+    ESP_ERROR_CHECK(lwlte_air780ep_init(&config, &g_lte));
+    ESP_ERROR_CHECK(lwlte_register_event_callback(g_lte, app_event_handler, NULL));
+    ESP_ERROR_CHECK(lwlte_start(g_lte));
 
     return 0;
 }
@@ -702,8 +704,8 @@ int lwlte_board_init(void)
 
 void app_main(void)
 {
-    /* 只通过公共句柄操作 */
-    esp_err_t err = lwlte_connect(g_lte);
+    /* 只通过公共句柄操作；online 结果由 LWLTE_EVENT_NET_ONLINE 上报。 */
+    esp_err_t err = lwlte_start(g_lte);
     if (err != ESP_OK) {
         /* 业务侧决定如何降级或重试。 */
     }
@@ -716,11 +718,12 @@ void app_main(void)
 
 ### 5.5 生命周期模板
 
-用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_t *`，便于区分参数错误、内存不足、ready 超时和下层初始化失败：
+用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_t *`，便于区分参数错误、内存不足和下层对象创建失败。RDY 等待和网络 online 是 `lwlte_start()` 之后的运行期结果，通过事件上报：
 
 ```c
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
                               lwlte_t **out_lte);
+esp_err_t lwlte_start(lwlte_t *me);
 esp_err_t lwlte_destroy(lwlte_t *me);
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
@@ -737,14 +740,6 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     if (ret != ESP_OK) {
         cleanup_after_failure(me);
         return ret;
-    }
-
-    if (config->auto_connect) {
-        ret = lwlte_connect(me);
-        if (ret != ESP_OK) {
-            cleanup_after_failure(me);
-            return ret;
-        }
     }
 
     *out_lte = me;

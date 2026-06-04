@@ -107,16 +107,6 @@ static void handle_ready(core_t *me);
 static void handle_core_error(core_t *me, int error_code);
 
 /**
- * @brief 判断 Modem 状态是否已就绪
- * @details Check whether Modem state is ready or beyond
- * @param[in] state Modem 状态
- * @return
- *         - true: 已就绪或更高状态
- *         - false: 未就绪
- */
-static bool modem_state_ready(modem_state_t state);
-
-/**
  * @brief 发布 Core 事件并记录失败
  * @details Post Core event and log failure
  * @param[in] me LTE 核心服务句柄
@@ -393,7 +383,6 @@ static void handle_signal(core_t *me, core_fsm_sig_t *sig)
 
 static void handle_start(core_t *me)
 {
-    modem_state_t modem_state = MODEM_STATE_CREATED;
     core_state_t state = core_get_state_value(me);
 
     if (state != CORE_STATE_STOPPED) {
@@ -403,13 +392,17 @@ static void handle_start(core_t *me)
     core_set_state(me, CORE_STATE_STARTING);
     post_event_checked(me, CORE_EVENT_STARTED, NULL);
 
-    esp_err_t ret = modem_get_state(me->modem, &modem_state);
+    esp_err_t ret = modem_start(me->modem);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "get modem state failed: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "start modem failed: %s", esp_err_to_name(ret));
+        handle_core_error(me, ret);
         return;
     }
-    if (modem_state_ready(modem_state)) {
-        handle_ready(me);
+
+    handle_ready(me);
+    ret = net_mgr_start_activation(me);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "start network activation failed: %s", esp_err_to_name(ret));
     }
 }
 
@@ -489,10 +482,6 @@ static void handle_ready(core_t *me)
 
     core_set_state(me, CORE_STATE_READY);
     post_event_checked(me, CORE_EVENT_READY, NULL);
-
-    if (me->config.auto_connect) {
-        net_mgr_start_activation(me);
-    }
 }
 
 static void handle_core_error(core_t *me, int error_code)
@@ -504,14 +493,6 @@ static void handle_core_error(core_t *me, int error_code)
 
     core_set_state(me, CORE_STATE_ERROR);
     post_event_checked(me, CORE_EVENT_ERROR, &data);
-}
-
-static bool modem_state_ready(modem_state_t state)
-{
-    return state == MODEM_STATE_READY ||
-           state == MODEM_STATE_REGISTERING ||
-           state == MODEM_STATE_REGISTERED ||
-           state == MODEM_STATE_PDP_ACTIVE;
 }
 
 static void post_event_checked(core_t *me,

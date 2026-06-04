@@ -200,8 +200,8 @@ typedef struct {
  * @details Air780EP LTE initialization configuration
  * @note uart_num、uart_tx_pin、uart_rx_pin、uart_baud_rate 和 primary_cid 为必填字段。
  * @note en_pin 可设为 GPIO_NUM_NC，以禁用门面对 EN GPIO 的控制。
- * @note 超时、任务和缓冲区字段为 0 时使用下层默认值；init_ready_timeout_ms 为 0 时使用门面默认值。
- * @note init_ready_timeout_ms 覆盖 Air780EP RDY 等待和 Core ready 等待的初始化总超时。
+ * @note 超时、任务和缓冲区字段为 0 时使用下层默认值。
+ * @note init_ready_timeout_ms 为 0 时使用下层默认值；该值在 lwlte_start() 触发 modem_start() 时作为 Air780EP RDY 等待超时。
  * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
  * @note mqtt_client.enabled 为 false 时 MQTT 服务禁用；为 true 时 host、port 和 client_id 为必填字段。
  * @note UART 端口必须满足 UART_NUM_0 <= uart_num < UART_NUM_MAX；UART TX/RX 必须是有效 GPIO 且不能为 GPIO_NUM_NC。
@@ -216,8 +216,7 @@ typedef struct {
     gpio_num_t en_pin;                    /**< 可选模块 EN GPIO，GPIO_NUM_NC 表示不控制； Optional module EN GPIO, GPIO_NUM_NC disables control */
     const char *apn;                      /**< 可选 APN，NULL/空表示门面不配置； Optional APN, NULL/empty means facade does not configure it */
     uint8_t primary_cid;                  /**< 必填主 PDP 上下文 ID，Air780EP 门面当前仅支持 1； Required primary PDP context ID, Air780EP facade currently supports 1 only */
-    bool auto_connect;                    /**< ready 后是否自动提交联网请求，不等待网络上线； Whether to submit connect after ready, without waiting online */
-    uint32_t init_ready_timeout_ms;        /**< 初始化 RDY+Core ready 总超时，0 使用门面默认值； Total init RDY+Core ready timeout, 0 uses facade default */
+    uint32_t init_ready_timeout_ms;        /**< Air780EP RDY 等待超时，0 使用下层默认值； Air780EP RDY wait timeout, 0 uses lower-layer default */
     uint32_t net_activate_timeout_ms;      /**< 网络激活总超时，0 使用 Core 默认值； Network activation timeout, 0 uses Core default */
     uint32_t reconnect_delay_ms;           /**< 重连延迟，0 使用 Core 默认值； Reconnect delay, 0 uses Core default */
     int at_rx_buf_size;                   /**< AT RX 缓冲大小，0 使用默认值； AT RX buffer size, 0 uses default */
@@ -244,21 +243,20 @@ typedef struct {
 /**
  * @brief 初始化 Air780EP LTE 用户门面
  * @details Initialize Air780EP LTE user facade
- * @note 该函数阻塞直到 AT Engine、Modem 和 Core 创建并启动到 ready，或发生错误/超时。
+ * @note 该函数只创建 LTE 用户门面及内部对象，不启动模块、不等待 RDY、不激活 PDP。
  * @note ESP_OK 返回时 *out_lte 为可用句柄，所有权转移给调用方，必须通过 lwlte_destroy() 释放。
+ * @note 调用方应注册事件回调后调用 lwlte_start()；最终 online 结果通过 LWLTE_EVENT_NET_ONLINE 上报。
  * @note 非 ESP_OK 返回时不会转移句柄所有权，门面会尽力释放已创建的内部资源。
- * @note ESP_OK 不保证网络在线；auto_connect 为 true 时仅在 ready 后提交连接请求，不等待网络上线。
  * @note config 及其 apn、mqtt_client 字符串指针由调用方拥有，在函数返回前必须保持有效。
  * @param[in] config Air780EP LTE 初始化配置
  * @param[out] out_lte LTE 用户门面句柄输出指针
  * @return
- *         - ESP_OK: 初始化成功，门面已 ready
+ *         - ESP_OK: 初始化成功，门面句柄可用
  *         - ESP_ERR_INVALID_ARG: 参数无效、必填字段缺失或字段超出有效范围
  *         - ESP_ERR_NO_MEM: 内存不足
- *         - ESP_ERR_TIMEOUT: 等待 ready 超时或下层命令超时
- *         - ESP_ERR_INVALID_STATE: 下层状态错误或 auto_connect 请求无法提交
- *         - ESP_FAIL: GPIO、UART、Modem、Core 或连接请求提交失败
- *         - 其他 esp_err_t: 下层初始化、启动或清理错误
+ *         - ESP_ERR_INVALID_STATE: 下层状态错误
+ *         - ESP_FAIL: GPIO、UART、Modem 或 Core 创建失败
+ *         - 其他 esp_err_t: 下层创建、初始化或清理错误
  */
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
                               lwlte_t **out_lte);
@@ -296,19 +294,20 @@ esp_err_t lwlte_register_event_callback(lwlte_t *me,
                                         void *user_ctx);
 
 /**
- * @brief 连接 LTE 网络
- * @details Connect LTE network
- * @note 该函数异步提交网络连接请求，ESP_OK 仅表示请求已提交，不表示网络已上线。
- * @note 最终联网结果通过用户事件回调或 lwlte_get_net_state() 查询获得。
+ * @brief 启动 LTE 并异步联网
+ * @details Start LTE and connect network asynchronously
+ * @note 该函数异步提交启动请求，ESP_OK 仅表示请求已提交，不表示模块 ready 或网络 online。
+ * @note 成功联网通过 LWLTE_EVENT_NET_ONLINE 上报，也可通过 lwlte_get_net_state() 查询。
+ * @note 建议在调用本函数前先调用 lwlte_register_event_callback() 注册事件回调。
  * @param[in] me LTE 用户门面句柄
  * @return
  *         - ESP_OK: 请求已提交
  *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - ESP_ERR_INVALID_STATE: 当前状态不允许连接或门面正在销毁
+ *         - ESP_ERR_INVALID_STATE: 当前状态不允许启动或门面正在销毁
  *         - ESP_FAIL: 请求提交失败
- *         - 其他 esp_err_t: 下层连接错误
+ *         - 其他 esp_err_t: 下层请求提交错误
  */
-esp_err_t lwlte_connect(lwlte_t *me);
+esp_err_t lwlte_start(lwlte_t *me);
 
 /**
  * @brief 断开 LTE 网络

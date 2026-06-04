@@ -46,7 +46,6 @@ typedef struct {
     uint8_t primary_cid;                 /**< 主 PDP 上下文 ID； Primary PDP context ID */
     uint32_t net_activate_timeout_ms;    /**< 网络激活总超时； Network activation timeout */
     uint32_t reconnect_delay_ms;         /**< 重连延迟； Reconnect delay */
-    bool auto_connect;                   /**< 是否自动联网； Whether to connect automatically */
     int fsm_queue_size;                  /**< FSM 队列长度； FSM queue size */
     int fsm_task_stack;                  /**< FSM 任务栈大小； FSM task stack size */
     int fsm_task_priority;               /**< FSM 任务优先级； FSM task priority */
@@ -276,7 +275,8 @@ esp_err_t core_destroy(core_t *me);
 /**
  * @brief 启动 LTE 核心服务
  * @details Start LTE core service
- * @note 该函数异步提交启动请求，返回 ESP_OK 表示请求已提交；最终状态通过事件或回调通知。
+ * @note 该函数异步提交启动请求；Core FSM 会调用 modem_start()，随后执行网络激活流程。
+ * @note ESP_OK 仅表示请求已提交；最终 online 结果通过 CORE_EVENT_NET_ONLINE 上报。
  * @param[in] me LTE 核心服务句柄
  * @return
  *         - ESP_OK: 请求已提交

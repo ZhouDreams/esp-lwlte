@@ -136,7 +136,6 @@ void app_main(void)
         .en_pin = EXAMPLE_LTE_EN_PIN,
         .apn = EXAMPLE_LTE_APN,
         .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
-        .auto_connect = false,
         .init_ready_timeout_ms = EXAMPLE_INIT_READY_TIMEOUT_MS,
         .modem_reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
     };
@@ -160,10 +159,9 @@ void app_main(void)
         idle_forever();
     }
 
-    ret = lwlte_connect(lte);
+    ret = lwlte_start(lte);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "connect request failed: %s", esp_err_to_name(ret));
-        log_lte_status(lte, "connect request failed");
+        ESP_LOGE(TAG, "start LTE failed: %s", esp_err_to_name(ret));
         cleanup_lte(lte);
         idle_forever();
     }

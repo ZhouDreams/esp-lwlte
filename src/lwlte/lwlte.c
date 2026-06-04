@@ -360,13 +360,13 @@ esp_err_t lwlte_register_event_callback(lwlte_t *me,
     return ret;
 }
 
-esp_err_t lwlte_connect(lwlte_t *me)
+esp_err_t lwlte_start(lwlte_t *me)
 {
     core_t *core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
-    ret = core_connect(core);
+    ret = core_start(core);
     end_api_call(me);
 
     return ret;
