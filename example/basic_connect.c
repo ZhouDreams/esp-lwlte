@@ -19,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "example.h"
 #include "lwlte.h"
 
 /*********************
@@ -125,7 +126,7 @@ static volatile int s_net_error_code;
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-void app_main(void)
+void example_basic_connect_run(void)
 {
     lwlte_t *lte = NULL;
     const lwlte_air780ep_config_t config = {

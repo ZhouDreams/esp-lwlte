@@ -5,7 +5,7 @@
 ```
 esp-lwlte/
 ├── src/           # 组件源码
-├── examples/      # 示例代码
+├── example/       # 统一示例入口
 ├── docs/          # 项目文档
 └── reference/     # 只读参考文档（git ignore）
 ```
@@ -28,9 +28,11 @@ src/
 `src/include/` 只放真正给 App include 的用户 API。
 `core.h`、`modem.h`、`modem_air780ep.h`、`at_engine.h` 放在各自模块目录，通过组件 `PRIV_INCLUDE_DIRS` 给内部源码使用，不导出给用户 App。
 
-### examples/ — 示例代码
+### example/ — 统一示例入口
 
-演示如何使用 esp-lwlte 组件的示例程序。每个示例是一个独立的 ESP-IDF 项目或 main 函数入口。
+根 ESP-IDF 项目的 main 组件。`example/main.c` 是唯一示例入口，通过 `EXAMPLE_SELECTED` 宏选择要构建烧录后运行的示例。
+
+示例实现按文件拆分，例如 `basic_connect.c`、`mqtt_client.c`、`ml307r_probe.c`。新增示例时应在 `example/example.h` 中新增选择宏和 run 函数声明，并在 `example/main.c` 的选择逻辑中接入。
 
 ### docs/ — 项目文档
 

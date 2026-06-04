@@ -21,6 +21,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "example.h"
+
 /*********************
  *      DEFINES
  *********************/
@@ -106,7 +108,7 @@ static void log_rx_chunk(const char *label, const uint8_t *data, int len);
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-void app_main(void)
+void example_ml307r_probe_run(void)
 {
     ESP_LOGI(TAG, "ML307R UART probe example");
     ESP_LOGI(TAG, "UART%d TX=%d RX=%d baud=%d EN=%d",

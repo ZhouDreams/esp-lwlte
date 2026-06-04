@@ -22,6 +22,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "example.h"
 #include "lwlte.h"
 
 /*********************
@@ -157,7 +158,7 @@ static volatile uint32_t s_counter;
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-void app_main(void)
+void example_mqtt_client_run(void)
 {
     lwlte_t *lte = NULL;
 

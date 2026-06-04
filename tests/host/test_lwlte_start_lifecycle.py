@@ -16,9 +16,8 @@ CORE_FSM_C = ROOT / "src/core/core_fsm.c"
 ARCH_DOC = ROOT / "docs/agents/architecture.md"
 CLASSES_DOC = ROOT / "docs/agents/classes.md"
 OOP_DOC = ROOT / "docs/agents/oop-design.md"
-BASIC_EXAMPLE = ROOT / "examples/basic_connect/main/main.c"
-MQTT_EXAMPLE = ROOT / "examples/mqtt_client/main/main.c"
-MAIN_EXAMPLE = ROOT / "main/main.c"
+BASIC_EXAMPLE = ROOT / "example/basic_connect.c"
+MQTT_EXAMPLE = ROOT / "example/mqtt_client.c"
 
 
 def read_optional(path: Path) -> str:
@@ -82,7 +81,6 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
         cls.oop_doc = OOP_DOC.read_text(encoding="utf-8")
         cls.basic_example = read_optional(BASIC_EXAMPLE)
         cls.mqtt_example = read_optional(MQTT_EXAMPLE)
-        cls.main_example = read_optional(MAIN_EXAMPLE)
 
     def test_public_api_has_start_not_connect_or_auto_connect(self):
         assert_contains(self, self.lwlte_h, "esp_err_t lwlte_start(lwlte_t *me);", "lwlte.h")
@@ -133,8 +131,8 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
     def test_examples_use_explicit_start(self):
         failures = []
         for label, source in [
-            ("examples/basic_connect/main/main.c", self.basic_example),
-            ("examples/mqtt_client/main/main.c", self.mqtt_example),
+            ("example/basic_connect.c", self.basic_example),
+            ("example/mqtt_client.c", self.mqtt_example),
         ]:
             if "lwlte_start" not in source:
                 failures.append(f"missing 'lwlte_start' in {label}")
@@ -143,11 +141,6 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
             if "lwlte_connect" in source:
                 failures.append(f"unexpected 'lwlte_connect' in {label}")
 
-        if self.main_example:
-            if ".auto_connect" in self.main_example:
-                failures.append("unexpected '.auto_connect' in main/main.c")
-            if "lwlte_connect" in self.main_example:
-                failures.append("unexpected 'lwlte_connect' in main/main.c")
         if failures:
             self.fail("; ".join(failures))
 
