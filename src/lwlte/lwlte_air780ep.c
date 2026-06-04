@@ -125,6 +125,9 @@ static esp_err_t cleanup_after_failure(lwlte_t *me, esp_err_t original_err);
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
                               lwlte_t **out_lte)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：参数校验与初始化准备
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     ESP_RETURN_ON_FALSE(out_lte, ESP_ERR_INVALID_ARG, TAG, "out_lte is NULL");
     *out_lte = NULL;
 
@@ -133,10 +136,14 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     const uint32_t total_ready_timeout_ms = ready_timeout_ms(config);
     const TickType_t init_start_tick = xTaskGetTickCount();
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：创建门面壳并创建 AT Engine
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     lwlte_t *me = NULL;
     ret = lwlte_create_empty(&me);
     ESP_RETURN_ON_ERROR(ret, TAG, "create facade failed");
 
+    /* AT Engine 是最底层：直接操作 UART 硬件，运行 RX task 接收字节 */
     const at_engine_config_t at_config = {
         .uart_num = config->uart_num,
         .tx_pin = config->uart_tx_pin,
@@ -155,6 +162,11 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ESP_OK);
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：创建 Air780EP Modem 适配器并启动模块
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* modem_start 内部会：注册 URC handler → EN 硬复位 → 等待 RDY →
+     * 发送基础 AT 初始化命令 → 上报 MODEM_EVENT_READY */
     uint32_t stage_timeout_ms = 0;
     ret = remaining_timeout_ms(init_start_tick, total_ready_timeout_ms,
                                &stage_timeout_ms);
@@ -184,6 +196,11 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ret);
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 4：创建 Core Service 并注册事件桥接
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* Core 是网络状态机的归属层，负责 PDP 管理、连接/重连策略；
+     * auto_connect 设为 false，由步骤 8 根据用户配置显式触发 */
     const core_config_t core_config = {
         .apn = config->apn ? config->apn : "",
         .primary_cid = config->primary_cid,
@@ -200,18 +217,25 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ESP_OK);
     }
 
+    /* Core 事件桥接：Core event → Facade → lwlte 用户回调 */
     ret = core_register_event_callback(me->core, lwlte_handle_core_event, me);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "register core event bridge failed: %s", esp_err_to_name(ret));
         return cleanup_after_failure(me, ret);
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 5：创建 Ping Client
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     me->ping = ping_client_create(me->core);
     if (!me->ping) {
         ESP_LOGE(TAG, "create Ping client failed");
         return cleanup_after_failure(me, ESP_OK);
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 6：按需创建 MQTT Client 并注册事件桥接
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     if (config->mqtt_client.enabled) {
         const mqtt_client_config_t mqtt_config = {
             .transport = MQTT_CLIENT_TRANSPORT_PLAIN_TCP,
@@ -231,6 +255,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
             ESP_LOGE(TAG, "create MQTT client failed");
             return cleanup_after_failure(me, ESP_OK);
         }
+        /* MQTT 事件桥接：MQTT event → Facade → lwlte 用户回调 */
         ret = mqtt_client_register_event_callback(me->mqtt, lwlte_handle_mqtt_event, me);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "register MQTT event bridge failed: %s", esp_err_to_name(ret));
@@ -238,12 +263,16 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         }
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 7：启动 Core 并等待系统就绪
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     ret = core_start(me->core);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "start core failed: %s", esp_err_to_name(ret));
         return cleanup_after_failure(me, ret);
     }
 
+    /* 在总超时内等待 Core 上报 CORE_EVENT_READY（SIM 可用 + 网络注册完成） */
     ret = remaining_timeout_ms(init_start_tick, total_ready_timeout_ms,
                                &stage_timeout_ms);
     if (ret != ESP_OK) {
@@ -257,6 +286,9 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ret);
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 8：按需自动连接网络
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     if (config->auto_connect) {
         ret = lwlte_connect(me);
         if (ret != ESP_OK) {

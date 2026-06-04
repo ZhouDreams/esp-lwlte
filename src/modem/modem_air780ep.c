@@ -841,17 +841,24 @@ static const modem_ops_t s_air780ep_ops = {
 modem_t *modem_air780ep_create(at_engine_t *at,
                                const modem_air780ep_config_t *config)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：参数校验
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     if (!at || !config) {
         ESP_LOGE(TAG, "NULL argument");
         return NULL;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：分配子类实例并归一化配置
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     modem_air780ep_t *self = calloc(1, sizeof(modem_air780ep_t));
     if (!self) {
         ESP_LOGE(TAG, "calloc air780ep modem failed");
         return NULL;
     }
 
+    /* 保存配置快照，为 0 的字段填入 Air780EP 默认值 */
     self->config = *config;
     if (self->config.default_cmd_timeout_ms == 0) {
         self->config.default_cmd_timeout_ms = AIR780EP_DEFAULT_CMD_TIMEOUT_MS;
@@ -860,18 +867,29 @@ modem_t *modem_air780ep_create(at_engine_t *at,
         self->config.ready_timeout_ms = AIR780EP_DEFAULT_READY_TIMEOUT_MS;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：初始化子类私有状态
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* SIM / 注册 / 信号缓存的初始值，对应"尚未查询"语义 */
     self->last_sim_status = MODEM_SIM_UNKNOWN;
     self->last_reg_status = MODEM_REG_UNKNOWN;
-    self->last_signal.rssi = 99;
+    self->last_signal.rssi = 99;       /* CSQ 中 99 表示未知 */
     self->last_signal.ber = 99;
     self->last_signal.rssi_dbm = 0;
     self->last_signal.rssi_dbm_valid = false;
 
+    /* PDP 上下文槽位：cid 从 1 开始编号，默认类型 "IP" */
     for (int i = 0; i < AIR780EP_MAX_PDP_CONTEXTS; i++) {
         self->pdp[i].cid = i + 1;
         strcpy(self->pdp[i].pdp_type, "IP");
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 4：初始化基类（modem_t）
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* modem_base_init 会设置 ops 虚函数表、保存 at 句柄、创建
+     * lock / event_queue / event_task 等基类公共资源。
+     * 失败时 self 由本函数释放，调用方无需清理。 */
     esp_err_t ret = modem_base_init(&self->base, "air780ep", at, &s_air780ep_ops,
                                     config->event_queue_size,
                                     config->event_task_stack,
@@ -882,6 +900,10 @@ modem_t *modem_air780ep_create(at_engine_t *at,
         return NULL;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 5：创建子类私有同步信号量
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* rdy_sema：init/reset 时阻塞等待模块上报 RDY URC */
     self->rdy_sema = xSemaphoreCreateBinary();
     if (!self->rdy_sema) {
         ESP_LOGE(TAG, "create RDY semaphore failed");
@@ -894,6 +916,7 @@ modem_t *modem_air780ep_create(at_engine_t *at,
         return NULL;
     }
 
+    /* cpin_ready_sema：get_sim_status 遇到 SIM busy 时等待 +CPIN: READY URC */
     self->cpin_ready_sema = xSemaphoreCreateBinary();
     if (!self->cpin_ready_sema) {
         ESP_LOGE(TAG, "create CPIN ready semaphore failed");
@@ -908,6 +931,11 @@ modem_t *modem_air780ep_create(at_engine_t *at,
         return NULL;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 6：返回基类指针
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 调用方只持有 modem_t *，通过 modem_* 包装 API 间接使用；
+     * Air780EP 子类细节完全隐藏 */
     return &self->base;
 }
 
