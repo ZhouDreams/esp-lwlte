@@ -59,14 +59,14 @@
 | 查询版本信息 | `AT+CGMR` | `+CGMR: "<revision>"` + `OK` | 软件版本标识 | 9s | `modem_info_t.fw_revision` | 可用于判断 AT 固件版本能力 |
 | 查询 IMEI | `AT+CGSN` | `<IMEI>` + `OK` | 15 位 IMEI | 9s | `modem_info_t.imei` | 纯数据行，无 `+CGSN:` 前缀 |
 | 查询 IMSI | `AT+CIMI` | `<IMSI>` + `OK` | 15 位 IMSI | 9s | `modem_info_t.imsi` | SIM 未 ready 时可能失败 |
-| 重启模块 | `AT+RESET` | `OK` | 无 | 9s | 保留为 AT 参考，不映射当前 `modem_reset()` | 当前 Air780EP reset 通过 EN 硬复位实现，等待 `RDY` 后重新执行初始化序列 |
+| 重启模块 | `AT+RESET` | `OK` | 无 | 9s | 保留为 AT 参考，不映射当前 `modem_reset()` | 当前 Air780EP reset 通过 EN 硬复位实现，轮询 `AT` 到 `OK` 后重新执行基础初始化序列 |
 | 功能模式 | `AT+CFUN=<fun>[,<rst>]`，`AT+CFUN?` | `+CFUN: <fun>` + `OK` | `0` 最少功能；`1` 全功能；`4` 飞行模式；`rst=1` 复位 ME | 45s | Air780EP 初始化/复位内部辅助步骤 | `AT+CFUN=1,1` 可主动重启模块 |
 
 ## 串口与结果码配置
 
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
-| 关闭回显 | `ATE0` | `OK` | `0` 关闭；`1` 打开 | 9s | 初始化第一步 | 关闭 echo 后可减少响应解析复杂度 |
+| 关闭回显 | `ATE0` | `OK` | `0` 关闭；`1` 打开 | 9s | `AT OK` 后的基础初始化命令 | 关闭 echo 后可减少响应解析复杂度 |
 | 错误结果码 | `AT+CMEE=<n>`，`AT+CMEE?` | `+CMEE: <n>` + `OK` | `0` 使用 `ERROR`；`1` 数字型 `+CME ERROR:<err>`；`2` 冗长文本 | 9s | 初始化设置 `AT+CMEE=1` | 数字型最适合 `at_response_t.error_code` |
 | 固定波特率 | `AT+IPR=<rate>`，`AT+IPR?` | `+IPR: <rate>` + `OK` | `0` 自适应；支持 `9600`、`115200`、`921600` 等 | 9s | 板级初始化或调试配置 | 需要持久化时使用 `AT+IPR=<rate>;&W` |
 | 流控 | `AT+IFC=<dce_by_dte>,<dte_by_dce>`，`AT+IFC?` | `+IFC: <dce_by_dte>,<dte_by_dce>` + `OK` | `0` 无流控；`1` 软件流控；`2` 硬件流控 | 9s | 高吞吐场景配置硬件流控 | 使用硬件流控建议 `AT+IFC=2,2;&W` |
@@ -260,11 +260,11 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 
 ## 系统 URC 注册清单
 
-以下前缀是基础系统层建议优先注册并翻译为 `modem_event_t` 的 URC。TCP、HTTP、MQTT 等连接层 URC 在下一小节列出，建议由对应连接层对象处理，避免系统层和业务层重复消费同一行。
+以下前缀是基础系统层建议优先注册并翻译为 `modem_event_t` 的 URC。TCP、HTTP、MQTT 等连接层 URC 在下一小节列出；当前 `+MSUB:` MQTT RX 由 Modem handler 转成协议数据事件，其它连接层 URC 暂不承诺直接处理边界。
 
 | 前缀/完整行 | 来源 | 触发条件 | 映射建议 | 注意事项 |
 |-------------|------|----------|----------|----------|
-| `RDY` | 模块启动 | 模块重启完成 | 释放初始化 RDY 等待；AT 初始化完成后再投递 `MODEM_EVENT_READY` | PDF 片段未系统列出，但旧实现已注册，实机常见 |
+| `RDY` | 模块启动 | 模块重启过程中可能自发出现 | 当前初始化不消费；仅作为串口日志现象 | PDF 片段未系统列出，实机常见，但启动 gate 改为硬复位后 `AT OK` |
 | `+CPIN:` | SIM | 重启后 PIN 状态自动上报、`AT+CSDT` SIM 在位检测触发，或其他 SIM 状态变化 | 更新 SIM 状态，必要时触发重新注册流程 | 同时也是 `AT+CPIN?` 查询响应前缀；SIM busy 恢复为 READY 不保证主动上报，不能替代 `AT+CPIN?` 轮询兜底 |
 | `+CREG:` | 网络注册 | CREG URC 开启后注册状态变化 | 更新通用注册状态 | 同时也是 `AT+CREG?` 查询响应前缀 |
 | `+CEREG:` | EPS 注册 | CEREG URC 开启后 LTE 注册状态变化 | 优先用于 LTE 注册状态 | 同时也是 `AT+CEREG?` 查询响应前缀 |
@@ -274,7 +274,7 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 
 ### 后续连接层 URC
 
-以下 URC/ACK 属于 TCP、HTTP、MQTT 连接层或数据路径。系统层不应直接翻译为通用网络事件，除非它们表示全局 PDP 去激活或 TCP 断链恢复入口。
+以下 URC/ACK 属于 TCP、HTTP、MQTT 连接层或数据路径。系统层不应直接翻译为通用网络事件，除非它们表示全局 PDP 去激活或 TCP 断链恢复入口。当前实现中 `+MSUB:` 由 Air780EP Modem 上报 `MODEM_EVENT_PROTOCOL_DATA`，Core 再转发给 MQTT service；其它连接层 URC 的直接对象边界后续再设计。
 
 | 前缀/完整行 | 来源 | 触发条件 | 后续映射建议 | 注意事项 |
 |-------------|------|----------|--------------|----------|
@@ -298,7 +298,7 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 | `CONNACK OK` | MQTT | MQTT CONNECT 成功 | MQTT connected | `MCONNECT` 后等待该行 |
 | `PUBACK` / `PUBREC` / `PUBCOMP` | MQTT publish | QoS1/QoS2 发布确认 | publish complete | QoS2 需等 `PUBREC` 和 `PUBCOMP` |
 | `SUBACK` / `UNSUBACK` | MQTT subscribe | 订阅/取消订阅成功 | subscribe complete | `MSUB/MUNSUB` 后等待 |
-| `+MSUB:` | MQTT receive | 收到订阅消息或缓存位置 | MQTT RX event | 直接模式含 topic/len/message；缓存模式只有 `store_addr` |
+| `+MSUB:` | MQTT receive | 收到订阅消息或缓存位置 | 当前 Modem handler → `MODEM_EVENT_PROTOCOL_DATA` → Core → MQTT service | 直接模式含 topic/len/message；缓存模式只有 `store_addr` |
 
 ## 推荐初始化与联网流程
 
@@ -306,17 +306,18 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 
 基础 TCPIP/PDP 激活流程：
 
-1. `ATE0`
-2. `AT+CMEE=1`
-3. `AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2`，启用注册状态 URC
-4. `AT+CPIN?`，要求 `+CPIN: READY`
-5. `AT+CSQ`，解析 `+CSQ: <rssi>,<ber>` 并按 Core 阈值判断信号可用性
-6. `AT+CEREG?` 或 `AT+CGREG?`，要求 `stat=1` 或 `stat=5`
-7. `AT+CGATT?`，要求 `+CGATT: 1`
-8. `AT+CSTT`，使用模块自动获取 APN；本实现的 TCPIP 激活路径仅支持 `cid=1`
-9. `AT+CIICR`，激活移动场景
-10. `AT+CIFSR`，读取本地 IP
-11. 可选 `AT+CIPPING="<host>",4,32,10,64`，执行基础连通性检查
+1. 硬复位后轮询 `AT`，直到返回 `OK`
+2. `ATE0`
+3. `AT+CMEE=1`
+4. `AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2`，启用注册状态 URC
+5. `AT+CPIN?`，要求 `+CPIN: READY`
+6. `AT+CSQ`，解析 `+CSQ: <rssi>,<ber>` 并按 Core 阈值判断信号可用性
+7. `AT+CEREG?` 或 `AT+CGREG?`，要求 `stat=1` 或 `stat=5`
+8. `AT+CGATT?`，要求 `+CGATT: 1`
+9. `AT+CSTT`，使用模块自动获取 APN；本实现的 TCPIP 激活路径仅支持 `cid=1`
+10. `AT+CIICR`，激活移动场景
+11. `AT+CIFSR`，读取本地 IP
+12. 可选 `AT+CIPPING="<host>",4,32,10,64`，执行基础连通性检查
 
 TCP 单连接非透传推荐流程：
 

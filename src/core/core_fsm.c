@@ -402,8 +402,9 @@ static void handle_start(core_t *me)
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 3：启动 Modem 模块
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    /* modem_start 内部：注册 URC → EN 硬复位 → 等 RDY → 基础 AT 命令
-     * → 上报 MODEM_EVENT_READY（由后续 handle_modem_event 接收） */
+    /* modem_start 阻塞完成：EN 硬复位 -> AT OK -> 基础 AT 初始化
+     * -> 注册运行期 URC -> MODEM_EVENT_READY。只有返回 ESP_OK 后，
+     * Core 才进入命令驱动的 SIM/注册/附着/PDP/IP 网络激活流程。 */
     esp_err_t ret = modem_start(me->modem);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "start modem failed: %s", esp_err_to_name(ret));

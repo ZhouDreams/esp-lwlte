@@ -718,7 +718,7 @@ void app_main(void)
 
 ### 5.5 生命周期模板
 
-用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_t *`，便于区分参数错误、内存不足和下层对象创建失败。RDY 等待和网络 online 是 `lwlte_start()` 之后的运行期结果，通过事件上报：
+用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_t *`，便于区分参数错误、内存不足和下层对象创建失败。`AT OK`/AT ready 和网络 online 是 `lwlte_start()` 之后的运行期结果；前者由 `modem_start()` 阻塞完成，后者通过事件上报：
 
 ```c
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,

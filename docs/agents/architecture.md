@@ -112,8 +112,8 @@ AT Eng: uart_write_bytes(uart_num, buf, len)    ← 直接调 ESP-IDF UART API
 ```
         硬件 RX 引脚
          │
-AT Eng: uart_read_bytes() → 行拼接 → 匹配 URC 前缀 → 分发给已注册的 handler
-         │  "AT Engine 只做模式匹配，不知道 URC 的模块含义"
+AT Eng: uart_read_bytes() → 行拼接 → 有活动命令时写入命令响应；空闲期匹配 URC 前缀并分发
+         │  "AT Engine 只做命令响应收集和空闲期 URC 模式匹配，不知道模块含义"
          │  持有：urc_handler_t *handlers[]  (按前缀字符串注册)
          │  回调：urc_handler(prefix, line)
          ▼
@@ -151,7 +151,7 @@ esp_err_t core_init(core_t *me, modem_t *modem)
 }
 ```
 
-运行时 URC 先进入 Modem handler，再经 `event_queue` / `event_task` 通知 Core，不再有向下的回调引用。
+空闲期 URC 先进入 Modem handler，再经 `event_queue` / `event_task` 通知 Core；命令期间收到的行优先归入当前命令响应，由发起命令的方法解析。
 
 ---
 
@@ -163,14 +163,14 @@ AT Engine 是内部最底层，直接操作 UART 硬件。
 
 | 维度 | 说明 |
 |------|------|
-| **职责** | 通用 AT 协议引擎 + UART 硬件操作：发命令、收响应、行解析、单次命令超时处理、URC 检测与分发 |
+| **职责** | 通用 AT 协议引擎 + UART 硬件操作：发命令、收响应、行解析、单次命令超时处理、空闲期 URC 检测与分发 |
 | **知道什么** | AT 协议格式（`AT+XXX\r\n`、`\r\nOK\r\n`、`\r\nERROR\r\n`）、超时机制、URC 前缀识别、UART 引脚与波特率 |
 | **不知道什么** | 具体 AT 指令的含义、模块型号、网络状态 |
 | **对外接口** | `at_engine_send_cmd(at, cmd, response, timeout)` 返回 `esp_err_t` 并填充调用方提供的 `at_response_t`；`at_engine_register_urc(at, prefix, handler)` |
 | **内部实现** | 创建 UART RX 接收线程（`xTaskCreate`），直接调用 `uart_write_bytes` / `uart_read_bytes`，用 `xQueue` 传递接收数据 |
 | **OOP 角色** | 协议栈 + 硬件驱动 — 所有 AT 模块共用的基础设施 |
 
-AT Engine 是一个"聪明的邮差"：会按地址送信、收信、识别加急件（URC），但从不拆信看内容。同时它也负责维护邮路（UART 硬件）本身。
+AT Engine 是一个"聪明的邮差"：会按地址送信、收信，并在没有当前命令时识别加急件（URC），但从不拆信看内容。同时它也负责维护邮路（UART 硬件）本身。
 
 AT Engine 的配置直接包含 UART 硬件参数：
 
@@ -317,10 +317,10 @@ Facade 模块 factory 是 composition root，是唯一认识所有装配 API 和
 
 生命周期职责边界：
 
-- `lwlte_air780ep_init()` 只负责创建和装配 `lwlte_t`、AT Engine、Modem、Core、Ping/MQTT service，不启动模块、不等待 RDY、不激活 PDP。
+- `lwlte_air780ep_init()` 只负责创建和装配 `lwlte_t`、AT Engine、Modem、Core、Ping/MQTT service，不启动模块、不等待 AT 通道 ready、不激活 PDP。
 - `lwlte_start()` 是用户显式启动入口，异步提交启动请求；最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
-- Core 在 `CORE_SIG_START` 中调用 `modem_start()`，随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程。
-- `modem_start()` 表示模块动态开机到基础 AT ready：注册 URC、硬复位/等待 RDY、基础 AT 初始化；不负责 APN/PDP/IP。
+- Core 在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程。
+- `modem_start()` 表示模块动态开机到基础 AT ready：硬复位/等待 `AT OK`/基础 AT 初始化，并注册运行期 URC；不负责 APN/PDP/IP。
 
 Air780EP modem 的动态开机由 Core 启动流程触发。Facade factory 只装配依赖并注册事件桥接，不在 init 中等待模块 ready。
 

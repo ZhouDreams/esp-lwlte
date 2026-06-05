@@ -36,7 +36,7 @@ extern "C" {
 typedef struct {
     gpio_num_t en_pin;                  /**< EN GPIO，GPIO_NUM_NC 表示不控制； EN GPIO, GPIO_NUM_NC disables control */
     uint32_t reset_pulse_ms;            /**< 复位脉冲时间(EN 拉低保持时长)； Reset pulse time (EN low hold duration) */
-    uint32_t ready_timeout_ms;          /**< 等待 RDY URC 超时； RDY URC wait timeout */
+    uint32_t ready_timeout_ms;          /**< 启动 AT OK 等待总超时； Startup AT OK wait total timeout */
     uint32_t default_cmd_timeout_ms;    /**< 默认命令超时； Default command timeout */
     int event_queue_size;               /**< 事件队列长度； Event queue size */
     int event_task_stack;               /**< 事件任务栈大小； Event task stack size */

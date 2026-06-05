@@ -37,6 +37,9 @@
 #define AIR780EP_CSTT_TIMEOUT_MS         60000
 #define AIR780EP_CIICR_TIMEOUT_MS        90000
 #define AIR780EP_CIPSHUT_TIMEOUT_MS      90000
+#define AIR780EP_AT_READY_PROBE_TIMEOUT_MS 1000
+#define AIR780EP_INIT_RETRY_DELAY_MS       500
+#define AIR780EP_INIT_CMD_MAX_ATTEMPTS     3
 #define AIR780EP_SIM_READY_TIMEOUT_MS     10000
 #define AIR780EP_SIM_READY_POLL_INTERVAL_MS 1000
 #define AIR780EP_CME_SIM_NOT_INSERTED     10
@@ -45,7 +48,6 @@
 #define AIR780EP_CME_SIM_FAILURE          13
 #define AIR780EP_CME_SIM_BUSY             14
 #define AIR780EP_CME_SIM_WRONG            15
-#define AIR780EP_URC_RDY                 "RDY"
 #define AIR780EP_URC_CPIN                "+CPIN:"
 #define AIR780EP_URC_CREG                "+CREG:"
 #define AIR780EP_URC_CEREG               "+CEREG:"
@@ -84,7 +86,6 @@ typedef struct {
 typedef struct {
     modem_t base;
     modem_air780ep_config_t config;
-    at_urc_handler_t rdy_handler;
     at_urc_handler_t cpin_handler;
     at_urc_handler_t creg_handler;
     at_urc_handler_t cereg_handler;
@@ -99,12 +100,6 @@ typedef struct {
     modem_signal_t last_signal;
     modem_pdp_context_t pdp[AIR780EP_MAX_PDP_CONTEXTS];
     modem_mqtt_config_t mqtt_config;
-    SemaphoreHandle_t rdy_sema;
-    bool rdy_seen;
-    bool waiting_rdy;
-    SemaphoreHandle_t cpin_ready_sema;
-    bool cpin_ready_seen;
-    bool waiting_cpin_ready;
     bool urc_registered;
     bool initialized;
     bool mqtt_configured;
@@ -650,39 +645,37 @@ static void set_mqtt_data_enabled(modem_air780ep_t *self, bool enabled);
 static bool mqtt_data_is_enabled(modem_air780ep_t *self);
 
 /**
- * @brief 清除 RDY 等待状态
- * @details Clear RDY wait state
- * @param[in] self Air780EP 调制解调器实例
+ * @brief 获取当前毫秒时间
+ * @details Get current time in milliseconds
+ * @return 当前毫秒时间
  */
-static void clear_rdy_state(modem_air780ep_t *self);
+static uint32_t now_ms(void);
 
 /**
- * @brief 开始等待 RDY URC
- * @details Begin waiting for RDY URC
- * @param[in] self Air780EP 调制解调器实例
- * @return
- *         - ESP_OK: 成功
- *         - ESP_ERR_INVALID_ARG: 参数无效
+ * @brief 判断是否已达到超时时间
+ * @details Check whether timeout has elapsed
+ * @param[in] start_ms 起始毫秒时间
+ * @param[in] timeout_ms 超时时间
+ * @return true: 已超时； false: 未超时
  */
-static esp_err_t begin_wait_rdy(modem_air780ep_t *self);
+static bool elapsed_at_least(uint32_t start_ms, uint32_t timeout_ms);
 
 /**
- * @brief 取消等待 RDY URC
- * @details Cancel waiting for RDY URC
- * @param[in] self Air780EP 调制解调器实例
+ * @brief 延迟初始化重试
+ * @details Delay before initialization retry
  */
-static void cancel_wait_rdy(modem_air780ep_t *self);
+static void delay_init_retry(void);
 
 /**
- * @brief 等待 RDY URC
- * @details Wait for RDY URC
+ * @brief 等待 AT 命令通道就绪
+ * @details Wait until AT command channel is ready
  * @param[in] self Air780EP 调制解调器实例
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_TIMEOUT: 超时
  */
-static esp_err_t wait_rdy(modem_air780ep_t *self);
+static esp_err_t wait_at_ready(modem_air780ep_t *self);
 
 /**
  * @brief 执行基础初始化命令
@@ -735,8 +728,12 @@ static esp_err_t register_urcs(modem_air780ep_t *self);
  * @brief 注销 Air780EP URC 处理器
  * @details Unregister Air780EP URC handlers
  * @param[in] self Air780EP 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 引擎注销错误
  */
-static void unregister_urcs(modem_air780ep_t *self);
+static esp_err_t unregister_urcs(modem_air780ep_t *self);
 
 /**
  * @brief 注销 Air780EP URC 处理器
@@ -748,15 +745,6 @@ static void unregister_urcs(modem_air780ep_t *self);
  *         - 其他: AT 引擎注销错误
  */
 static esp_err_t air780ep_unregister_urcs(modem_air780ep_t *self);
-
-/**
- * @brief 处理 RDY URC
- * @details Handle RDY URC
- * @param[in] prefix URC 前缀
- * @param[in] line URC 完整行
- * @param[in] user_ctx 用户上下文
- */
-static void rdy_urc_handler(const char *prefix, const char *line, void *user_ctx);
 
 /**
  * @brief 处理 CPIN URC
@@ -896,37 +884,6 @@ modem_t *modem_air780ep_create(at_engine_t *at,
                                     config->event_task_priority);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "modem base init failed: %s", esp_err_to_name(ret));
-        free(self);
-        return NULL;
-    }
-
-    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     * 步骤 5：创建子类私有同步信号量
-     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    /* rdy_sema：init/reset 时阻塞等待模块上报 RDY URC */
-    self->rdy_sema = xSemaphoreCreateBinary();
-    if (!self->rdy_sema) {
-        ESP_LOGE(TAG, "create RDY semaphore failed");
-        esp_err_t cleanup_ret = modem_base_deinit(&self->base);
-        if (cleanup_ret != ESP_OK) {
-            ESP_LOGW(TAG, "cleanup after RDY semaphore failure failed: %s",
-                     esp_err_to_name(cleanup_ret));
-        }
-        free(self);
-        return NULL;
-    }
-
-    /* cpin_ready_sema：get_sim_status 遇到 SIM busy 时等待 +CPIN: READY URC */
-    self->cpin_ready_sema = xSemaphoreCreateBinary();
-    if (!self->cpin_ready_sema) {
-        ESP_LOGE(TAG, "create CPIN ready semaphore failed");
-        vSemaphoreDelete(self->rdy_sema);
-        self->rdy_sema = NULL;
-        esp_err_t cleanup_ret = modem_base_deinit(&self->base);
-        if (cleanup_ret != ESP_OK) {
-            ESP_LOGW(TAG, "cleanup after CPIN semaphore failure failed: %s",
-                     esp_err_to_name(cleanup_ret));
-        }
         free(self);
         return NULL;
     }
@@ -1941,75 +1898,53 @@ static void clear_mqtt_state(modem_air780ep_t *self)
     }
 }
 
-static void clear_rdy_state(modem_air780ep_t *self)
+static uint32_t now_ms(void)
 {
-    if (!self) {
-        return;
-    }
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
 
-    if (self->base.lock) {
-        xSemaphoreTake(self->base.lock, portMAX_DELAY);
-        self->rdy_seen = false;
-        self->waiting_rdy = false;
-        xSemaphoreGive(self->base.lock);
-    } else {
-        self->rdy_seen = false;
-        self->waiting_rdy = false;
-    }
+static bool elapsed_at_least(uint32_t start_ms, uint32_t timeout_ms)
+{
+    return (uint32_t)(now_ms() - start_ms) >= timeout_ms;
+}
 
-    if (self->rdy_sema) {
-        while (xSemaphoreTake(self->rdy_sema, 0) == pdTRUE) {
+static void delay_init_retry(void)
+{
+    vTaskDelay(timeout_ticks(AIR780EP_INIT_RETRY_DELAY_MS));
+}
+
+static esp_err_t wait_at_ready(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    const uint32_t timeout_ms = self->config.ready_timeout_ms;
+    const uint32_t start_ms = now_ms();
+    unsigned int attempt = 1;
+
+    while (!elapsed_at_least(start_ms, timeout_ms)) {
+        air780ep_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, "AT", &ctx,
+                                 AIR780EP_AT_READY_PROBE_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT");
         }
-    }
-}
+        if (ret == ESP_OK) {
+            return ESP_OK;
+        }
 
-static esp_err_t begin_wait_rdy(modem_air780ep_t *self)
-{
-    ESP_RETURN_ON_FALSE(self && self->base.lock && self->rdy_sema,
-                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+        ESP_LOGW(TAG, "AT ready probe failed (attempt %u): %s",
+                 attempt, esp_err_to_name(ret));
+        attempt++;
 
-    xSemaphoreTake(self->base.lock, portMAX_DELAY);
-    self->waiting_rdy = true;
-    xSemaphoreGive(self->base.lock);
-
-    return ESP_OK;
-}
-
-static void cancel_wait_rdy(modem_air780ep_t *self)
-{
-    if (!self || !self->base.lock) {
-        return;
-    }
-
-    xSemaphoreTake(self->base.lock, portMAX_DELAY);
-    self->waiting_rdy = false;
-    xSemaphoreGive(self->base.lock);
-}
-
-static esp_err_t wait_rdy(modem_air780ep_t *self)
-{
-    ESP_RETURN_ON_FALSE(self && self->base.lock && self->rdy_sema,
-                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-
-    xSemaphoreTake(self->base.lock, portMAX_DELAY);
-    bool seen = self->rdy_seen;
-    xSemaphoreGive(self->base.lock);
-
-    if (!seen) {
-        TickType_t ticks = timeout_ticks(self->config.ready_timeout_ms);
-        BaseType_t sema_ret = xSemaphoreTake(self->rdy_sema, ticks);
-        if (sema_ret != pdTRUE) {
-            cancel_wait_rdy(self);
-            return ESP_ERR_TIMEOUT;
+        if (!elapsed_at_least(start_ms, timeout_ms)) {
+            /* delay_init_retry wraps vTaskDelay(timeout_ticks(AIR780EP_INIT_RETRY_DELAY_MS)). */
+            delay_init_retry();
         }
     }
 
-    xSemaphoreTake(self->base.lock, portMAX_DELAY);
-    seen = self->rdy_seen;
-    self->waiting_rdy = false;
-    xSemaphoreGive(self->base.lock);
-
-    return seen ? ESP_OK : ESP_ERR_TIMEOUT;
+    ESP_LOGE(TAG, "AT ready probe timeout after %u ms",
+             (unsigned int)timeout_ms);
+    return ESP_ERR_TIMEOUT;
 }
 
 static esp_err_t run_basic_init_cmds(modem_air780ep_t *self)
@@ -2027,7 +1962,7 @@ static esp_err_t run_basic_init_cmds(modem_air780ep_t *self)
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
         esp_err_t ret = ESP_FAIL;
-        for (int attempt = 0; attempt < 3; attempt++) {
+        for (int attempt = 1; attempt <= AIR780EP_INIT_CMD_MAX_ATTEMPTS; attempt++) {
             air780ep_cmd_ctx_t ctx;
             ret = send_cmd(self, cmds[i], &ctx, 0);
             if (ret == ESP_OK) {
@@ -2036,9 +1971,15 @@ static esp_err_t run_basic_init_cmds(modem_air780ep_t *self)
             if (ret == ESP_OK) {
                 break;
             }
-            ESP_LOGW(TAG, "%s failed (attempt %d/3): %s", cmds[i], attempt + 1, esp_err_to_name(ret));
+            ESP_LOGW(TAG, "%s failed (attempt %d/%d): %s", cmds[i], attempt,
+                     AIR780EP_INIT_CMD_MAX_ATTEMPTS, esp_err_to_name(ret));
+            if (attempt < AIR780EP_INIT_CMD_MAX_ATTEMPTS) {
+                /* delay_init_retry wraps vTaskDelay(timeout_ticks(AIR780EP_INIT_RETRY_DELAY_MS)). */
+                delay_init_retry();
+            }
         }
-        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed after 3 attempts", cmds[i]);
+        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed after %d attempts", cmds[i],
+                            AIR780EP_INIT_CMD_MAX_ATTEMPTS);
     }
 
     return ESP_OK;
@@ -2071,25 +2012,13 @@ static esp_err_t hardware_reset(modem_air780ep_t *self)
     esp_err_t ret = at_engine_begin_exclusive(self->base.at);
     ESP_RETURN_ON_ERROR(ret, TAG, "begin AT exclusive failed");
 
+    ret = at_engine_flush_rx_exclusive(self->base.at);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "flush RX input before reset failed");
+
     if (self->config.en_pin == GPIO_NUM_NC) {
-        clear_rdy_state(self);
-
-        ret = at_engine_flush_rx_exclusive(self->base.at);
-        if (ret != ESP_OK) {
-            at_engine_end_exclusive(self->base.at);
-            ESP_RETURN_ON_ERROR(ret, TAG, "flush RX input failed");
-        }
-
-        ret = begin_wait_rdy(self);
         at_engine_end_exclusive(self->base.at);
-        ESP_RETURN_ON_ERROR(ret, TAG, "begin RDY wait failed");
         return ESP_OK;
     }
-
-    clear_rdy_state(self);
-
-    ret = at_engine_flush_rx_exclusive(self->base.at);
-    ESP_GOTO_ON_ERROR(ret, err_before_en_low, TAG, "flush RX input before reset failed");
 
     gpio_config_t io_conf = {
         .pin_bit_mask = 1ULL << (uint32_t)self->config.en_pin,
@@ -2099,39 +2028,33 @@ static esp_err_t hardware_reset(modem_air780ep_t *self)
         .intr_type = GPIO_INTR_DISABLE,
     };
     ret = gpio_config(&io_conf);
-    ESP_GOTO_ON_ERROR(ret, err_before_en_low, TAG, "configure EN GPIO failed");
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "configure EN GPIO failed");
 
     ret = gpio_set_level(self->config.en_pin, 0);
-    ESP_GOTO_ON_ERROR(ret, err_before_en_low, TAG, "set EN GPIO low failed");
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "set EN GPIO low failed");
 
     if (self->config.reset_pulse_ms > 0) {
         vTaskDelay(timeout_ticks(self->config.reset_pulse_ms));
     }
 
-    clear_rdy_state(self);
-
     ret = at_engine_flush_rx_exclusive(self->base.at);
-    ESP_GOTO_ON_ERROR(ret, err_after_en_low, TAG, "flush RX input failed");
-
-    ret = begin_wait_rdy(self);
-    ESP_GOTO_ON_ERROR(ret, err_after_en_low, TAG, "begin RDY wait failed");
+    ESP_GOTO_ON_ERROR(ret, err_restore_en, TAG, "flush RX input after EN low failed");
 
     ret = gpio_set_level(self->config.en_pin, 1);
-    ESP_GOTO_ON_ERROR(ret, err_after_en_low, TAG, "set EN GPIO high failed");
+    ESP_GOTO_ON_ERROR(ret, err_restore_en, TAG, "set EN GPIO high failed");
 
     at_engine_end_exclusive(self->base.at);
     return ESP_OK;
 
-err_after_en_low:
+err_restore_en:
     {
         esp_err_t restore_ret = gpio_set_level(self->config.en_pin, 1);
         if (restore_ret != ESP_OK) {
             ESP_LOGW(TAG, "restore EN GPIO high failed: %s", esp_err_to_name(restore_ret));
         }
     }
-err_before_en_low:
+err:
     at_engine_end_exclusive(self->base.at);
-
     return ret;
 }
 
@@ -2157,7 +2080,6 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
         at_urc_handler_t *handler;
         at_urc_callback_t callback;
     } urcs[] = {
-        { AIR780EP_URC_RDY, &self->rdy_handler, rdy_urc_handler },
         { AIR780EP_URC_CPIN, &self->cpin_handler, cpin_urc_handler },
         { AIR780EP_URC_CREG, &self->creg_handler, reg_urc_handler },
         { AIR780EP_URC_CEREG, &self->cereg_handler, reg_urc_handler },
@@ -2226,12 +2148,13 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
     return ESP_OK;
 }
 
-static void unregister_urcs(modem_air780ep_t *self)
+static esp_err_t unregister_urcs(modem_air780ep_t *self)
 {
     esp_err_t ret = air780ep_unregister_urcs(self);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "unregister URCs failed: %s", esp_err_to_name(ret));
     }
+    return ret;
 }
 
 static esp_err_t air780ep_destroy(modem_t *me)
@@ -2251,20 +2174,6 @@ static esp_err_t air780ep_destroy(modem_t *me)
         }
     }
 
-    if (self->rdy_sema) {
-        vSemaphoreDelete(self->rdy_sema);
-        self->rdy_sema = NULL;
-    }
-    self->rdy_seen = false;
-    self->waiting_rdy = false;
-
-    if (self->cpin_ready_sema) {
-        vSemaphoreDelete(self->cpin_ready_sema);
-        self->cpin_ready_sema = NULL;
-    }
-    self->cpin_ready_seen = false;
-    self->waiting_cpin_ready = false;
-
     set_initialized(self, false);
     return ESP_OK;
 }
@@ -2274,7 +2183,8 @@ static esp_err_t air780ep_start(modem_t *me)
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
     modem_air780ep_t *self = to_air780ep(me);
-    bool urc_registered_before = self->urc_registered;
+    bool urc_disabled_for_init = false;
+    bool urc_register_attempted = false;
     esp_err_t ret = ESP_OK;
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2299,36 +2209,39 @@ static esp_err_t air780ep_start(modem_t *me)
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "set initializing state failed");
 
-    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     * 步骤 3：注册 URC 处理器
-     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    /* 向 AT Engine 注册 RDY、PDP、MQTT 等 URC 匹配规则；
-     * 必须在 hardware_reset 之前注册，否则 RDY URC 会丢失 */
-    ret = register_urcs(self);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
+    if (self->urc_registered) {
+        ret = unregister_urcs(self);
+        ESP_GOTO_ON_ERROR(ret, err, TAG, "disable URCs before init failed");
+        urc_disabled_for_init = true;
+    }
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     * 步骤 4：硬件复位模块
+     * 步骤 3：硬件复位模块
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     /* 通过 EN 引脚执行硬件复位（拉低 → 拉高），重启 Air780EP */
     ret = hardware_reset(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "hardware reset failed");
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     * 步骤 5：等待模块上报 RDY
+     * 步骤 4：等待 AT 命令通道就绪
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    /* 阻塞等待 AT Engine 的 rx_task 收到 "RDY" URC，
-     * 超时则返回 ESP_ERR_TIMEOUT */
-    ret = wait_rdy(self);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait RDY failed");
+    ret = wait_at_ready(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait AT ready failed");
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     * 步骤 6：发送基础 AT 初始化命令
+     * 步骤 5：发送基础 AT 初始化命令
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     /* 关闭回显、配置错误报告格式、设置波特率锁定等，
      * 确保模块进入可控的命令交互模式 */
     ret = run_basic_init_cmds(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "run init commands failed");
+
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 6：注册运行期 URC 处理器
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    urc_register_attempted = true;
+    ret = register_urcs(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 7：标记 READY 并通知上层
@@ -2344,10 +2257,8 @@ static esp_err_t air780ep_start(modem_t *me)
      * 错误清理：回滚所有副作用
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 err:
-    cancel_wait_rdy(self);
-    /* 仅在本次调用新注册了 URC 时才反注册，避免误删先前已有的注册 */
-    if (!urc_registered_before && self->urc_registered) {
-        unregister_urcs(self);
+    if (self->urc_registered && (urc_disabled_for_init || urc_register_attempted)) {
+        (void)unregister_urcs(self);
     }
     set_initialized(self, false);
     (void)modem_set_state(me, MODEM_STATE_ERROR);
@@ -2359,7 +2270,8 @@ static esp_err_t air780ep_reset(modem_t *me)
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
     modem_air780ep_t *self = to_air780ep(me);
-    bool urc_registered_before = self->urc_registered;
+    bool urc_disabled_for_init = false;
+    bool urc_register_attempted = false;
     esp_err_t ret = ESP_OK;
 
     if (self->base.lock) {
@@ -2376,17 +2288,24 @@ static esp_err_t air780ep_reset(modem_t *me)
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "set initializing state failed");
 
-    ret = register_urcs(self);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
+    if (self->urc_registered) {
+        ret = unregister_urcs(self);
+        ESP_GOTO_ON_ERROR(ret, err, TAG, "disable URCs before init failed");
+        urc_disabled_for_init = true;
+    }
 
     ret = hardware_reset(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "hardware reset failed");
 
-    ret = wait_rdy(self);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait RDY failed");
+    ret = wait_at_ready(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait AT ready failed");
 
     ret = run_basic_init_cmds(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "run init commands failed");
+
+    urc_register_attempted = true;
+    ret = register_urcs(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
 
     ret = finish_modem_ready(me, self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "finish modem ready failed");
@@ -2394,9 +2313,8 @@ static esp_err_t air780ep_reset(modem_t *me)
     return ESP_OK;
 
 err:
-    cancel_wait_rdy(self);
-    if (!urc_registered_before && self->urc_registered) {
-        unregister_urcs(self);
+    if (self->urc_registered && (urc_disabled_for_init || urc_register_attempted)) {
+        (void)unregister_urcs(self);
     }
     set_initialized(self, false);
     (void)modem_set_state(me, MODEM_STATE_ERROR);
@@ -2511,26 +2429,9 @@ static esp_err_t air780ep_get_sim_status(modem_t *me, modem_sim_status_t *status
                     break;
                 }
 
-                xSemaphoreTake(self->base.lock, portMAX_DELAY);
-                while (xSemaphoreTake(self->cpin_ready_sema, 0) == pdTRUE) {
-                }
-                self->cpin_ready_seen = false;
-                self->waiting_cpin_ready = true;
-                xSemaphoreGive(self->base.lock);
-
-                ESP_LOGW(TAG, "AT+CPIN? returned SIM busy, wait URC or %u ms",
+                ESP_LOGW(TAG, "AT+CPIN? returned SIM busy, retry in %u ms",
                          (unsigned int)wait_ms);
-
-                TickType_t ticks = timeout_ticks(wait_ms);
-                bool urc_received = xSemaphoreTake(self->cpin_ready_sema, ticks) == pdTRUE;
-
-                xSemaphoreTake(self->base.lock, portMAX_DELAY);
-                self->waiting_cpin_ready = false;
-                xSemaphoreGive(self->base.lock);
-
-                if (urc_received) {
-                    ESP_LOGI(TAG, "+CPIN: READY URC received, immediate retry");
-                }
+                vTaskDelay(timeout_ticks(wait_ms));
                 continue;
             }
         }
@@ -3819,7 +3720,6 @@ static esp_err_t air780ep_unregister_urcs(modem_air780ep_t *self)
         const char *prefix;
         at_urc_handler_t *handler;
     } urcs[] = {
-        { AIR780EP_URC_RDY, &self->rdy_handler },
         { AIR780EP_URC_CPIN, &self->cpin_handler },
         { AIR780EP_URC_CREG, &self->creg_handler },
         { AIR780EP_URC_CEREG, &self->cereg_handler },
@@ -3850,36 +3750,6 @@ static esp_err_t air780ep_unregister_urcs(modem_air780ep_t *self)
     return ret;
 }
 
-static void rdy_urc_handler(const char *prefix, const char *line, void *user_ctx)
-{
-    (void)prefix;
-    (void)line;
-
-    if (!user_ctx) {
-        return;
-    }
-
-    modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
-    bool signal_waiter = false;
-    SemaphoreHandle_t rdy_sema = NULL;
-
-    if (!self->base.lock) {
-        return;
-    }
-    xSemaphoreTake(self->base.lock, portMAX_DELAY);
-    if (self->waiting_rdy) {
-        self->rdy_seen = true;
-        signal_waiter = true;
-        rdy_sema = self->rdy_sema;
-    }
-    xSemaphoreGive(self->base.lock);
-
-    if (signal_waiter && rdy_sema) {
-        (void)xSemaphoreGive(rdy_sema);
-    }
-
-}
-
 static void cpin_urc_handler(const char *prefix, const char *line, void *user_ctx)
 {
     (void)prefix;
@@ -3891,22 +3761,10 @@ static void cpin_urc_handler(const char *prefix, const char *line, void *user_ct
     modem_air780ep_t *self = (modem_air780ep_t *)user_ctx;
     modem_sim_status_t status = parse_sim_status_line(line);
 
-    bool signal_waiter = false;
-    SemaphoreHandle_t cpin_ready_sema = NULL;
-
     if (self->base.lock) {
         xSemaphoreTake(self->base.lock, portMAX_DELAY);
         self->last_sim_status = status;
-        if (self->waiting_cpin_ready && status == MODEM_SIM_READY) {
-            self->cpin_ready_seen = true;
-            signal_waiter = true;
-            cpin_ready_sema = self->cpin_ready_sema;
-        }
         xSemaphoreGive(self->base.lock);
-    }
-
-    if (signal_waiter && cpin_ready_sema) {
-        (void)xSemaphoreGive(cpin_ready_sema);
     }
 
     const modem_event_t event = {

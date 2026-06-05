@@ -201,7 +201,7 @@ typedef struct {
  * @note uart_num、uart_tx_pin、uart_rx_pin、uart_baud_rate 和 primary_cid 为必填字段。
  * @note en_pin 可设为 GPIO_NUM_NC，以禁用门面对 EN GPIO 的控制。
  * @note 超时、任务和缓冲区字段为 0 时使用下层默认值。
- * @note init_ready_timeout_ms 为 0 时使用下层默认值；该值在 lwlte_start() 触发 modem_start() 时作为 Air780EP RDY 等待超时。
+ * @note init_ready_timeout_ms 为 0 时使用下层默认值；lwlte_start() 仅提交启动请求，Core FSM 处理启动信号并调用阻塞式 modem_start() 时，该值作为 Air780EP 硬复位后等待 AT OK 的总超时。
  * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
  * @note mqtt_client.enabled 为 false 时 MQTT 服务禁用；为 true 时 host、port 和 client_id 为必填字段。
  * @note UART 端口必须满足 UART_NUM_0 <= uart_num < UART_NUM_MAX；UART TX/RX 必须是有效 GPIO 且不能为 GPIO_NUM_NC。
@@ -216,7 +216,7 @@ typedef struct {
     gpio_num_t en_pin;                    /**< 可选模块 EN GPIO，GPIO_NUM_NC 表示不控制； Optional module EN GPIO, GPIO_NUM_NC disables control */
     const char *apn;                      /**< 可选 APN，NULL/空表示门面不配置； Optional APN, NULL/empty means facade does not configure it */
     uint8_t primary_cid;                  /**< 必填主 PDP 上下文 ID，Air780EP 门面当前仅支持 1； Required primary PDP context ID, Air780EP facade currently supports 1 only */
-    uint32_t init_ready_timeout_ms;        /**< Air780EP RDY 等待超时，0 使用下层默认值； Air780EP RDY wait timeout, 0 uses lower-layer default */
+    uint32_t init_ready_timeout_ms;        /**< Air780EP AT OK 等待总超时，0 使用下层默认值； Air780EP AT OK wait timeout, 0 uses lower-layer default */
     uint32_t net_activate_timeout_ms;      /**< 网络激活总超时，0 使用 Core 默认值； Network activation timeout, 0 uses Core default */
     uint32_t reconnect_delay_ms;           /**< 重连延迟，0 使用 Core 默认值； Reconnect delay, 0 uses Core default */
     int at_rx_buf_size;                   /**< AT RX 缓冲大小，0 使用默认值； AT RX buffer size, 0 uses default */
@@ -243,7 +243,7 @@ typedef struct {
 /**
  * @brief 初始化 Air780EP LTE 用户门面
  * @details Initialize Air780EP LTE user facade
- * @note 该函数只创建 LTE 用户门面及内部对象，不启动模块、不等待 RDY、不激活 PDP。
+ * @note 该函数只创建 LTE 用户门面及内部对象，不启动模块、不等待 AT ready、不激活 PDP。
  * @note ESP_OK 返回时 *out_lte 为可用句柄，所有权转移给调用方，必须通过 lwlte_destroy() 释放。
  * @note 调用方应注册事件回调后调用 lwlte_start()；最终 online 结果通过 LWLTE_EVENT_NET_ONLINE 上报。
  * @note 非 ESP_OK 返回时不会转移句柄所有权，门面会尽力释放已创建的内部资源。

@@ -48,14 +48,14 @@ Default wiring targets the ESP32-C3 Pro DevKit setup used during development.
 | GPIO2 | EN | Controlled by modem adapter |
 | GND | GND | Common ground required |
 
-The Air780EP EN pin is level-controlled. High keeps the module running; low powers it down. The modem adapter registers URC handlers first, toggles EN low then high during init, waits for the module `RDY` URC, and only then sends AT initialization commands.
+The Air780EP EN pin is level-controlled. High keeps the module running; low powers it down. The modem adapter toggles EN low then high during start/reset, polls `AT` until `OK`, and then sends basic AT initialization commands.
 
 ## Basic Connect
 
 `EXAMPLE_BASIC_CONNECT` demonstrates the minimum useful esp-lwlte flow:
 
 1. Create an Air780EP LWLTE facade over UART.
-2. Let the modem adapter reset EN, wait RDY, and run AT init internally.
+2. Let the modem adapter hard reset EN, wait for `AT OK`, and run basic AT init internally.
 3. Register LTE facade events.
 4. Start LTE network activation.
 5. Run ping after the network is online.
