@@ -383,15 +383,27 @@ static void handle_signal(core_t *me, core_fsm_sig_t *sig)
 
 static void handle_start(core_t *me)
 {
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：前置状态检查
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 只接受从 STOPPED 状态启动；STARTING / READY / ONLINE 等状态直接忽略 */
     core_state_t state = core_get_state_value(me);
 
     if (state != CORE_STATE_STOPPED) {
         return;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：迁移到 STARTING 并通知上层
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     core_set_state(me, CORE_STATE_STARTING);
     post_event_checked(me, CORE_EVENT_STARTED, NULL);
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：启动 Modem 模块
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* modem_start 内部：注册 URC → EN 硬复位 → 等 RDY → 基础 AT 命令
+     * → 上报 MODEM_EVENT_READY（由后续 handle_modem_event 接收） */
     esp_err_t ret = modem_start(me->modem);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "start modem failed: %s", esp_err_to_name(ret));
@@ -399,6 +411,11 @@ static void handle_start(core_t *me)
         return;
     }
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 4：进入 READY 并启动网络激活
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* modem_start 成功后立即标记 READY（不依赖 MODEM_EVENT_READY，
+     * 因为 modem_start 已同步完成所有初始化） */
     handle_ready(me);
     ret = net_mgr_start_activation(me);
     if (ret != ESP_OK) {

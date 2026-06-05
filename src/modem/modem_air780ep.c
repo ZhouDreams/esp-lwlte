@@ -2277,6 +2277,11 @@ static esp_err_t air780ep_start(modem_t *me)
     bool urc_registered_before = self->urc_registered;
     esp_err_t ret = ESP_OK;
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 1：重置内部运行状态
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 在锁保护下清零 MQTT 连接标志，防止并发读取到过期状态；
+     * 同时清除 initialized 标志，表示模块尚未完成启动 */
     if (self->base.lock) {
         xSemaphoreTake(self->base.lock, portMAX_DELAY);
     }
@@ -2288,28 +2293,59 @@ static esp_err_t air780ep_start(modem_t *me)
     }
     set_initialized(self, false);
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 2：迁移状态到 INITIALIZING
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "set initializing state failed");
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 3：注册 URC 处理器
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 向 AT Engine 注册 RDY、PDP、MQTT 等 URC 匹配规则；
+     * 必须在 hardware_reset 之前注册，否则 RDY URC 会丢失 */
     ret = register_urcs(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 4：硬件复位模块
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 通过 EN 引脚执行硬件复位（拉低 → 拉高），重启 Air780EP */
     ret = hardware_reset(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "hardware reset failed");
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 5：等待模块上报 RDY
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 阻塞等待 AT Engine 的 rx_task 收到 "RDY" URC，
+     * 超时则返回 ESP_ERR_TIMEOUT */
     ret = wait_rdy(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "wait RDY failed");
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 6：发送基础 AT 初始化命令
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* 关闭回显、配置错误报告格式、设置波特率锁定等，
+     * 确保模块进入可控的命令交互模式 */
     ret = run_basic_init_cmds(self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "run init commands failed");
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 步骤 7：标记 READY 并通知上层
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+    /* set_state(READY) → set_initialized(true) → post MODEM_EVENT_READY，
+     * Core FSM 的 handle_modem_event 收到后进入 READY 状态 */
     ret = finish_modem_ready(me, self);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "finish modem ready failed");
 
     return ESP_OK;
 
+    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     * 错误清理：回滚所有副作用
+     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 err:
     cancel_wait_rdy(self);
+    /* 仅在本次调用新注册了 URC 时才反注册，避免误删先前已有的注册 */
     if (!urc_registered_before && self->urc_registered) {
         unregister_urcs(self);
     }
