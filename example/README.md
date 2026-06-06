@@ -1,17 +1,17 @@
 # Unified Examples
 
-All examples now build from the repository root. Select the example to run by editing `EXAMPLE_SELECTED` in `example/main.c`:
+All examples build from the repository root. Select the example to run by editing `EXAMPLE_SELECTED` in `example/main.c`:
 
 ```c
-#define EXAMPLE_SELECTED    EXAMPLE_BASIC_CONNECT
+#define EXAMPLE_SELECTED    EXAMPLE_AIR780EP_BASIC_CONNECT
 ```
 
 Available selections:
 
 | Value | Description |
 |-------|-------------|
-| `EXAMPLE_BASIC_CONNECT` | Air780EP LTE basic connect and ping example |
-| `EXAMPLE_MQTT_CLIENT` | Air780EP ThingsBoard MQTT client example |
+| `EXAMPLE_AIR780EP_BASIC_CONNECT` | Air780EP LTE basic connect and ping example |
+| `EXAMPLE_AIR780EP_MQTT_CLIENT` | Air780EP ThingsBoard MQTT publish/subscribe example |
 | `EXAMPLE_ML307R_PROBE` | ML307R raw UART probe example |
 
 ## Build
@@ -50,30 +50,29 @@ Default wiring targets the ESP32-C3 Pro DevKit setup used during development.
 
 The Air780EP EN pin is level-controlled. High keeps the module running; low powers it down. The modem adapter toggles EN low then high during start/reset, polls `AT` until `OK`, and then sends basic AT initialization commands.
 
-## Basic Connect
+## Air780EP Basic Connect
 
-`EXAMPLE_BASIC_CONNECT` demonstrates the minimum useful esp-lwlte flow:
+`EXAMPLE_AIR780EP_BASIC_CONNECT` demonstrates the minimum useful esp-lwlte Air780EP flow:
 
 1. Create an Air780EP LWLTE facade over UART.
-2. Let the modem adapter hard reset EN, wait for `AT OK`, and run basic AT init internally.
-3. Register LTE facade events.
-4. Start LTE network activation.
-5. Run ping after the network is online.
-6. Print LTE/network events and periodic state.
+2. Register LTE facade events.
+3. Start LTE network activation asynchronously.
+4. Wait for `LWLTE_EVENT_NET_ONLINE`.
+5. Run one ping after the network is online.
 
 Expected logs include:
 
 ```text
-esp-lwlte basic connect example
-LTE event: NET_CONNECTING net=ACTIVATING err=0
-LTE event: NET_ONLINE net=ONLINE err=0
-LTE network is online
-periodic: lte=ONLINE net=ONLINE
+Air780EP basic connect example
+LTE event=2 net=1 err=0
+LTE event=3 net=2 err=0
+Air780EP network is online
+ping summary: sent=4 recv=4 lost=0 min=... max=... avg=...
 ```
 
-## MQTT Client
+## Air780EP MQTT Client
 
-`EXAMPLE_MQTT_CLIENT` demonstrates a ThingsBoard MQTT client over LTE.
+`EXAMPLE_AIR780EP_MQTT_CLIENT` demonstrates a ThingsBoard MQTT client over Air780EP LTE.
 
 Configure MQTT settings with `idf.py menuconfig` under **Example MQTT Settings**:
 
@@ -89,10 +88,10 @@ Topics used by the example:
 
 | Direction | Topic | Purpose |
 |-----------|-------|---------|
-| Publish | `v1/devices/me/telemetry` | Telemetry data |
-| Subscribe | `v1/devices/me/rpc/request/+` | RPC commands from ThingsBoard |
-| Publish | `v1/devices/me/rpc/response/{id}` | RPC response |
-| Subscribe | `v1/devices/me/attributes` | Attribute updates from ThingsBoard |
+| Publish | `v1/devices/me/telemetry` | Periodic telemetry data |
+| Subscribe | `v1/devices/me/attributes` | Downlink/shared attribute updates from ThingsBoard |
+
+The MQTT example intentionally keeps downlink handling simple: received MQTT data is printed in the event callback. It does not implement RPC response logic.
 
 ## ML307R UART Probe
 

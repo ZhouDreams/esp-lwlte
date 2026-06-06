@@ -1,0 +1,230 @@
+/**
+ * @file air780ep_basic_connect.c
+ * @brief Air780EP LTE 基础连接示例
+ * @details Air780EP LTE basic connection example
+ * @author JovisDreams
+ * @date 2026-06-06
+ */
+
+/*********************
+ *      INCLUDES
+ *********************/
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "driver/gpio.h"
+#include "driver/uart.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "example.h"
+#include "lwlte.h"
+
+/*********************
+ *      DEFINES
+ *********************/
+#define TAG                                  "air780ep_basic"
+
+#define EXAMPLE_LTE_UART_NUM                 UART_NUM_1
+#define EXAMPLE_LTE_UART_TX_PIN              GPIO_NUM_0
+#define EXAMPLE_LTE_UART_RX_PIN              GPIO_NUM_1
+#define EXAMPLE_LTE_EN_PIN                   GPIO_NUM_2
+#define EXAMPLE_LTE_UART_BAUD_RATE           115200
+#define EXAMPLE_LTE_APN                      ""
+#define EXAMPLE_LTE_PRIMARY_CID              1
+
+#define EXAMPLE_MODEM_RESET_PULSE_MS         500
+#define EXAMPLE_INIT_READY_TIMEOUT_MS        30000
+#define EXAMPLE_NET_ONLINE_TIMEOUT_MS        120000
+#define EXAMPLE_POLL_INTERVAL_MS             100
+#define EXAMPLE_IDLE_DELAY_MS                1000
+
+#define EXAMPLE_PING_HOST                    "8.8.8.8"
+#define EXAMPLE_PING_COUNT                   4
+
+/**********************
+ *      TYPEDEFS
+ **********************/
+
+/**********************
+ *  STATIC PROTOTYPES
+ **********************/
+
+/**
+ * @brief LTE 事件回调
+ * @details LTE event callback
+ * @param[in] lte LTE 用户门面句柄
+ * @param[in] event_id 事件 ID
+ * @param[in] data 事件数据
+ * @param[in] user_ctx 用户上下文
+ */
+static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
+                         const lwlte_event_data_t *data, void *user_ctx);
+
+/**
+ * @brief 执行一次 Ping 测试
+ * @details Run one Ping test
+ * @param[in] lte LTE 用户门面句柄
+ */
+static void do_ping(lwlte_t *lte);
+
+/**
+ * @brief 进入常驻等待
+ * @details Enter forever delay loop
+ */
+static void idle_forever(void);
+
+/**********************
+ *  STATIC VARIABLES
+ **********************/
+static volatile bool s_net_online;
+static volatile bool s_net_error;
+static volatile int s_last_error;
+
+/**********************
+ *      MACROS
+ **********************/
+
+/**********************
+ *   GLOBAL FUNCTIONS
+ **********************/
+void example_air780ep_basic_connect_run(void)
+{
+    s_net_online = false;
+    s_net_error = false;
+    s_last_error = 0;
+
+    lwlte_t *lte = NULL;
+    const lwlte_air780ep_config_t config = {
+        .uart_num = EXAMPLE_LTE_UART_NUM,
+        .uart_tx_pin = EXAMPLE_LTE_UART_TX_PIN,
+        .uart_rx_pin = EXAMPLE_LTE_UART_RX_PIN,
+        .uart_baud_rate = EXAMPLE_LTE_UART_BAUD_RATE,
+        .en_pin = EXAMPLE_LTE_EN_PIN,
+        .apn = EXAMPLE_LTE_APN,
+        .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
+        .init_ready_timeout_ms = EXAMPLE_INIT_READY_TIMEOUT_MS,
+        .modem_reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
+    };
+
+    ESP_LOGI(TAG, "Air780EP basic connect example");
+    ESP_LOGI(TAG, "UART%d TX=%d RX=%d baud=%d EN=%d APN='%s'",
+             EXAMPLE_LTE_UART_NUM, EXAMPLE_LTE_UART_TX_PIN,
+             EXAMPLE_LTE_UART_RX_PIN, EXAMPLE_LTE_UART_BAUD_RATE,
+             EXAMPLE_LTE_EN_PIN, EXAMPLE_LTE_APN);
+
+    /* 创建 Air780EP 门面：这里只填写必填字段和启动相关超时。 */
+    esp_err_t ret = lwlte_air780ep_init(&config, &lte);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "init Air780EP failed: %s", esp_err_to_name(ret));
+        idle_forever();
+    }
+
+    /* 注册事件回调：联网结果会异步从回调里返回。 */
+    ret = lwlte_register_event_callback(lte, lte_event_cb, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "register callback failed: %s", esp_err_to_name(ret));
+        (void)lwlte_destroy(lte);
+        idle_forever();
+    }
+
+    /* 启动异步联网；ESP_OK 只表示请求已经提交。 */
+    ret = lwlte_start(lte);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "start LTE failed: %s", esp_err_to_name(ret));
+        (void)lwlte_destroy(lte);
+        idle_forever();
+    }
+
+    /* 简单示例用轮询等待事件回调设置 online 标志。 */
+    uint32_t elapsed_ms = 0;
+    while (!s_net_online && !s_net_error &&
+           elapsed_ms < EXAMPLE_NET_ONLINE_TIMEOUT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(EXAMPLE_POLL_INTERVAL_MS));
+        elapsed_ms += EXAMPLE_POLL_INTERVAL_MS;
+    }
+
+    if (!s_net_online) {
+        ESP_LOGW(TAG, "network wait ended: error=%d code=%d",
+                 (int)s_net_error, s_last_error);
+        idle_forever();
+    }
+
+    ESP_LOGI(TAG, "Air780EP network is online");
+    do_ping(lte);
+    idle_forever();
+}
+
+/**********************
+ *   STATIC FUNCTIONS
+ **********************/
+static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
+                         const lwlte_event_data_t *data, void *user_ctx)
+{
+    (void)lte;
+    (void)user_ctx;
+
+    ESP_LOGI(TAG, "LTE event=%d net=%d err=%d", (int)event_id,
+             data ? (int)data->net_state : -1,
+             data ? data->error_code : 0);
+
+    switch (event_id) {
+    case LWLTE_EVENT_NET_CONNECTING:
+        s_net_online = false;
+        s_net_error = false;
+        s_last_error = 0;
+        break;
+    case LWLTE_EVENT_NET_ONLINE:
+        s_net_online = true;
+        s_net_error = false;
+        s_last_error = 0;
+        break;
+    case LWLTE_EVENT_NET_OFFLINE:
+        s_net_online = false;
+        break;
+    case LWLTE_EVENT_NET_ERROR:
+    case LWLTE_EVENT_ERROR:
+        s_net_online = false;
+        s_last_error = data ? data->error_code : ESP_FAIL;
+        s_net_error = true;
+        break;
+    default:
+        break;
+    }
+}
+
+static void do_ping(lwlte_t *lte)
+{
+    const lwlte_ping_request_t req = {
+        .host = EXAMPLE_PING_HOST,
+        .count = EXAMPLE_PING_COUNT,
+        .data_len = 64,
+        .timeout_100ms = 10,
+        .ttl = 64,
+        .total_timeout_ms = 0,
+    };
+    lwlte_ping_reply_t replies[EXAMPLE_PING_COUNT] = {0};
+    lwlte_ping_summary_t summary = {0};
+
+    ESP_LOGI(TAG, "ping %s count=%u", req.host, (unsigned int)req.count);
+    esp_err_t ret = lwlte_ping(lte, &req, replies, req.count, &summary);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ping failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ESP_LOGI(TAG, "ping summary: sent=%u recv=%u lost=%u min=%lums max=%lums avg=%lums",
+             (unsigned int)summary.sent, (unsigned int)summary.received,
+             (unsigned int)summary.lost, (unsigned long)summary.min_time_ms,
+             (unsigned long)summary.max_time_ms,
+             (unsigned long)summary.avg_time_ms);
+}
+
+static void idle_forever(void)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(EXAMPLE_IDLE_DELAY_MS));
+    }
+}
