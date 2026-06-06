@@ -1,0 +1,3656 @@
+/**
+ * @file modem_ml307r.c
+ * @brief ML307R 调制解调器实现
+ * @details ML307R modem implementation
+ * @author JovisDreams
+ * @date 2026-06-06
+ */
+
+/*********************
+ *      INCLUDES
+ *********************/
+#include "modem_ml307r.h"
+#include "modem_priv.h"
+
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "driver/gpio.h"
+#include "esp_check.h"
+#include "esp_log.h"
+#include "freertos/task.h"
+
+/*********************
+ *      DEFINES
+ *********************/
+#define TAG "modem_ml307r"
+#define ML307R_MAX_PDP_CONTEXTS          1
+#define ML307R_PRIMARY_CID               1
+#define ML307R_MQTT_CONNECT_ID           0
+#define ML307R_MAX_RESPONSE_LINES        101
+#define ML307R_DEFAULT_CMD_TIMEOUT_MS    9000
+#define ML307R_DEFAULT_READY_TIMEOUT_MS  30000
+#define ML307R_AT_READY_PROBE_TIMEOUT_MS 1000
+#define ML307R_INIT_RETRY_DELAY_MS       500
+#define ML307R_INIT_CMD_MAX_ATTEMPTS     3
+#define ML307R_MIPCALL_TIMEOUT_MS        90000
+#define ML307R_MQTT_CMD_TIMEOUT_MS       9000
+#define ML307R_MQTT_CONNECT_TIMEOUT_MS   60000
+#define ML307R_MQTT_MAX_TEXT_PAYLOAD_LEN 1460U
+#define ML307R_MPING_PREFIX              "+MPING:"
+#define ML307R_MPING_STATISTICS_PREFIX   "+MPING: \"statistics\""
+#define ML307R_MPING_MAX_COUNT           100
+#define ML307R_MPING_CMD_OVERHEAD_MS     5000U
+#define ML307R_URC_CPIN                  "+CPIN:"
+#define ML307R_URC_CREG                  "+CREG:"
+#define ML307R_URC_CEREG                 "+CEREG:"
+#define ML307R_URC_CGREG                 "+CGREG:"
+#define ML307R_URC_MIPCALL               "+MIPCALL:"
+#define ML307R_URC_MQTTURC               "+MQTTURC:"
+
+_Static_assert(ML307R_MAX_RESPONSE_LINES >= ML307R_MPING_MAX_COUNT + 1,
+               "ML307R MPING response storage must hold replies plus final status");
+
+/**********************
+ *      TYPEDEFS
+ **********************/
+
+/**
+ * @brief ML307R 命令上下文
+ * @details ML307R command context
+ */
+typedef struct {
+    char *lines[ML307R_MAX_RESPONSE_LINES];
+    at_response_t response;
+} ml307r_cmd_ctx_t;
+
+/**
+ * @brief ML307R 调制解调器实例
+ * @details ML307R modem instance
+ */
+typedef struct {
+    modem_t base;
+    modem_ml307r_config_t config;
+    at_urc_handler_t cpin_handler;
+    at_urc_handler_t creg_handler;
+    at_urc_handler_t cereg_handler;
+    at_urc_handler_t cgreg_handler;
+    at_urc_handler_t mipcall_handler;
+    at_urc_handler_t mqtturc_handler;
+    modem_info_t cached_info;
+    modem_sim_status_t last_sim_status;
+    modem_reg_status_t last_reg_status;
+    modem_signal_t last_signal;
+    modem_pdp_context_t pdp[ML307R_MAX_PDP_CONTEXTS];
+    modem_mqtt_config_t mqtt_config;
+    bool urc_registered;
+    bool initialized;
+    bool mqtt_configured;
+    bool mqtt_session_connected;
+    bool mqtt_data_enabled;
+} modem_ml307r_t;
+
+/**********************
+ *  STATIC PROTOTYPES
+ **********************/
+static esp_err_t ml307r_destroy(modem_t *me);
+static esp_err_t ml307r_start(modem_t *me);
+static esp_err_t ml307r_reset(modem_t *me);
+static esp_err_t ml307r_get_info(modem_t *me, modem_info_t *info);
+static esp_err_t ml307r_get_sim_status(modem_t *me, modem_sim_status_t *status);
+static esp_err_t ml307r_get_signal(modem_t *me, modem_signal_t *signal);
+static esp_err_t ml307r_get_registration(modem_t *me, modem_reg_status_t *status);
+static esp_err_t ml307r_get_packet_attach_status(modem_t *me, bool *attached);
+static esp_err_t ml307r_set_apn(modem_t *me, uint8_t cid, const char *apn);
+static esp_err_t ml307r_activate_pdp(modem_t *me, uint8_t cid);
+static esp_err_t ml307r_deactivate_pdp(modem_t *me, uint8_t cid);
+static esp_err_t ml307r_get_pdp_context(modem_t *me, uint8_t cid,
+                                         modem_pdp_context_t *pdp);
+static esp_err_t ml307r_mqtt_configure(modem_t *me,
+                                        const modem_mqtt_config_t *config);
+static esp_err_t ml307r_mqtt_tcp_connect(modem_t *me);
+static esp_err_t ml307r_mqtt_connect(modem_t *me);
+static esp_err_t ml307r_mqtt_disconnect(modem_t *me);
+static esp_err_t ml307r_mqtt_tcp_disconnect(modem_t *me);
+static esp_err_t ml307r_mqtt_subscribe(modem_t *me,
+                                        const modem_mqtt_topic_t *topic);
+static esp_err_t ml307r_mqtt_unsubscribe(modem_t *me,
+                                          const modem_mqtt_topic_t *topic);
+static esp_err_t ml307r_mqtt_publish(modem_t *me,
+                                      const modem_mqtt_publish_t *publish);
+static esp_err_t ml307r_ping(modem_t *me,
+                             const modem_ping_request_t *request,
+                             modem_ping_reply_t *replies,
+                             size_t max_replies,
+                             modem_ping_summary_t *summary);
+static modem_ml307r_t *to_ml307r(modem_t *me);
+static void init_cmd_ctx(ml307r_cmd_ctx_t *ctx);
+static esp_err_t send_cmd(modem_ml307r_t *self, const char *cmd,
+                          ml307r_cmd_ctx_t *ctx, uint32_t timeout_ms);
+static esp_err_t send_cmd_with_options(modem_ml307r_t *self, const char *cmd,
+                                       ml307r_cmd_ctx_t *ctx,
+                                       const at_cmd_options_t *options);
+static esp_err_t ensure_at_ok(const at_response_t *response, const char *cmd);
+static const char *find_line_with_prefix(const at_response_t *response,
+                                         const char *prefix);
+static const char *first_data_line(const at_response_t *response);
+static esp_err_t copy_str_field(char *dst, size_t dst_size, const char *src);
+static esp_err_t copy_str_field_strip_quotes(char *dst, size_t dst_size,
+                                             const char *src);
+static bool decimal_digits_only(const char *value);
+static bool identity_value_valid(const char *cmd, const char *value);
+static bool cid_valid(uint8_t cid);
+static modem_pdp_context_t *pdp_by_cid(modem_ml307r_t *self, uint8_t cid);
+static void set_state_nonblocking(modem_ml307r_t *self, modem_state_t state);
+static esp_err_t post_event_nonblocking(modem_ml307r_t *self,
+                                        const modem_event_t *event);
+static const char *skip_prefix_value(const char *line, const char *prefix);
+static esp_err_t parse_int_after_prefix(const char *line, const char *prefix,
+                                        int *out);
+static esp_err_t parse_two_ints_after_prefix(const char *line, const char *prefix,
+                                             int *first, int *second);
+static modem_reg_status_t map_reg_status(int stat);
+static esp_err_t parse_registration_line(const char *line, const char *prefix,
+                                         modem_reg_status_t *status);
+static esp_err_t parse_registration_urc_line(const char *line, const char *prefix,
+                                             modem_reg_status_t *status);
+static esp_err_t consume_registration_extra_fields(const char *cursor);
+static modem_sim_status_t parse_sim_status_line(const char *line);
+static void cache_sim_status(modem_ml307r_t *self, modem_sim_status_t status);
+static esp_err_t query_cgatt(modem_ml307r_t *self, bool *attached);
+static bool at_arg_safe(const char *value);
+static bool at_text_payload_safe(const uint8_t *payload, size_t payload_len);
+static bool looks_like_ip_addr(const char *line);
+static TickType_t timeout_ticks(uint32_t timeout_ms);
+static void set_initialized(modem_ml307r_t *self, bool initialized);
+static void set_mqtt_data_enabled(modem_ml307r_t *self, bool enabled);
+static bool mqtt_data_is_enabled(modem_ml307r_t *self);
+static char *clone_mqtt_string(const char *value);
+static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
+                                  const modem_mqtt_config_t *src);
+static void free_mqtt_config(modem_mqtt_config_t *config);
+static void clear_mqtt_state(modem_ml307r_t *self);
+static char *escape_at_string(const char *value);
+static char *copy_payload_text(const uint8_t *payload, size_t payload_len);
+static esp_err_t post_mqtt_data_event(modem_ml307r_t *self, char *topic,
+                                       size_t topic_len, uint8_t *payload,
+                                       size_t payload_len);
+static bool mqtt_event_matches(const char *line, const char *event_name,
+                               const char **event_end);
+static bool parse_mqtt_uint_field(const char **cursor, unsigned long max_value,
+                                  unsigned long *out_value);
+static bool parse_mqtt_comma(const char **cursor);
+static uint32_t now_ms(void);
+static bool elapsed_at_least(uint32_t start_ms, uint32_t timeout_ms);
+static void delay_init_retry(void);
+static esp_err_t wait_at_ready(modem_ml307r_t *self);
+static esp_err_t run_basic_init_cmds(modem_ml307r_t *self);
+static esp_err_t finish_modem_ready(modem_t *me, modem_ml307r_t *self);
+static esp_err_t hardware_reset(modem_ml307r_t *self);
+static esp_err_t register_urcs(modem_ml307r_t *self);
+static esp_err_t unregister_urcs(modem_ml307r_t *self);
+static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self);
+static void cpin_urc_handler(const char *prefix, const char *line, void *user_ctx);
+static void reg_urc_handler(const char *prefix, const char *line, void *user_ctx);
+static void mipcall_urc_handler(const char *prefix, const char *line, void *user_ctx);
+static void mqtturc_urc_handler(const char *prefix, const char *line, void *user_ctx);
+
+/* Network, MQTT, and Ping helper prototypes used by Tasks 5-7. */
+static esp_err_t query_mipcall(modem_ml307r_t *self, uint8_t cid,
+                               modem_pdp_context_t *out_pdp);
+static esp_err_t parse_mipcall_cid(const char *line, uint8_t *cid);
+static bool parse_mipcall_line(const char *line, modem_pdp_context_t *pdp);
+static esp_err_t parse_mqtt_conn_urc_ex(modem_ml307r_t *self, const char *line,
+                                        bool nonblocking);
+static esp_err_t parse_mqtt_conn_urc(modem_ml307r_t *self, const char *line);
+static bool parse_mqtt_publish_urc(const char *line, char **topic,
+                                   size_t *topic_len, uint8_t **payload,
+                                   size_t *payload_len);
+static void handle_mqtturc(modem_ml307r_t *self, const char *line);
+static esp_err_t parse_mping_uint(const char **cursor,
+                                  uint32_t max_value,
+                                  uint32_t *out_value);
+static void calculate_ping_summary(const modem_ping_request_t *request,
+                                   modem_ping_reply_t *replies,
+                                   size_t reply_count,
+                                   modem_ping_summary_t *summary);
+static esp_err_t parse_mping_reply_line(const char *line,
+                                        modem_ping_reply_t *reply);
+static esp_err_t parse_mping_statistics_line(const char *line,
+                                             modem_ping_summary_t *summary);
+static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request);
+
+/**********************
+ *  STATIC VARIABLES
+ **********************/
+static const modem_ops_t s_ml307r_ops = {
+    .destroy = ml307r_destroy,
+    .start = ml307r_start,
+    .reset = ml307r_reset,
+    .get_info = ml307r_get_info,
+    .get_sim_status = ml307r_get_sim_status,
+    .get_signal = ml307r_get_signal,
+    .get_registration = ml307r_get_registration,
+    .get_packet_attach_status = ml307r_get_packet_attach_status,
+    .set_apn = ml307r_set_apn,
+    .activate_pdp = ml307r_activate_pdp,
+    .deactivate_pdp = ml307r_deactivate_pdp,
+    .get_pdp_context = ml307r_get_pdp_context,
+    .mqtt_configure = ml307r_mqtt_configure,
+    .mqtt_tcp_connect = ml307r_mqtt_tcp_connect,
+    .mqtt_connect = ml307r_mqtt_connect,
+    .mqtt_disconnect = ml307r_mqtt_disconnect,
+    .mqtt_tcp_disconnect = ml307r_mqtt_tcp_disconnect,
+    .mqtt_subscribe = ml307r_mqtt_subscribe,
+    .mqtt_unsubscribe = ml307r_mqtt_unsubscribe,
+    .mqtt_publish = ml307r_mqtt_publish,
+    .ping = ml307r_ping,
+};
+
+/**********************
+ *      MACROS
+ **********************/
+
+/**********************
+ *   GLOBAL FUNCTIONS
+ **********************/
+modem_t *modem_ml307r_create(at_engine_t *at,
+                             const modem_ml307r_config_t *config)
+{
+    if (!at || !config) {
+        ESP_LOGE(TAG, "NULL argument");
+        return NULL;
+    }
+
+    modem_ml307r_t *self = calloc(1, sizeof(*self));
+    if (!self) {
+        ESP_LOGE(TAG, "calloc ml307r modem failed");
+        return NULL;
+    }
+
+    self->config = *config;
+    if (self->config.default_cmd_timeout_ms == 0) {
+        self->config.default_cmd_timeout_ms = ML307R_DEFAULT_CMD_TIMEOUT_MS;
+    }
+    if (self->config.ready_timeout_ms == 0) {
+        self->config.ready_timeout_ms = ML307R_DEFAULT_READY_TIMEOUT_MS;
+    }
+
+    self->last_sim_status = MODEM_SIM_UNKNOWN;
+    self->last_reg_status = MODEM_REG_UNKNOWN;
+    self->last_signal.rssi = 99;
+    self->last_signal.ber = 99;
+    self->pdp[0].cid = ML307R_PRIMARY_CID;
+    strlcpy(self->pdp[0].pdp_type, "IPV4V6", sizeof(self->pdp[0].pdp_type));
+
+    esp_err_t ret = modem_base_init(&self->base, "ml307r", at, &s_ml307r_ops,
+                                    config->event_queue_size,
+                                    config->event_task_stack,
+                                    config->event_task_priority);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "modem base init failed: %s", esp_err_to_name(ret));
+        free(self);
+        return NULL;
+    }
+
+    return &self->base;
+}
+
+/**********************
+ *   STATIC FUNCTIONS
+ **********************/
+static modem_ml307r_t *to_ml307r(modem_t *me)
+{
+    return MODEM_CONTAINER_OF(me, modem_ml307r_t, base);
+}
+
+static void init_cmd_ctx(ml307r_cmd_ctx_t *ctx)
+{
+    if (!ctx) {
+        return;
+    }
+
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->response.lines = ctx->lines;
+    ctx->response.max_lines = ML307R_MAX_RESPONSE_LINES;
+}
+
+static esp_err_t send_cmd(modem_ml307r_t *self, const char *cmd,
+                          ml307r_cmd_ctx_t *ctx, uint32_t timeout_ms)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    uint32_t wait_ms = timeout_ms ? timeout_ms : self->config.default_cmd_timeout_ms;
+    if (wait_ms == 0) {
+        wait_ms = ML307R_DEFAULT_CMD_TIMEOUT_MS;
+    }
+
+    const at_cmd_options_t options = {
+        .timeout_ms = wait_ms,
+        .flags = 0,
+        .success_matches = NULL,
+        .success_match_count = 0,
+    };
+
+    return send_cmd_with_options(self, cmd, ctx, &options);
+}
+
+static esp_err_t send_cmd_with_options(modem_ml307r_t *self, const char *cmd,
+                                       ml307r_cmd_ctx_t *ctx,
+                                       const at_cmd_options_t *options)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.at && cmd && ctx && options,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    init_cmd_ctx(ctx);
+    return at_engine_send_cmd_with_options(self->base.at, cmd, &ctx->response, options);
+}
+
+static esp_err_t ensure_at_ok(const at_response_t *response, const char *cmd)
+{
+    ESP_RETURN_ON_FALSE(response, ESP_ERR_INVALID_ARG, TAG, "response is NULL");
+
+    const char *cmd_name = cmd ? cmd : "<unknown>";
+    const char *line = first_data_line(response);
+
+    switch (response->status) {
+    case AT_RESP_OK:
+        return ESP_OK;
+    case AT_RESP_ERROR:
+        ESP_LOGE(TAG, "%s returned ERROR%s%s", cmd_name,
+                 line ? ", line: " : "", line ? line : "");
+        return ESP_FAIL;
+    case AT_RESP_CME_ERROR:
+        ESP_LOGE(TAG, "%s returned +CME ERROR: %d%s%s", cmd_name,
+                 response->error_code, line ? ", line: " : "", line ? line : "");
+        return ESP_FAIL;
+    case AT_RESP_CMS_ERROR:
+        ESP_LOGE(TAG, "%s returned +CMS ERROR: %d%s%s", cmd_name,
+                 response->error_code, line ? ", line: " : "", line ? line : "");
+        return ESP_FAIL;
+    case AT_RESP_TIMEOUT:
+    case AT_RESP_ABORTED:
+    default:
+        ESP_LOGE(TAG, "%s failed with response status %d%s%s", cmd_name,
+                 response->status, line ? ", line: " : "", line ? line : "");
+        return ESP_FAIL;
+    }
+}
+
+static const char *find_line_with_prefix(const at_response_t *response,
+                                         const char *prefix)
+{
+    if (!response || !response->lines || !prefix) {
+        return NULL;
+    }
+
+    int count = response->line_count;
+    if (count > response->max_lines) {
+        count = response->max_lines;
+    }
+
+    size_t prefix_len = strlen(prefix);
+    for (int i = 0; i < count; i++) {
+        const char *line = response->lines[i];
+        if (line && strncmp(line, prefix, prefix_len) == 0) {
+            return line;
+        }
+    }
+
+    return NULL;
+}
+
+static const char *first_data_line(const at_response_t *response)
+{
+    return find_line_with_prefix(response, "");
+}
+
+static esp_err_t copy_str_field(char *dst, size_t dst_size, const char *src)
+{
+    ESP_RETURN_ON_FALSE(dst && src, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    size_t copied = strlcpy(dst, src, dst_size);
+    if (copied >= dst_size) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t copy_str_field_strip_quotes(char *dst, size_t dst_size,
+                                             const char *src)
+{
+    ESP_RETURN_ON_FALSE(dst && src, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const char *start = src;
+    while (isspace((unsigned char)*start)) {
+        start++;
+    }
+
+    const char *end = start + strlen(start);
+    while (end > start && isspace((unsigned char)*(end - 1))) {
+        end--;
+    }
+
+    if (end > start + 1 && *start == '"' && *(end - 1) == '"') {
+        start++;
+        end--;
+    }
+
+    size_t len = (size_t)(end - start);
+    if (len >= dst_size) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    memcpy(dst, start, len);
+    dst[len] = '\0';
+    return ESP_OK;
+}
+
+static bool decimal_digits_only(const char *value)
+{
+    if (!value || value[0] == '\0') {
+        return false;
+    }
+
+    while (*value) {
+        if (!isdigit((unsigned char)*value)) {
+            return false;
+        }
+        value++;
+    }
+
+    return true;
+}
+
+static bool identity_value_valid(const char *cmd, const char *value)
+{
+    if (!cmd || !value || value[0] == '\0' || value[0] == '+') {
+        return false;
+    }
+
+    size_t len = strlen(value);
+    if (strcmp(cmd, "AT+CGSN") == 0) {
+        return decimal_digits_only(value) && len >= 14 && len < MODEM_IMEI_MAX_LEN;
+    }
+    if (strcmp(cmd, "AT+CIMI") == 0) {
+        return decimal_digits_only(value) && len >= 14 && len < MODEM_IMSI_MAX_LEN;
+    }
+    if (strcmp(cmd, "AT+MCCID") == 0) {
+        return decimal_digits_only(value) && len >= 10 && len < MODEM_ICCID_MAX_LEN;
+    }
+
+    return true;
+}
+
+static bool cid_valid(uint8_t cid)
+{
+    return cid >= 1 && cid <= ML307R_MAX_PDP_CONTEXTS;
+}
+
+static modem_pdp_context_t *pdp_by_cid(modem_ml307r_t *self, uint8_t cid)
+{
+    if (!self || !cid_valid(cid)) {
+        return NULL;
+    }
+
+    return &self->pdp[cid - 1];
+}
+
+static void set_state_nonblocking(modem_ml307r_t *self, modem_state_t state)
+{
+    if (!self || !self->base.lock) {
+        return;
+    }
+
+    if (xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "skip state update %d, lock busy", state);
+        return;
+    }
+
+    self->base.state = state;
+    xSemaphoreGive(self->base.lock);
+}
+
+static esp_err_t post_event_nonblocking(modem_ml307r_t *self,
+                                        const modem_event_t *event)
+{
+    if (!self || !event || !self->base.lock) {
+        ESP_LOGW(TAG, "drop modem event, invalid state");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "drop modem event %d, lock busy", event->id);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    modem_t *me = &self->base;
+    if (me->destroying || me->state == MODEM_STATE_DESTROYING ||
+        me->event_task_stop_requested || !me->event_task || !me->event_queue) {
+        xSemaphoreGive(me->lock);
+        ESP_LOGW(TAG, "drop modem event %d, event task unavailable", event->id);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    BaseType_t send_ret = xQueueSend(me->event_queue, event, 0);
+    xSemaphoreGive(me->lock);
+
+    if (send_ret != pdTRUE) {
+        ESP_LOGW(TAG, "event queue full, drop event %d", event->id);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    return ESP_OK;
+}
+
+static const char *skip_prefix_value(const char *line, const char *prefix)
+{
+    if (!line || !prefix) {
+        return NULL;
+    }
+
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(line, prefix, prefix_len) != 0) {
+        return NULL;
+    }
+
+    const char *value = line + prefix_len;
+    while (isspace((unsigned char)*value)) {
+        value++;
+    }
+    if (*value == ':') {
+        value++;
+    }
+    while (isspace((unsigned char)*value)) {
+        value++;
+    }
+
+    return value;
+}
+
+static esp_err_t parse_int_after_prefix(const char *line, const char *prefix,
+                                        int *out)
+{
+    ESP_RETURN_ON_FALSE(out, ESP_ERR_INVALID_ARG, TAG, "out is NULL");
+
+    const char *value = skip_prefix_value(line, prefix);
+    if (!value) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *out = (int)parsed;
+    return ESP_OK;
+}
+
+static esp_err_t parse_two_ints_after_prefix(const char *line, const char *prefix,
+                                             int *first, int *second)
+{
+    ESP_RETURN_ON_FALSE(first && second, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const char *value = skip_prefix_value(line, prefix);
+    if (!value) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed_first = strtol(value, &end, 10);
+    if (end == value || errno == ERANGE ||
+        parsed_first < INT_MIN || parsed_first > INT_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    errno = 0;
+    end = NULL;
+    long parsed_second = strtol(cursor, &end, 10);
+    if (end == cursor || errno == ERANGE ||
+        parsed_second < INT_MIN || parsed_second > INT_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *first = (int)parsed_first;
+    *second = (int)parsed_second;
+    return ESP_OK;
+}
+
+static modem_reg_status_t map_reg_status(int stat)
+{
+    switch (stat) {
+    case 0:
+        return MODEM_REG_NOT_REGISTERED;
+    case 1:
+        return MODEM_REG_REGISTERED_HOME;
+    case 2:
+        return MODEM_REG_SEARCHING;
+    case 3:
+        return MODEM_REG_DENIED;
+    case 5:
+        return MODEM_REG_REGISTERED_ROAMING;
+    default:
+        return MODEM_REG_UNKNOWN;
+    }
+}
+
+static esp_err_t parse_registration_line(const char *line, const char *prefix,
+                                         modem_reg_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(status, ESP_ERR_INVALID_ARG, TAG, "status is NULL");
+
+    const char *value = skip_prefix_value(line, prefix);
+    if (!value) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed_first = strtol(value, &end, 10);
+    if (end == value || errno == ERANGE ||
+        parsed_first < INT_MIN || parsed_first > INT_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = end;
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+
+    errno = 0;
+    end = NULL;
+    long parsed_second = strtol(cursor, &end, 10);
+    if (end == cursor || errno == ERANGE ||
+        parsed_second < INT_MIN || parsed_second > INT_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    esp_err_t ret = consume_registration_extra_fields(end);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid registration extra fields");
+
+    *status = map_reg_status((int)parsed_second);
+    (void)parsed_first;
+    return ESP_OK;
+}
+
+static esp_err_t parse_registration_urc_line(const char *line, const char *prefix,
+                                             modem_reg_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(status, ESP_ERR_INVALID_ARG, TAG, "status is NULL");
+
+    const char *value = skip_prefix_value(line, prefix);
+    if (!value) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed_stat = strtol(value, &end, 10);
+    if (end == value || errno == ERANGE ||
+        parsed_stat < INT_MIN || parsed_stat > INT_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    esp_err_t ret = consume_registration_extra_fields(end);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid registration URC extra fields");
+
+    *status = map_reg_status((int)parsed_stat);
+    return ESP_OK;
+}
+
+static esp_err_t consume_registration_extra_fields(const char *cursor)
+{
+    ESP_RETURN_ON_FALSE(cursor, ESP_ERR_INVALID_ARG, TAG, "cursor is NULL");
+
+    while (true) {
+        while (*cursor == ' ' || *cursor == '\t') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            return ESP_OK;
+        }
+        if (*cursor != ',') {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+
+        cursor++;
+        while (*cursor == ' ' || *cursor == '\t') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+
+        if (*cursor == '"') {
+            cursor++;
+            while (*cursor && *cursor != '"') {
+                if (*cursor == '\r' || *cursor == '\n') {
+                    return ESP_ERR_INVALID_RESPONSE;
+                }
+                cursor++;
+            }
+            if (*cursor != '"') {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            cursor++;
+        } else {
+            const char *token_start = cursor;
+            while (*cursor && *cursor != ',') {
+                if (*cursor == '\r' || *cursor == '\n' || *cursor == '"') {
+                    return ESP_ERR_INVALID_RESPONSE;
+                }
+                cursor++;
+            }
+
+            const char *token_end = cursor;
+            while (token_end > token_start &&
+                   isspace((unsigned char)*(token_end - 1))) {
+                token_end--;
+            }
+            if (token_end == token_start) {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+
+        while (*cursor == ' ' || *cursor == '\t') {
+            cursor++;
+        }
+        if (*cursor != '\0' && *cursor != ',') {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+}
+
+static modem_sim_status_t parse_sim_status_line(const char *line)
+{
+    if (!line) {
+        return MODEM_SIM_ERROR;
+    }
+
+    const char *value = skip_prefix_value(line, ML307R_URC_CPIN);
+    if (!value) {
+        value = line;
+    }
+
+    while (isspace((unsigned char)*value)) {
+        value++;
+    }
+
+    bool quoted = false;
+    if (*value == '"') {
+        quoted = true;
+        value++;
+    }
+
+    const char *end = value;
+    if (quoted) {
+        while (*end && *end != '"') {
+            end++;
+        }
+        if (*end != '"') {
+            return MODEM_SIM_ERROR;
+        }
+
+        const char *tail = end + 1;
+        while (isspace((unsigned char)*tail)) {
+            tail++;
+        }
+        if (*tail != '\0') {
+            return MODEM_SIM_ERROR;
+        }
+    } else {
+        while (*end) {
+            end++;
+        }
+    }
+
+    while (end > value && isspace((unsigned char)*(end - 1))) {
+        end--;
+    }
+
+    size_t len = (size_t)(end - value);
+    if (len == sizeof("READY") - 1 && strncmp(value, "READY", len) == 0) {
+        return MODEM_SIM_READY;
+    }
+    if (len == sizeof("SIM PIN") - 1 && strncmp(value, "SIM PIN", len) == 0) {
+        return MODEM_SIM_PIN_REQUIRED;
+    }
+    if (len == sizeof("SIM PUK") - 1 && strncmp(value, "SIM PUK", len) == 0) {
+        return MODEM_SIM_PUK_REQUIRED;
+    }
+    if ((len == sizeof("NOT INSERTED") - 1 &&
+         strncmp(value, "NOT INSERTED", len) == 0) ||
+        (len == sizeof("SIM NOT INSERTED") - 1 &&
+         strncmp(value, "SIM NOT INSERTED", len) == 0) ||
+        (len == sizeof("REMOVED") - 1 && strncmp(value, "REMOVED", len) == 0) ||
+        (len == sizeof("SIM REMOVED") - 1 && strncmp(value, "SIM REMOVED", len) == 0)) {
+        return MODEM_SIM_NOT_INSERTED;
+    }
+
+    return MODEM_SIM_ERROR;
+}
+
+static void cache_sim_status(modem_ml307r_t *self, modem_sim_status_t status)
+{
+    if (!self) {
+        return;
+    }
+
+    if (!self->base.lock) {
+        self->last_sim_status = status;
+        return;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->last_sim_status = status;
+    xSemaphoreGive(self->base.lock);
+}
+
+static esp_err_t query_cgatt(modem_ml307r_t *self, bool *attached)
+{
+    ESP_RETURN_ON_FALSE(self && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+CGATT?", &ctx, 0);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+CGATT? failed");
+
+    ret = ensure_at_ok(&ctx.response, "AT+CGATT?");
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+CGATT? failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, "+CGATT:");
+    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG, "+CGATT line missing");
+
+    int state = 0;
+    ret = parse_int_after_prefix(line, "+CGATT:", &state);
+    ESP_RETURN_ON_ERROR(ret, TAG, "parse +CGATT failed");
+    ESP_RETURN_ON_FALSE(state == 0 || state == 1, ESP_ERR_INVALID_RESPONSE,
+                        TAG, "invalid +CGATT state %d", state);
+
+    *attached = (state == 1);
+    return ESP_OK;
+}
+
+static bool at_arg_safe(const char *value)
+{
+    if (!value) {
+        return false;
+    }
+
+    while (*value) {
+        if (*value == '"' || *value == '\r' || *value == '\n') {
+            return false;
+        }
+        value++;
+    }
+
+    return true;
+}
+
+static bool at_text_payload_safe(const uint8_t *payload, size_t payload_len)
+{
+    if (!payload && payload_len > 0) {
+        return false;
+    }
+
+    for (size_t i = 0; i < payload_len; i++) {
+        if (payload[i] == '\0' || payload[i] == '"' ||
+            payload[i] == '\r' || payload[i] == '\n') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool looks_like_ip_addr(const char *line)
+{
+    if (!line || line[0] == '\0') {
+        return false;
+    }
+
+    const char *cursor = line;
+    for (int part = 0; part < 4; part++) {
+        if (!isdigit((unsigned char)*cursor)) {
+            return false;
+        }
+
+        int value = 0;
+        int digits = 0;
+        while (isdigit((unsigned char)*cursor)) {
+            value = (value * 10) + (*cursor - '0');
+            digits++;
+            if (digits > 3 || value > 255) {
+                return false;
+            }
+            cursor++;
+        }
+
+        if (part < 3) {
+            if (*cursor != '.') {
+                return false;
+            }
+            cursor++;
+        } else if (*cursor != '\0') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static TickType_t timeout_ticks(uint32_t timeout_ms)
+{
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (timeout_ms > 0 && ticks == 0) {
+        return 1;
+    }
+
+    return ticks;
+}
+
+static void set_initialized(modem_ml307r_t *self, bool initialized)
+{
+    if (!self) {
+        return;
+    }
+
+    if (!self->base.lock) {
+        self->initialized = initialized;
+        return;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->initialized = initialized;
+    xSemaphoreGive(self->base.lock);
+}
+
+static void set_mqtt_data_enabled(modem_ml307r_t *self, bool enabled)
+{
+    if (!self) {
+        return;
+    }
+
+    if (!self->base.lock) {
+        self->mqtt_data_enabled = enabled;
+        return;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->mqtt_data_enabled = enabled;
+    xSemaphoreGive(self->base.lock);
+}
+
+static bool mqtt_data_is_enabled(modem_ml307r_t *self)
+{
+    if (!self) {
+        return false;
+    }
+
+    if (!self->base.lock) {
+        return self->mqtt_data_enabled;
+    }
+
+    if (xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "MQTT data enabled read skipped, lock busy");
+        return false;
+    }
+    bool enabled = self->mqtt_data_enabled;
+    xSemaphoreGive(self->base.lock);
+
+    return enabled;
+}
+
+static char *clone_mqtt_string(const char *value)
+{
+    if (!value) {
+        return NULL;
+    }
+
+    size_t len = strlen(value) + 1U;
+    char *copy = malloc(len);
+    if (!copy) {
+        return NULL;
+    }
+    memcpy(copy, value, len);
+    return copy;
+}
+
+static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
+                                  const modem_mqtt_config_t *src)
+{
+    ESP_RETURN_ON_FALSE(dst && src && src->client_id && src->host && src->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
+
+    modem_mqtt_config_t copy = {
+        .client_id = clone_mqtt_string(src->client_id),
+        .username = src->username ? clone_mqtt_string(src->username) : NULL,
+        .password = src->password ? clone_mqtt_string(src->password) : NULL,
+        .host = clone_mqtt_string(src->host),
+        .port = src->port,
+        .clean_session = src->clean_session,
+        .keepalive_s = src->keepalive_s ? src->keepalive_s : 120,
+    };
+    if (!copy.client_id || !copy.host ||
+        (src->username && !copy.username) ||
+        (src->password && !copy.password)) {
+        free_mqtt_config(&copy);
+        return ESP_ERR_NO_MEM;
+    }
+
+    free_mqtt_config(dst);
+    *dst = copy;
+    return ESP_OK;
+}
+
+static void free_mqtt_config(modem_mqtt_config_t *config)
+{
+    if (!config) {
+        return;
+    }
+    free((void *)config->client_id);
+    free((void *)config->username);
+    free((void *)config->password);
+    free((void *)config->host);
+    memset(config, 0, sizeof(*config));
+}
+
+static void clear_mqtt_state(modem_ml307r_t *self)
+{
+    if (!self) {
+        return;
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_configured = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_data_enabled = false;
+    free_mqtt_config(&self->mqtt_config);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+}
+
+static char *escape_at_string(const char *value)
+{
+    if (!value) {
+        return NULL;
+    }
+
+    size_t escaped_len = 0;
+    for (const char *cursor = value; *cursor; cursor++) {
+        switch (*cursor) {
+        case '"':
+        case '\\':
+        case '\r':
+        case '\n':
+            escaped_len += 3;
+            break;
+        default:
+            escaped_len++;
+            break;
+        }
+    }
+
+    char *escaped = malloc(escaped_len + 1U);
+    if (!escaped) {
+        return NULL;
+    }
+
+    char *out = escaped;
+    for (const char *cursor = value; *cursor; cursor++) {
+        switch (*cursor) {
+        case '"':
+            memcpy(out, "\\22", 3);
+            out += 3;
+            break;
+        case '\\':
+            memcpy(out, "\\5C", 3);
+            out += 3;
+            break;
+        case '\r':
+            memcpy(out, "\\0D", 3);
+            out += 3;
+            break;
+        case '\n':
+            memcpy(out, "\\0A", 3);
+            out += 3;
+            break;
+        default:
+            *out++ = *cursor;
+            break;
+        }
+    }
+    *out = '\0';
+    return escaped;
+}
+
+static char *copy_payload_text(const uint8_t *payload, size_t payload_len)
+{
+    if (payload_len > ML307R_MQTT_MAX_TEXT_PAYLOAD_LEN ||
+        payload_len > SIZE_MAX - 1U ||
+        !at_text_payload_safe(payload, payload_len)) {
+        return NULL;
+    }
+
+    char *text = malloc(payload_len + 1U);
+    if (!text) {
+        return NULL;
+    }
+    if (payload_len > 0) {
+        memcpy(text, payload, payload_len);
+    }
+    text[payload_len] = '\0';
+    return text;
+}
+
+static esp_err_t post_mqtt_data_event(modem_ml307r_t *self, char *topic,
+                                       size_t topic_len, uint8_t *payload,
+                                       size_t payload_len)
+{
+    ESP_RETURN_ON_FALSE(self && topic && payload, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_PROTOCOL_DATA,
+        .data.protocol_data = {
+            .protocol = MODEM_PROTOCOL_MQTT,
+            .topic = topic,
+            .topic_len = topic_len,
+            .payload = payload,
+            .payload_len = payload_len,
+        },
+    };
+
+    return post_event_nonblocking(self, &event);
+}
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static bool elapsed_at_least(uint32_t start_ms, uint32_t timeout_ms)
+{
+    return (uint32_t)(now_ms() - start_ms) >= timeout_ms;
+}
+
+static void delay_init_retry(void)
+{
+    vTaskDelay(timeout_ticks(ML307R_INIT_RETRY_DELAY_MS));
+}
+
+static esp_err_t wait_at_ready(modem_ml307r_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    const uint32_t timeout_ms = self->config.ready_timeout_ms;
+    const uint32_t start_ms = now_ms();
+    unsigned int attempt = 1;
+
+    while (!elapsed_at_least(start_ms, timeout_ms)) {
+        ml307r_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, "AT", &ctx,
+                                 ML307R_AT_READY_PROBE_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT");
+        }
+        if (ret == ESP_OK) {
+            return ESP_OK;
+        }
+
+        ESP_LOGW(TAG, "AT ready probe failed (attempt %u): %s",
+                 attempt, esp_err_to_name(ret));
+        attempt++;
+
+        if (!elapsed_at_least(start_ms, timeout_ms)) {
+            delay_init_retry();
+        }
+    }
+
+    ESP_LOGE(TAG, "AT ready probe timeout after %u ms",
+             (unsigned int)timeout_ms);
+    return ESP_ERR_TIMEOUT;
+}
+
+static esp_err_t run_basic_init_cmds(modem_ml307r_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    const char *cmds[] = {
+        "ATE0",
+        "AT+CMEE=1",
+        "AT+CEREG=2",
+        "AT+CGREG=2",
+        "AT+CREG=2",
+    };
+
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        esp_err_t ret = ESP_FAIL;
+        for (int attempt = 1; attempt <= ML307R_INIT_CMD_MAX_ATTEMPTS; attempt++) {
+            ml307r_cmd_ctx_t ctx;
+            ret = send_cmd(self, cmds[i], &ctx, 0);
+            if (ret == ESP_OK) {
+                ret = ensure_at_ok(&ctx.response, cmds[i]);
+            }
+            if (ret == ESP_OK) {
+                break;
+            }
+            ESP_LOGW(TAG, "%s failed (attempt %d/%d): %s", cmds[i], attempt,
+                     ML307R_INIT_CMD_MAX_ATTEMPTS, esp_err_to_name(ret));
+            if (attempt < ML307R_INIT_CMD_MAX_ATTEMPTS) {
+                delay_init_retry();
+            }
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed after %d attempts", cmds[i],
+                            ML307R_INIT_CMD_MAX_ATTEMPTS);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t finish_modem_ready(modem_t *me, modem_ml307r_t *self)
+{
+    ESP_RETURN_ON_FALSE(me && self, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = modem_set_state(me, MODEM_STATE_READY);
+    ESP_RETURN_ON_ERROR(ret, TAG, "set ready state failed");
+
+    set_initialized(self, true);
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_READY,
+    };
+    ret = modem_post_event(me, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post ready event failed: %s", esp_err_to_name(ret));
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t hardware_reset(modem_ml307r_t *self)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.at, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = at_engine_begin_exclusive(self->base.at);
+    ESP_RETURN_ON_ERROR(ret, TAG, "begin AT exclusive failed");
+
+    ret = at_engine_flush_rx_exclusive(self->base.at);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "flush RX input before reset failed");
+
+    if (self->config.en_pin == GPIO_NUM_NC) {
+        ret = at_engine_flush_rx_exclusive(self->base.at);
+        ESP_GOTO_ON_ERROR(ret, err, TAG, "flush RX input without EN failed");
+        at_engine_end_exclusive(self->base.at);
+        return ESP_OK;
+    }
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << (uint32_t)self->config.en_pin,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ret = gpio_config(&io_conf);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "configure EN GPIO failed");
+
+    ret = gpio_set_level(self->config.en_pin, 0);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "set EN GPIO low failed");
+
+    if (self->config.reset_pulse_ms > 0) {
+        vTaskDelay(timeout_ticks(self->config.reset_pulse_ms));
+    }
+
+    ret = at_engine_flush_rx_exclusive(self->base.at);
+    ESP_GOTO_ON_ERROR(ret, err_restore_en, TAG, "flush RX input after EN low failed");
+
+    ret = gpio_set_level(self->config.en_pin, 1);
+    ESP_GOTO_ON_ERROR(ret, err_restore_en, TAG, "set EN GPIO high failed");
+
+    at_engine_end_exclusive(self->base.at);
+    return ESP_OK;
+
+err_restore_en:
+    {
+        esp_err_t restore_ret = gpio_set_level(self->config.en_pin, 1);
+        if (restore_ret != ESP_OK) {
+            ESP_LOGW(TAG, "restore EN GPIO high failed: %s", esp_err_to_name(restore_ret));
+        }
+    }
+err:
+    at_engine_end_exclusive(self->base.at);
+    return ret;
+}
+
+static esp_err_t register_urcs(modem_ml307r_t *self)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.at, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    if (self->urc_registered) {
+        return ESP_OK;
+    }
+
+    const struct {
+        const char *prefix;
+        at_urc_handler_t *handler;
+        at_urc_callback_t callback;
+    } urcs[] = {
+        { ML307R_URC_CPIN, &self->cpin_handler, cpin_urc_handler },
+        { ML307R_URC_CREG, &self->creg_handler, reg_urc_handler },
+        { ML307R_URC_CEREG, &self->cereg_handler, reg_urc_handler },
+        { ML307R_URC_CGREG, &self->cgreg_handler, reg_urc_handler },
+        { ML307R_URC_MIPCALL, &self->mipcall_handler, mipcall_urc_handler },
+        { ML307R_URC_MQTTURC, &self->mqtturc_handler, mqtturc_urc_handler },
+    };
+
+    size_t urc_count = sizeof(urcs) / sizeof(urcs[0]);
+    for (size_t i = 0; i < urc_count; i++) {
+        *urcs[i].handler = (at_urc_handler_t) {
+            .prefix = urcs[i].prefix,
+            .callback = urcs[i].callback,
+            .user_ctx = self,
+            .next = NULL,
+        };
+    }
+
+    size_t registered_count = 0;
+    for (size_t i = 0; i < urc_count; i++) {
+        esp_err_t ret = at_engine_register_urc(self->base.at, urcs[i].prefix,
+                                               urcs[i].handler);
+        if (ret != ESP_OK) {
+            esp_err_t rollback_ret = ESP_OK;
+            bool rollback_unregistered[sizeof(urcs) / sizeof(urcs[0])] = { 0 };
+            for (size_t j = 0; j < registered_count; j++) {
+                esp_err_t err = at_engine_unregister_urc(self->base.at, urcs[j].prefix);
+                if (err == ESP_OK || err == ESP_ERR_NOT_FOUND) {
+                    rollback_unregistered[j] = true;
+                } else {
+                    ESP_LOGW(TAG, "rollback unregister %s failed: %s", urcs[j].prefix,
+                             esp_err_to_name(err));
+                    if (rollback_ret == ESP_OK) {
+                        rollback_ret = err;
+                    }
+                }
+            }
+            for (size_t j = 0; j < urc_count; j++) {
+                if (j >= registered_count || rollback_unregistered[j]) {
+                    memset(urcs[j].handler, 0, sizeof(*urcs[j].handler));
+                }
+            }
+            self->urc_registered = rollback_ret != ESP_OK;
+            return ret;
+        }
+        registered_count++;
+    }
+
+    self->urc_registered = true;
+    return ESP_OK;
+}
+
+static esp_err_t unregister_urcs(modem_ml307r_t *self)
+{
+    esp_err_t ret = ml307r_unregister_urcs(self);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "unregister URCs failed: %s", esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.at, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const struct {
+        const char *prefix;
+        at_urc_handler_t *handler;
+    } urcs[] = {
+        { ML307R_URC_CPIN, &self->cpin_handler },
+        { ML307R_URC_CREG, &self->creg_handler },
+        { ML307R_URC_CEREG, &self->cereg_handler },
+        { ML307R_URC_CGREG, &self->cgreg_handler },
+        { ML307R_URC_MIPCALL, &self->mipcall_handler },
+        { ML307R_URC_MQTTURC, &self->mqtturc_handler },
+    };
+
+    esp_err_t ret = ESP_OK;
+    for (size_t i = 0; i < sizeof(urcs) / sizeof(urcs[0]); i++) {
+        esp_err_t err = at_engine_unregister_urc(self->base.at, urcs[i].prefix);
+        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND && ret == ESP_OK) {
+            ret = err;
+        }
+    }
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    for (size_t i = 0; i < sizeof(urcs) / sizeof(urcs[0]); i++) {
+        memset(urcs[i].handler, 0, sizeof(*urcs[i].handler));
+    }
+    self->urc_registered = false;
+
+    return ret;
+}
+
+static esp_err_t ml307r_destroy(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    esp_err_t ret = ESP_OK;
+
+    set_mqtt_data_enabled(self, false);
+    clear_mqtt_state(self);
+
+    if (self->urc_registered) {
+        ret = ml307r_unregister_urcs(self);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+
+    set_initialized(self, false);
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_start(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    bool urc_disabled_for_init = false;
+    bool urc_register_attempted = false;
+    esp_err_t ret = ESP_OK;
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->pdp[0].active = false;
+    self->pdp[0].ip_addr[0] = '\0';
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    set_initialized(self, false);
+
+    ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "set initializing state failed");
+
+    if (self->urc_registered) {
+        ret = unregister_urcs(self);
+        ESP_GOTO_ON_ERROR(ret, err, TAG, "disable URCs before init failed");
+        urc_disabled_for_init = true;
+    }
+
+    ret = hardware_reset(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "hardware reset failed");
+
+    ret = wait_at_ready(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait AT ready failed");
+
+    ret = run_basic_init_cmds(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "run init commands failed");
+
+    urc_register_attempted = true;
+    ret = register_urcs(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
+
+    ret = finish_modem_ready(me, self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "finish modem ready failed");
+
+    return ESP_OK;
+
+err:
+    if (self->urc_registered && (urc_disabled_for_init || urc_register_attempted)) {
+        (void)unregister_urcs(self);
+    }
+    set_initialized(self, false);
+    (void)modem_set_state(me, MODEM_STATE_ERROR);
+    return ret;
+}
+
+static esp_err_t ml307r_reset(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    bool urc_disabled_for_init = false;
+    bool urc_register_attempted = false;
+    esp_err_t ret = ESP_OK;
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->pdp[0].active = false;
+    self->pdp[0].ip_addr[0] = '\0';
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    set_initialized(self, false);
+
+    ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "set initializing state failed");
+
+    if (self->urc_registered) {
+        ret = unregister_urcs(self);
+        ESP_GOTO_ON_ERROR(ret, err, TAG, "disable URCs before init failed");
+        urc_disabled_for_init = true;
+    }
+
+    ret = hardware_reset(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "hardware reset failed");
+
+    ret = wait_at_ready(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "wait AT ready failed");
+
+    ret = run_basic_init_cmds(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "run init commands failed");
+
+    urc_register_attempted = true;
+    ret = register_urcs(self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "register URCs failed");
+
+    ret = finish_modem_ready(me, self);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "finish modem ready failed");
+
+    return ESP_OK;
+
+err:
+    if (self->urc_registered && (urc_disabled_for_init || urc_register_attempted)) {
+        (void)unregister_urcs(self);
+    }
+    set_initialized(self, false);
+    (void)modem_set_state(me, MODEM_STATE_ERROR);
+    return ret;
+}
+
+static esp_err_t ml307r_get_info(modem_t *me, modem_info_t *info)
+{
+    ESP_RETURN_ON_FALSE(me && info, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    modem_info_t result = {0};
+    const struct {
+        const char *cmd;
+        const char *prefix;
+        char *dst;
+        size_t dst_size;
+        bool strip_quotes;
+        bool required;
+    } queries[] = {
+        { "AT+CGSN", NULL, result.imei, sizeof(result.imei), false, true },
+        { "AT+CIMI", NULL, result.imsi, sizeof(result.imsi), false, false },
+        { "AT+MCCID", NULL, result.iccid, sizeof(result.iccid), false, false },
+        { "AT+CGMM", "+CGMM:", result.model, sizeof(result.model), true, true },
+        { "AT+CGMR", "+CGMR:", result.fw_revision,
+          sizeof(result.fw_revision), true, true },
+    };
+
+    for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); i++) {
+        ml307r_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, queries[i].cmd, &ctx, 0);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, queries[i].cmd);
+        }
+        if (ret != ESP_OK) {
+            if (queries[i].required) {
+                return ret;
+            }
+            queries[i].dst[0] = '\0';
+            continue;
+        }
+
+        const char *value = NULL;
+        if (queries[i].prefix) {
+            const char *line = find_line_with_prefix(&ctx.response, queries[i].prefix);
+            if (line) {
+                value = skip_prefix_value(line, queries[i].prefix);
+            }
+        }
+        if (!value) {
+            value = first_data_line(&ctx.response);
+        }
+        if (!value) {
+            if (queries[i].required) {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            queries[i].dst[0] = '\0';
+            continue;
+        }
+
+        if (queries[i].strip_quotes) {
+            ret = copy_str_field_strip_quotes(queries[i].dst, queries[i].dst_size,
+                                              value);
+        } else {
+            ret = copy_str_field(queries[i].dst, queries[i].dst_size, value);
+        }
+        if (ret != ESP_OK) {
+            if (queries[i].required) {
+                return ret;
+            }
+            queries[i].dst[0] = '\0';
+            continue;
+        }
+        if (!identity_value_valid(queries[i].cmd, queries[i].dst)) {
+            if (queries[i].required) {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            queries[i].dst[0] = '\0';
+        }
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->cached_info = result;
+    xSemaphoreGive(self->base.lock);
+
+    *info = result;
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_get_sim_status(modem_t *me, modem_sim_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+CPIN?", &ctx, 0);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+CPIN? failed");
+
+    ret = ensure_at_ok(&ctx.response, "AT+CPIN?");
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+CPIN? failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, ML307R_URC_CPIN);
+    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG, "+CPIN line missing");
+
+    modem_sim_status_t parsed = parse_sim_status_line(line);
+    cache_sim_status(self, parsed);
+    *status = parsed;
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_get_signal(modem_t *me, modem_signal_t *signal)
+{
+    ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    ml307r_cmd_ctx_t ctx;
+
+    esp_err_t ret = send_cmd(self, "AT+CSQ", &ctx, 0);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+CSQ failed");
+
+    ret = ensure_at_ok(&ctx.response, "AT+CSQ");
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+CSQ failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, "+CSQ:");
+    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG, "+CSQ line missing");
+
+    modem_signal_t result = {0};
+    ret = parse_two_ints_after_prefix(line, "+CSQ:", &result.rssi, &result.ber);
+    ESP_RETURN_ON_ERROR(ret, TAG, "parse +CSQ failed");
+
+    if (!((result.ber >= 0 && result.ber <= 7) || result.ber == 99)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (result.rssi >= 0 && result.rssi <= 31) {
+        result.rssi_dbm = -113 + (2 * result.rssi);
+        result.rssi_dbm_valid = true;
+    } else if (result.rssi == 99) {
+        result.rssi_dbm = 0;
+        result.rssi_dbm_valid = false;
+    } else {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->last_signal = result;
+    xSemaphoreGive(self->base.lock);
+
+    *signal = result;
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_get_registration(modem_t *me, modem_reg_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    const struct {
+        const char *cmd;
+        const char *prefix;
+    } queries[] = {
+        { "AT+CEREG?", ML307R_URC_CEREG },
+        { "AT+CGREG?", ML307R_URC_CGREG },
+        { "AT+CREG?", ML307R_URC_CREG },
+    };
+    esp_err_t last_err = ESP_FAIL;
+    bool had_error = false;
+
+    for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); i++) {
+        ml307r_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, queries[i].cmd, &ctx, 0);
+        if (ret != ESP_OK) {
+            last_err = ret;
+            had_error = true;
+            continue;
+        }
+
+        ret = ensure_at_ok(&ctx.response, queries[i].cmd);
+        if (ret != ESP_OK) {
+            last_err = ret;
+            had_error = true;
+            continue;
+        }
+
+        const char *line = find_line_with_prefix(&ctx.response, queries[i].prefix);
+        if (!line) {
+            last_err = ESP_ERR_INVALID_RESPONSE;
+            had_error = true;
+            continue;
+        }
+
+        modem_reg_status_t parsed = MODEM_REG_UNKNOWN;
+        ret = parse_registration_line(line, queries[i].prefix, &parsed);
+        if (ret != ESP_OK) {
+            last_err = ret;
+            had_error = true;
+            continue;
+        }
+
+        if (parsed == MODEM_REG_UNKNOWN) {
+            continue;
+        }
+
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        self->last_reg_status = parsed;
+        xSemaphoreGive(self->base.lock);
+
+        *status = parsed;
+
+        modem_state_t state = MODEM_STATE_READY;
+        switch (parsed) {
+        case MODEM_REG_REGISTERED_HOME:
+        case MODEM_REG_REGISTERED_ROAMING:
+            state = MODEM_STATE_REGISTERED;
+            break;
+        case MODEM_REG_SEARCHING:
+            state = MODEM_STATE_REGISTERING;
+            break;
+        case MODEM_REG_NOT_REGISTERED:
+        case MODEM_REG_DENIED:
+        default:
+            state = MODEM_STATE_READY;
+            break;
+        }
+
+        return modem_set_state(me, state);
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    self->last_reg_status = MODEM_REG_UNKNOWN;
+    xSemaphoreGive(self->base.lock);
+
+    *status = MODEM_REG_UNKNOWN;
+    if (!had_error) {
+        return ESP_OK;
+    }
+
+    return last_err;
+}
+
+static esp_err_t ml307r_get_packet_attach_status(modem_t *me, bool *attached)
+{
+    ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    return query_cgatt(to_ml307r(me), attached);
+}
+
+static esp_err_t ml307r_set_apn(modem_t *me, uint8_t cid, const char *apn)
+{
+    ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid cid %u", (unsigned int)cid);
+    ESP_RETURN_ON_FALSE(cid == ML307R_PRIMARY_CID, ESP_ERR_NOT_SUPPORTED,
+                        TAG, "ML307R MIPCALL supports cid 1 only");
+    ESP_RETURN_ON_FALSE(strlen(apn) < MODEM_APN_MAX_LEN && at_arg_safe(apn),
+                        ESP_ERR_INVALID_ARG, TAG, "invalid APN");
+
+    char cmd[128];
+    /* AT command shape: AT+CGDCONT=%u,"IPV4V6","%s". */
+    int written = snprintf(cmd, sizeof(cmd), "AT+CGDCONT=%u,\"IPV4V6\",\"%s\"",
+                           (unsigned int)cid, apn);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+CGDCONT command truncated");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, 0);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cmd);
+
+    ret = ensure_at_ok(&ctx.response, cmd);
+    ESP_RETURN_ON_ERROR(ret, TAG, "%s failed", cmd);
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    modem_pdp_context_t *pdp = pdp_by_cid(self, cid);
+    if (!pdp) {
+        xSemaphoreGive(self->base.lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    pdp->cid = ML307R_PRIMARY_CID;
+    strlcpy(pdp->apn, apn, sizeof(pdp->apn));
+    strlcpy(pdp->pdp_type, "IPV4V6", sizeof(pdp->pdp_type));
+    xSemaphoreGive(self->base.lock);
+
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_activate_pdp(modem_t *me, uint8_t cid)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid cid %u", (unsigned int)cid);
+    ESP_RETURN_ON_FALSE(cid == ML307R_PRIMARY_CID, ESP_ERR_NOT_SUPPORTED,
+                        TAG, "ML307R MIPCALL supports cid 1 only");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    modem_pdp_context_t snapshot = {0};
+    esp_err_t ret = query_mipcall(self, cid, &snapshot);
+    if (ret == ESP_OK && snapshot.active && snapshot.ip_addr[0]) {
+        ret = modem_set_state(me, MODEM_STATE_PDP_ACTIVE);
+        ESP_RETURN_ON_ERROR(ret, TAG, "set PDP active state failed");
+
+        const modem_event_t event = {
+            .id = MODEM_EVENT_PDP_ACTIVATED,
+            .data.pdp = snapshot,
+        };
+        ret = modem_post_event(me, &event);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "post PDP activated event failed: %s", esp_err_to_name(ret));
+        }
+        return ESP_OK;
+    }
+    if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
+        return ret;
+    }
+
+    char cmd[32];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MIPCALL=1,%u", (unsigned int)cid);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MIPCALL command truncated");
+
+    ml307r_cmd_ctx_t ctx;
+    ret = send_cmd(self, cmd, &ctx, ML307R_MIPCALL_TIMEOUT_MS);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cmd);
+
+    ret = ensure_at_ok(&ctx.response, cmd);
+    ESP_RETURN_ON_ERROR(ret, TAG, "%s failed", cmd);
+
+    modem_pdp_context_t event_pdp = {0};
+    bool active_seen = false;
+    int count = ctx.response.line_count;
+    if (count > ctx.response.max_lines) {
+        count = ctx.response.max_lines;
+    }
+    for (int i = 0; i < count; i++) {
+        const char *line = ctx.response.lines[i];
+        if (!line || strncmp(line, ML307R_URC_MIPCALL,
+                            sizeof(ML307R_URC_MIPCALL) - 1) != 0) {
+            continue;
+        }
+
+        uint8_t parsed_cid = 0;
+        ret = parse_mipcall_cid(line, &parsed_cid);
+        ESP_RETURN_ON_ERROR(ret, TAG, "parse +MIPCALL cid failed");
+        if (parsed_cid != cid) {
+            continue;
+        }
+
+        modem_pdp_context_t parsed = {0};
+        if (!parse_mipcall_line(line, &parsed)) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (!parsed.active || !parsed.ip_addr[0]) {
+            continue;
+        }
+
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        modem_pdp_context_t *pdp = pdp_by_cid(self, parsed.cid);
+        if (!pdp) {
+            xSemaphoreGive(self->base.lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+        pdp->cid = parsed.cid;
+        pdp->active = true;
+        strlcpy(pdp->ip_addr, parsed.ip_addr, sizeof(pdp->ip_addr));
+        strlcpy(pdp->pdp_type, parsed.pdp_type[0] ? parsed.pdp_type : "IPV4V6",
+                sizeof(pdp->pdp_type));
+        event_pdp = *pdp;
+        xSemaphoreGive(self->base.lock);
+
+        active_seen = true;
+        break;
+    }
+
+    uint32_t start_ms = now_ms();
+    while (!active_seen && !elapsed_at_least(start_ms, ML307R_MIPCALL_TIMEOUT_MS)) {
+        ret = query_mipcall(self, cid, &snapshot);
+        if (ret == ESP_OK && snapshot.active && snapshot.ip_addr[0]) {
+            event_pdp = snapshot;
+            active_seen = true;
+            break;
+        }
+        if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
+            return ret;
+        }
+        if (!elapsed_at_least(start_ms, ML307R_MIPCALL_TIMEOUT_MS)) {
+            delay_init_retry();
+        }
+    }
+
+    if (!active_seen) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    ret = modem_set_state(me, MODEM_STATE_PDP_ACTIVE);
+    ESP_RETURN_ON_ERROR(ret, TAG, "set PDP active state failed");
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_PDP_ACTIVATED,
+        .data.pdp = event_pdp,
+    };
+    ret = modem_post_event(me, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post PDP activated event failed: %s", esp_err_to_name(ret));
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_deactivate_pdp(modem_t *me, uint8_t cid)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid cid %u", (unsigned int)cid);
+    ESP_RETURN_ON_FALSE(cid == ML307R_PRIMARY_CID, ESP_ERR_NOT_SUPPORTED,
+                        TAG, "ML307R MIPCALL supports cid 1 only");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    modem_pdp_context_t previous = {0};
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    modem_pdp_context_t *pdp = pdp_by_cid(self, cid);
+    if (!pdp) {
+        xSemaphoreGive(self->base.lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    previous = *pdp;
+    xSemaphoreGive(self->base.lock);
+
+    char cmd[32];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MIPCALL=0,%u", (unsigned int)cid);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MIPCALL command truncated");
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_MIPCALL_TIMEOUT_MS);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cmd);
+
+    ret = ensure_at_ok(&ctx.response, cmd);
+    ESP_RETURN_ON_ERROR(ret, TAG, "%s failed", cmd);
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    pdp = pdp_by_cid(self, cid);
+    if (!pdp) {
+        xSemaphoreGive(self->base.lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    pdp->active = false;
+    pdp->ip_addr[0] = '\0';
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    xSemaphoreGive(self->base.lock);
+
+    ret = modem_set_state(me, MODEM_STATE_READY);
+    ESP_RETURN_ON_ERROR(ret, TAG, "set ready state failed");
+
+    if (previous.active) {
+        previous.active = false;
+        previous.ip_addr[0] = '\0';
+        const modem_event_t event = {
+            .id = MODEM_EVENT_PDP_DEACTIVATED,
+            .data.pdp = previous,
+        };
+        ret = modem_post_event(me, &event);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "post PDP deactivated event failed: %s",
+                     esp_err_to_name(ret));
+        }
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_get_pdp_context(modem_t *me, uint8_t cid,
+                                         modem_pdp_context_t *pdp)
+{
+    ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid cid %u", (unsigned int)cid);
+    ESP_RETURN_ON_FALSE(cid == ML307R_PRIMARY_CID, ESP_ERR_NOT_SUPPORTED,
+                        TAG, "ML307R MIPCALL supports cid 1 only");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    esp_err_t ret = query_mipcall(self, cid, NULL);
+    if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
+        return ret;
+    }
+
+    xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    modem_pdp_context_t *cached = pdp_by_cid(self, cid);
+    if (!cached) {
+        xSemaphoreGive(self->base.lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!cached->pdp_type[0]) {
+        strlcpy(cached->pdp_type, "IPV4V6", sizeof(cached->pdp_type));
+    }
+    *pdp = *cached;
+    xSemaphoreGive(self->base.lock);
+
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_mqtt_configure(modem_t *me,
+                                        const modem_mqtt_config_t *config)
+{
+    ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host &&
+                        config->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    bool connected = self->mqtt_session_connected || self->mqtt_data_enabled;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(!connected, ESP_ERR_INVALID_STATE, TAG, "MQTT is connected");
+
+    modem_mqtt_config_t new_config = {0};
+    esp_err_t ret = copy_mqtt_config(&new_config, config);
+    ESP_RETURN_ON_ERROR(ret, TAG, "copy MQTT config failed");
+
+    /* AT command shapes: AT+MQTTCFG="version",0,4; AT+MQTTCFG="cid",0,1;
+     * AT+MQTTCFG="keepalive",0,%u; AT+MQTTCFG="clean",0,%u;
+     * AT+MQTTCFG="cached",0,0. */
+    const char *fixed_cmds[] = {
+        "AT+MQTTCFG=\"version\",0,4",
+        "AT+MQTTCFG=\"cid\",0,1",
+    };
+    for (size_t i = 0; i < sizeof(fixed_cmds) / sizeof(fixed_cmds[0]); i++) {
+        ml307r_cmd_ctx_t ctx;
+        ret = send_cmd(self, fixed_cmds[i], &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, fixed_cmds[i]);
+        }
+        if (ret != ESP_OK) {
+            goto cleanup;
+        }
+    }
+
+    char cmd[64];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MQTTCFG=\"keepalive\",0,%u",
+                           (unsigned int)new_config.keepalive_s);
+    if (written < 0 || (size_t)written >= sizeof(cmd)) {
+        ret = ESP_ERR_INVALID_ARG;
+        goto cleanup;
+    }
+    ml307r_cmd_ctx_t ctx;
+    ret = send_cmd(self, cmd, &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, cmd);
+    }
+    if (ret != ESP_OK) {
+        goto cleanup;
+    }
+
+    written = snprintf(cmd, sizeof(cmd), "AT+MQTTCFG=\"clean\",0,%u",
+                       new_config.clean_session ? 1U : 0U);
+    if (written < 0 || (size_t)written >= sizeof(cmd)) {
+        ret = ESP_ERR_INVALID_ARG;
+        goto cleanup;
+    }
+    ret = send_cmd(self, cmd, &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, cmd);
+    }
+    if (ret != ESP_OK) {
+        goto cleanup;
+    }
+
+    ret = send_cmd(self, "AT+MQTTCFG=\"cached\",0,0", &ctx,
+                   ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTCFG=\"cached\",0,0");
+    }
+    if (ret != ESP_OK) {
+        goto cleanup;
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    free_mqtt_config(&self->mqtt_config);
+    self->mqtt_config = new_config;
+    memset(&new_config, 0, sizeof(new_config));
+    self->mqtt_configured = true;
+    self->mqtt_session_connected = false;
+    self->mqtt_data_enabled = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+
+cleanup:
+    free_mqtt_config(&new_config);
+    return ret;
+}
+
+static esp_err_t ml307r_mqtt_tcp_connect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    bool configured = self->mqtt_configured;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+
+    ESP_RETURN_ON_FALSE(configured, ESP_ERR_INVALID_STATE, TAG, "MQTT not configured");
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_mqtt_connect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    bool configured = false;
+    bool session_connected = false;
+    modem_mqtt_config_t snapshot = {0};
+    esp_err_t ret = ESP_OK;
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    configured = self->mqtt_configured;
+    session_connected = self->mqtt_session_connected;
+    if (configured && !session_connected) {
+        ret = copy_mqtt_config(&snapshot, &self->mqtt_config);
+    }
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(configured, ESP_ERR_INVALID_STATE, TAG, "MQTT not configured");
+    ESP_RETURN_ON_FALSE(!session_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT session already connected");
+    ESP_RETURN_ON_ERROR(ret, TAG, "copy MQTT config failed");
+
+    char *host = escape_at_string(snapshot.host);
+    char *client_id = escape_at_string(snapshot.client_id);
+    char *username = escape_at_string(snapshot.username ? snapshot.username : "");
+    char *password = escape_at_string(snapshot.password ? snapshot.password : "");
+    if (!host || !client_id || !username || !password) {
+        ret = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+
+    /* AT command shape: AT+MQTTCONN=0,"%s",%u,"%s","%s","%s". */
+    int needed = snprintf(NULL, 0,
+                          "AT+MQTTCONN=0,\"%s\",%u,\"%s\",\"%s\",\"%s\"",
+                          host, (unsigned int)snapshot.port, client_id,
+                          username, password);
+    if (needed < 0) {
+        ret = ESP_ERR_INVALID_ARG;
+        goto cleanup;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        ret = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+    snprintf(cmd, (size_t)needed + 1U,
+             "AT+MQTTCONN=0,\"%s\",%u,\"%s\",\"%s\",\"%s\"",
+             host, (unsigned int)snapshot.port, client_id, username, password);
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_PREFIX,
+        .value = ML307R_URC_MQTTURC,
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = ML307R_MQTT_CONNECT_TIMEOUT_MS,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    ml307r_cmd_ctx_t ctx;
+    ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTCONN");
+    }
+    if (ret == ESP_OK) {
+        ret = ESP_ERR_INVALID_RESPONSE;
+        int count = ctx.response.line_count;
+        if (count > ctx.response.max_lines) {
+            count = ctx.response.max_lines;
+        }
+        for (int i = 0; i < count; i++) {
+            const char *line = ctx.response.lines[i];
+            if (line && mqtt_event_matches(line, "conn", NULL)) {
+                ret = parse_mqtt_conn_urc_ex(self, line, false);
+                break;
+            }
+        }
+    }
+
+    free(cmd);
+
+cleanup:
+    free(host);
+    free(client_id);
+    free(username);
+    free(password);
+    free_mqtt_config(&snapshot);
+    return ret;
+}
+
+static esp_err_t ml307r_mqtt_disconnect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    bool session_connected = self->mqtt_session_connected;
+    bool previous_data_enabled = self->mqtt_data_enabled;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(session_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT session not connected");
+
+    set_mqtt_data_enabled(self, false);
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+MQTTDISC=0", &ctx,
+                             ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTDISC=0");
+    }
+    if (ret != ESP_OK) {
+        if (self->base.lock) {
+            xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        }
+        if (self->mqtt_session_connected) {
+            self->mqtt_data_enabled = previous_data_enabled;
+        }
+        if (self->base.lock) {
+            xSemaphoreGive(self->base.lock);
+        }
+        return ret;
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_session_connected = false;
+    self->mqtt_data_enabled = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_mqtt_tcp_disconnect(modem_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_session_connected = false;
+    self->mqtt_data_enabled = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_mqtt_subscribe(modem_t *me,
+                                        const modem_mqtt_topic_t *topic)
+{
+    ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->topic[0] &&
+                        topic->qos <= 2,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    bool session_connected = self->mqtt_session_connected;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(session_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT session not connected");
+
+    char *escaped_topic = escape_at_string(topic->topic);
+    ESP_RETURN_ON_FALSE(escaped_topic, ESP_ERR_NO_MEM, TAG, "escape topic failed");
+
+    /* AT command shape: AT+MQTTSUB=0,"%s",%u. */
+    int needed = snprintf(NULL, 0, "AT+MQTTSUB=0,\"%s\",%u",
+                          escaped_topic, (unsigned int)topic->qos);
+    if (needed < 0) {
+        free(escaped_topic);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(escaped_topic);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MQTTSUB=0,\"%s\",%u",
+             escaped_topic, (unsigned int)topic->qos);
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTSUB");
+    }
+
+    free(cmd);
+    free(escaped_topic);
+    return ret;
+}
+
+static esp_err_t ml307r_mqtt_unsubscribe(modem_t *me,
+                                          const modem_mqtt_topic_t *topic)
+{
+    ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->topic[0] &&
+                        topic->qos <= 2,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    bool session_connected = self->mqtt_session_connected;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(session_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT session not connected");
+
+    char *escaped_topic = escape_at_string(topic->topic);
+    ESP_RETURN_ON_FALSE(escaped_topic, ESP_ERR_NO_MEM, TAG, "escape topic failed");
+
+    /* AT command shape: AT+MQTTUNSUB=0,"%s". */
+    int needed = snprintf(NULL, 0, "AT+MQTTUNSUB=0,\"%s\"", escaped_topic);
+    if (needed < 0) {
+        free(escaped_topic);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(escaped_topic);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MQTTUNSUB=0,\"%s\"", escaped_topic);
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTUNSUB");
+    }
+
+    free(cmd);
+    free(escaped_topic);
+    return ret;
+}
+
+static esp_err_t ml307r_mqtt_publish(modem_t *me,
+                                      const modem_mqtt_publish_t *publish)
+{
+    ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
+                        publish->topic[0] && publish->payload_len > 0 &&
+                        publish->qos <= 2 &&
+                        publish->payload_len <= ML307R_MQTT_MAX_TEXT_PAYLOAD_LEN &&
+                        publish->payload_len <= UINT_MAX &&
+                        publish->payload_len <= SIZE_MAX - 1U,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    if (!at_text_payload_safe(publish->payload, publish->payload_len)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    modem_ml307r_t *self = to_ml307r(me);
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    bool session_connected = self->mqtt_session_connected;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    ESP_RETURN_ON_FALSE(session_connected, ESP_ERR_INVALID_STATE,
+                        TAG, "MQTT session not connected");
+
+    char *payload_text = copy_payload_text(publish->payload, publish->payload_len);
+    ESP_RETURN_ON_FALSE(payload_text, ESP_ERR_NO_MEM, TAG, "copy payload failed");
+
+    char *escaped_topic = escape_at_string(publish->topic);
+    if (!escaped_topic) {
+        free(payload_text);
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* AT command shape: AT+MQTTPUB=0,"%s",%u,%u,%u,"%s". */
+    int needed = snprintf(NULL, 0, "AT+MQTTPUB=0,\"%s\",%u,%u,%u,\"%s\"",
+                          escaped_topic, (unsigned int)publish->qos,
+                          publish->retain ? 1U : 0U,
+                          (unsigned int)publish->payload_len, payload_text);
+    if (needed < 0) {
+        free(escaped_topic);
+        free(payload_text);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(escaped_topic);
+        free(payload_text);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U,
+             "AT+MQTTPUB=0,\"%s\",%u,%u,%u,\"%s\"",
+             escaped_topic, (unsigned int)publish->qos,
+             publish->retain ? 1U : 0U,
+             (unsigned int)publish->payload_len, payload_text);
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTPUB");
+    }
+
+    free(cmd);
+    free(escaped_topic);
+    free(payload_text);
+    return ret;
+}
+
+static esp_err_t ml307r_ping(modem_t *me,
+                             const modem_ping_request_t *request,
+                             modem_ping_reply_t *replies,
+                             size_t max_replies,
+                             modem_ping_summary_t *summary)
+{
+    ESP_RETURN_ON_FALSE(me && request && request->host && request->host[0] &&
+                        replies && max_replies >= request->count,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(request->count >= 1 &&
+                        request->count <= ML307R_MPING_MAX_COUNT,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ping count");
+
+    uint32_t timeout_s = ((uint32_t)request->timeout_100ms + 9U) / 10U;
+    if (timeout_s == 0) {
+        timeout_s = 1;
+    }
+    ESP_RETURN_ON_FALSE(timeout_s <= 60U, ESP_ERR_INVALID_ARG,
+                        TAG, "invalid ping timeout");
+
+    uint32_t packet_len = request->data_len;
+    if (packet_len == 0) {
+        packet_len = 16U;
+    }
+    ESP_RETURN_ON_FALSE(packet_len >= 1U && packet_len <= 1400U,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ping packet length");
+
+    char *host = escape_at_string(request->host);
+    ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape ping host failed");
+
+    /* AT command shape: AT+MPING="%s",%u,%u,%u,1. */
+    int needed = snprintf(NULL, 0, "AT+MPING=\"%s\",%u,%u,%u,1",
+                          host, (unsigned int)timeout_s,
+                          (unsigned int)request->count,
+                          (unsigned int)packet_len);
+    if (needed < 0) {
+        free(host);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(host);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(cmd, (size_t)needed + 1U, "AT+MPING=\"%s\",%u,%u,%u,1",
+             host, (unsigned int)timeout_s, (unsigned int)request->count,
+             (unsigned int)packet_len);
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_PREFIX,
+        .value = ML307R_MPING_STATISTICS_PREFIX,
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = ping_cmd_timeout_ms(request),
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    modem_ml307r_t *self = to_ml307r(me);
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MPING");
+    }
+    if (ret != ESP_OK) {
+        free(cmd);
+        free(host);
+        return ret;
+    }
+
+    size_t parsed_count = 0;
+    size_t success_count = 0;
+    bool statistics_seen = false;
+    modem_ping_summary_t parsed_summary = {0};
+    int line_count = ctx.response.line_count;
+    if (line_count > ctx.response.max_lines) {
+        line_count = ctx.response.max_lines;
+    }
+    for (int i = 0; i < line_count; i++) {
+        const char *line = ctx.response.lines[i];
+        if (!line || strncmp(line, ML307R_MPING_PREFIX,
+                            sizeof(ML307R_MPING_PREFIX) - 1U) != 0) {
+            continue;
+        }
+
+        const char *value = skip_prefix_value(line, ML307R_MPING_PREFIX);
+        if (value && strncmp(value, "\"statistics\"",
+                            sizeof("\"statistics\"") - 1U) == 0) {
+            ret = parse_mping_statistics_line(line, &parsed_summary);
+            if (ret != ESP_OK) {
+                free(cmd);
+                free(host);
+                return ret;
+            }
+            statistics_seen = true;
+            continue;
+        }
+
+        if (parsed_count >= request->count) {
+            free(cmd);
+            free(host);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+
+        ret = parse_mping_reply_line(line, &replies[parsed_count]);
+        if (ret != ESP_OK) {
+            free(cmd);
+            free(host);
+            return ret;
+        }
+        replies[parsed_count].seq = (uint8_t)(parsed_count + 1U);
+        if (replies[parsed_count].success) {
+            success_count++;
+        }
+        parsed_count++;
+    }
+
+    if (parsed_count != request->count) {
+        free(cmd);
+        free(host);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (statistics_seen) {
+        if (parsed_summary.sent != request->count ||
+            parsed_summary.received != success_count ||
+            parsed_summary.lost != request->count - success_count) {
+            free(cmd);
+            free(host);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (summary) {
+            *summary = parsed_summary;
+        }
+    } else {
+        calculate_ping_summary(request, replies, parsed_count, summary);
+    }
+
+    free(cmd);
+    free(host);
+    return ESP_OK;
+}
+
+static void cpin_urc_handler(const char *prefix, const char *line, void *user_ctx)
+{
+    (void)prefix;
+
+    if (!user_ctx) {
+        return;
+    }
+
+    modem_ml307r_t *self = (modem_ml307r_t *)user_ctx;
+    modem_sim_status_t status = parse_sim_status_line(line);
+
+    if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "drop CPIN URC, lock busy");
+    } else {
+        self->last_sim_status = status;
+        xSemaphoreGive(self->base.lock);
+    }
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_SIM_CHANGED,
+        .data.sim_status = status,
+    };
+    esp_err_t ret = post_event_nonblocking(self, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post SIM changed event failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void reg_urc_handler(const char *prefix, const char *line, void *user_ctx)
+{
+    if (!user_ctx) {
+        return;
+    }
+
+    modem_ml307r_t *self = (modem_ml307r_t *)user_ctx;
+    modem_reg_status_t status = MODEM_REG_UNKNOWN;
+    esp_err_t ret = parse_registration_urc_line(line, prefix, &status);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "parse registration URC failed: %s", line ? line : "<NULL>");
+        status = MODEM_REG_UNKNOWN;
+    }
+
+    if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "drop registration URC, lock busy");
+    } else {
+        self->last_reg_status = status;
+        xSemaphoreGive(self->base.lock);
+    }
+
+    switch (status) {
+    case MODEM_REG_REGISTERED_HOME:
+    case MODEM_REG_REGISTERED_ROAMING:
+        set_state_nonblocking(self, MODEM_STATE_REGISTERED);
+        break;
+    case MODEM_REG_SEARCHING:
+        set_state_nonblocking(self, MODEM_STATE_REGISTERING);
+        break;
+    case MODEM_REG_NOT_REGISTERED:
+    case MODEM_REG_DENIED:
+        set_state_nonblocking(self, MODEM_STATE_READY);
+        break;
+    case MODEM_REG_UNKNOWN:
+    default:
+        break;
+    }
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_REG_CHANGED,
+        .data.reg_status = status,
+    };
+    ret = post_event_nonblocking(self, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post registration changed event failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void mipcall_urc_handler(const char *prefix, const char *line, void *user_ctx)
+{
+    (void)prefix;
+
+    if (!user_ctx || !line) {
+        return;
+    }
+
+    modem_ml307r_t *self = (modem_ml307r_t *)user_ctx;
+    modem_pdp_context_t parsed = {0};
+    if (!parse_mipcall_line(line, &parsed)) {
+        return;
+    }
+
+    modem_pdp_context_t event_pdp = {0};
+    modem_event_id_t event_id = parsed.active ?
+                                MODEM_EVENT_PDP_ACTIVATED :
+                                MODEM_EVENT_PDP_DEACTIVATED;
+
+    if (!self->base.lock || xSemaphoreTake(self->base.lock, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "drop MIPCALL URC, lock busy");
+        event_pdp = parsed;
+    } else {
+        modem_pdp_context_t *pdp = pdp_by_cid(self, parsed.cid);
+        if (!pdp) {
+            xSemaphoreGive(self->base.lock);
+            return;
+        }
+        pdp->cid = parsed.cid;
+        pdp->active = parsed.active;
+        if (parsed.ip_addr[0]) {
+            strlcpy(pdp->ip_addr, parsed.ip_addr, sizeof(pdp->ip_addr));
+        }
+        if (!parsed.active) {
+            pdp->ip_addr[0] = '\0';
+            self->mqtt_data_enabled = false;
+            self->mqtt_session_connected = false;
+        }
+        if (parsed.pdp_type[0]) {
+            strlcpy(pdp->pdp_type, parsed.pdp_type, sizeof(pdp->pdp_type));
+        } else if (!pdp->pdp_type[0]) {
+            strlcpy(pdp->pdp_type, "IPV4V6", sizeof(pdp->pdp_type));
+        }
+        event_pdp = *pdp;
+        xSemaphoreGive(self->base.lock);
+    }
+
+    set_state_nonblocking(self, parsed.active ? MODEM_STATE_PDP_ACTIVE : MODEM_STATE_READY);
+
+    const modem_event_t event = {
+        .id = event_id,
+        .data.pdp = event_pdp,
+    };
+    esp_err_t ret = post_event_nonblocking(self, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post PDP event failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void mqtturc_urc_handler(const char *prefix, const char *line, void *user_ctx)
+{
+    (void)prefix;
+
+    if (!user_ctx || !line) {
+        return;
+    }
+
+    handle_mqtturc((modem_ml307r_t *)user_ctx, line);
+}
+
+static esp_err_t query_mipcall(modem_ml307r_t *self, uint8_t cid,
+                               modem_pdp_context_t *out_pdp)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+    ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid cid %u", (unsigned int)cid);
+    ESP_RETURN_ON_FALSE(cid == ML307R_PRIMARY_CID, ESP_ERR_NOT_SUPPORTED,
+                        TAG, "ML307R MIPCALL supports cid 1 only");
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+MIPCALL?", &ctx, 0);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+MIPCALL? failed");
+
+    ret = ensure_at_ok(&ctx.response, "AT+MIPCALL?");
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+MIPCALL? failed");
+
+    int count = ctx.response.line_count;
+    if (count > ctx.response.max_lines) {
+        count = ctx.response.max_lines;
+    }
+
+    for (int i = 0; i < count; i++) {
+        const char *line = ctx.response.lines[i];
+        if (!line || strncmp(line, ML307R_URC_MIPCALL,
+                            sizeof(ML307R_URC_MIPCALL) - 1) != 0) {
+            continue;
+        }
+
+        uint8_t parsed_cid = 0;
+        ret = parse_mipcall_cid(line, &parsed_cid);
+        ESP_RETURN_ON_ERROR(ret, TAG, "parse +MIPCALL cid failed");
+        if (parsed_cid != cid) {
+            continue;
+        }
+
+        modem_pdp_context_t parsed = {0};
+        if (!parse_mipcall_line(line, &parsed)) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+        modem_pdp_context_t *cached = pdp_by_cid(self, cid);
+        if (!cached) {
+            xSemaphoreGive(self->base.lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        char apn[MODEM_APN_MAX_LEN] = {0};
+        char pdp_type[MODEM_PDP_TYPE_MAX_LEN] = {0};
+        strlcpy(apn, cached->apn, sizeof(apn));
+        strlcpy(pdp_type, cached->pdp_type, sizeof(pdp_type));
+
+        cached->cid = ML307R_PRIMARY_CID;
+        strlcpy(cached->apn, apn, sizeof(cached->apn));
+        if (parsed.pdp_type[0]) {
+            strlcpy(cached->pdp_type, parsed.pdp_type, sizeof(cached->pdp_type));
+        } else if (pdp_type[0]) {
+            strlcpy(cached->pdp_type, pdp_type, sizeof(cached->pdp_type));
+        } else {
+            strlcpy(cached->pdp_type, "IPV4V6", sizeof(cached->pdp_type));
+        }
+        cached->active = parsed.active;
+        strlcpy(cached->ip_addr, parsed.ip_addr, sizeof(cached->ip_addr));
+        if (out_pdp) {
+            *out_pdp = *cached;
+        }
+        xSemaphoreGive(self->base.lock);
+
+        return ESP_OK;
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
+static esp_err_t parse_mipcall_cid(const char *line, uint8_t *cid)
+{
+    ESP_RETURN_ON_FALSE(cid, ESP_ERR_INVALID_ARG, TAG, "cid is NULL");
+
+    const char *value = skip_prefix_value(line, ML307R_URC_MIPCALL);
+    if (!value || !isdigit((unsigned char)*value)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed_cid = strtoul(value, &end, 10);
+    if (end == value || errno == ERANGE || parsed_cid > UINT8_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *cid = (uint8_t)parsed_cid;
+    return ESP_OK;
+}
+
+static bool parse_mipcall_line(const char *line, modem_pdp_context_t *pdp)
+{
+    if (!line || !pdp) {
+        return false;
+    }
+
+    const char *value = skip_prefix_value(line, ML307R_URC_MIPCALL);
+    if (!value) {
+        return false;
+    }
+
+    if (!isdigit((unsigned char)*value)) {
+        return false;
+    }
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed_cid = strtoul(value, &end, 10);
+    if (end == value || errno == ERANGE || parsed_cid != ML307R_PRIMARY_CID) {
+        return false;
+    }
+
+    const char *cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return false;
+    }
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    if (!isdigit((unsigned char)*cursor)) {
+        return false;
+    }
+    errno = 0;
+    end = NULL;
+    unsigned long state = strtoul(cursor, &end, 10);
+    if (end == cursor || errno == ERANGE || (state != 0 && state != 1)) {
+        return false;
+    }
+
+    memset(pdp, 0, sizeof(*pdp));
+    pdp->cid = ML307R_PRIMARY_CID;
+    pdp->active = state == 1;
+    strlcpy(pdp->pdp_type, "IPV4V6", sizeof(pdp->pdp_type));
+
+    cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (state == 0) {
+        return *cursor == '\0';
+    }
+
+    if (*cursor != ',') {
+        return false;
+    }
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    const char *addr_start = cursor;
+    const char *addr_end = cursor;
+    if (*cursor == '"') {
+        addr_start = cursor + 1;
+        addr_end = strchr(addr_start, '"');
+        if (!addr_end) {
+            return false;
+        }
+        const char *tail = addr_end + 1;
+        while (isspace((unsigned char)*tail)) {
+            tail++;
+        }
+        if (*tail != '\0' && *tail != ',') {
+            return false;
+        }
+    } else {
+        while (*addr_end && *addr_end != ',') {
+            addr_end++;
+        }
+        while (addr_end > addr_start && isspace((unsigned char)*(addr_end - 1))) {
+            addr_end--;
+        }
+    }
+
+    size_t addr_len = (size_t)(addr_end - addr_start);
+    if (addr_len == 0 || addr_len >= sizeof(pdp->ip_addr)) {
+        return false;
+    }
+
+    memcpy(pdp->ip_addr, addr_start, addr_len);
+    pdp->ip_addr[addr_len] = '\0';
+    return looks_like_ip_addr(pdp->ip_addr);
+}
+
+static esp_err_t parse_mqtt_conn_urc(modem_ml307r_t *self, const char *line)
+{
+    return parse_mqtt_conn_urc_ex(self, line, true);
+}
+
+static esp_err_t parse_mqtt_conn_urc_ex(modem_ml307r_t *self, const char *line,
+                                        bool nonblocking)
+{
+    ESP_RETURN_ON_FALSE(self && line, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const char *cursor = NULL;
+    if (!mqtt_event_matches(line, "conn", &cursor)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    unsigned long connect_id = 0;
+    unsigned long conn_state = 0;
+    if (!parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, UINT_MAX, &connect_id) ||
+        connect_id != ML307R_MQTT_CONNECT_ID ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, 255U, &conn_state)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    bool was_connected = false;
+    if (self->base.lock) {
+        TickType_t wait_ticks = nonblocking ? 0 : portMAX_DELAY;
+        if (xSemaphoreTake(self->base.lock, wait_ticks) != pdTRUE) {
+            ESP_LOGW(TAG, "drop MQTT conn URC state update, lock busy");
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    was_connected = self->mqtt_session_connected;
+    if (conn_state == 0) {
+        self->mqtt_session_connected = true;
+        self->mqtt_data_enabled = true;
+    } else {
+        self->mqtt_session_connected = false;
+        self->mqtt_data_enabled = false;
+    }
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+
+    if (conn_state == 0) {
+        return ESP_OK;
+    }
+    if (conn_state == 1) {
+        ESP_LOGW(TAG, "MQTT reconnecting");
+    } else {
+        ESP_LOGW(TAG, "MQTT disconnected, conn_state=%u", (unsigned int)conn_state);
+    }
+
+    if (was_connected) {
+        const modem_event_t event = {
+            .id = MODEM_EVENT_PROTOCOL_CLOSED,
+        };
+        esp_err_t ret = nonblocking ? post_event_nonblocking(self, &event) :
+                        modem_post_event(&self->base, &event);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "post MQTT closed event failed: %s", esp_err_to_name(ret));
+        }
+    }
+    return ESP_FAIL;
+}
+
+static bool parse_mqtt_publish_urc(const char *line, char **topic,
+                                   size_t *topic_len, uint8_t **payload,
+                                   size_t *payload_len)
+{
+    if (!line || !topic || !topic_len || !payload || !payload_len) {
+        return false;
+    }
+
+    *topic = NULL;
+    *topic_len = 0;
+    *payload = NULL;
+    *payload_len = 0;
+
+    const char *cursor = NULL;
+    if (!mqtt_event_matches(line, "publish", &cursor) ||
+        !parse_mqtt_comma(&cursor)) {
+        return false;
+    }
+
+    unsigned long connect_id = 0;
+    unsigned long mid = 0;
+    if (!parse_mqtt_uint_field(&cursor, UINT_MAX, &connect_id) ||
+        connect_id != ML307R_MQTT_CONNECT_ID ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, UINT_MAX, &mid) ||
+        !parse_mqtt_comma(&cursor)) {
+        return false;
+    }
+    (void)mid;
+
+    const char *topic_start = cursor;
+    const char *topic_end = NULL;
+    if (*cursor == '"') {
+        topic_start = cursor + 1;
+        topic_end = strchr(topic_start, '"');
+        if (!topic_end) {
+            return false;
+        }
+        cursor = topic_end + 1;
+    } else {
+        topic_end = strchr(cursor, ',');
+        if (!topic_end) {
+            return false;
+        }
+        while (topic_end > topic_start &&
+               isspace((unsigned char)*(topic_end - 1))) {
+            topic_end--;
+        }
+        cursor = topic_end;
+    }
+    if (topic_end == topic_start || !parse_mqtt_comma(&cursor)) {
+        return false;
+    }
+
+    unsigned long parsed_total_len = 0;
+    unsigned long parsed_payload_len = 0;
+    unsigned long size_max = (unsigned long)((size_t)-1);
+    if (!parse_mqtt_uint_field(&cursor, size_max, &parsed_total_len) ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, size_max, &parsed_payload_len) ||
+        parsed_payload_len != parsed_total_len ||
+        !parse_mqtt_comma(&cursor)) {
+        return false;
+    }
+
+    size_t parsed_topic_len = (size_t)(topic_end - topic_start);
+    size_t parsed_payload_size = (size_t)parsed_payload_len;
+    for (size_t i = 0; i < parsed_payload_size; i++) {
+        if (cursor[i] == '\0') {
+            return false;
+        }
+    }
+    if (cursor[parsed_payload_size] != '\0') {
+        return false;
+    }
+
+    char *topic_buf = malloc(parsed_topic_len + 1U);
+    if (!topic_buf) {
+        return false;
+    }
+    uint8_t *payload_buf = malloc(parsed_payload_size > 0 ? parsed_payload_size : 1U);
+    if (!payload_buf) {
+        free(topic_buf);
+        return false;
+    }
+
+    memcpy(topic_buf, topic_start, parsed_topic_len);
+    topic_buf[parsed_topic_len] = '\0';
+    if (parsed_payload_size > 0) {
+        memcpy(payload_buf, cursor, parsed_payload_size);
+    }
+
+    *topic = topic_buf;
+    *topic_len = parsed_topic_len;
+    *payload = payload_buf;
+    *payload_len = parsed_payload_size;
+    return true;
+}
+
+static void handle_mqtturc(modem_ml307r_t *self, const char *line)
+{
+    if (!self || !line) {
+        return;
+    }
+
+    if (mqtt_event_matches(line, "conn", NULL)) {
+        esp_err_t ret = parse_mqtt_conn_urc(self, line);
+        if (ret == ESP_ERR_INVALID_RESPONSE) {
+            ESP_LOGW(TAG, "parse MQTT conn URC failed: %s", esp_err_to_name(ret));
+        } else if (ret != ESP_OK && ret != ESP_FAIL) {
+            ESP_LOGW(TAG, "MQTT conn URC state update failed: %s",
+                     esp_err_to_name(ret));
+        }
+        return;
+    }
+
+    if (mqtt_event_matches(line, "pubnmi", NULL)) {
+        ESP_LOGW(TAG, "MQTT cached publish notification ignored: %s", line);
+        return;
+    }
+
+    const char *diagnostic_events[] = {
+        "suback",
+        "unsuback",
+        "puback",
+        "pubrec",
+        "pubcomp",
+        "timeout",
+        "drop",
+        "pingresp",
+    };
+    for (size_t i = 0; i < sizeof(diagnostic_events) / sizeof(diagnostic_events[0]); i++) {
+        if (mqtt_event_matches(line, diagnostic_events[i], NULL)) {
+            ESP_LOGD(TAG, "MQTT URC %s: %s", diagnostic_events[i], line);
+            return;
+        }
+    }
+
+    if (!mqtt_event_matches(line, "publish", NULL)) {
+        ESP_LOGD(TAG, "ignore MQTT URC: %s", line);
+        return;
+    }
+
+    char *topic = NULL;
+    size_t topic_len = 0;
+    uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    if (!parse_mqtt_publish_urc(line, &topic, &topic_len, &payload, &payload_len)) {
+        return;
+    }
+
+    if (!mqtt_data_is_enabled(self)) {
+        free(topic);
+        free(payload);
+        return;
+    }
+
+    esp_err_t ret = post_mqtt_data_event(self, topic, topic_len, payload, payload_len);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post MQTT data event failed: %s", esp_err_to_name(ret));
+        free(topic);
+        free(payload);
+    }
+}
+
+static bool mqtt_event_matches(const char *line, const char *event_name,
+                               const char **event_end)
+{
+    if (event_end) {
+        *event_end = NULL;
+    }
+    if (!line || !event_name) {
+        return false;
+    }
+
+    const char *cursor = skip_prefix_value(line, ML307R_URC_MQTTURC);
+    if (!cursor || *cursor != '"') {
+        return false;
+    }
+    cursor++;
+
+    const char *start = cursor;
+    while (*cursor && *cursor != '"') {
+        if (*cursor == '\r' || *cursor == '\n') {
+            return false;
+        }
+        cursor++;
+    }
+    if (*cursor != '"') {
+        return false;
+    }
+
+    size_t len = (size_t)(cursor - start);
+    if (strlen(event_name) != len || strncmp(start, event_name, len) != 0) {
+        return false;
+    }
+
+    if (event_end) {
+        *event_end = cursor + 1;
+    }
+    return true;
+}
+
+static bool parse_mqtt_uint_field(const char **cursor, unsigned long max_value,
+                                  unsigned long *out_value)
+{
+    if (!cursor || !*cursor || !out_value) {
+        return false;
+    }
+
+    const char *start = *cursor;
+    while (isspace((unsigned char)*start)) {
+        start++;
+    }
+    if (!isdigit((unsigned char)*start)) {
+        return false;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed = strtoul(start, &end, 10);
+    if (end == start || errno == ERANGE || parsed > max_value) {
+        return false;
+    }
+
+    *out_value = parsed;
+    *cursor = end;
+    return true;
+}
+
+static bool parse_mqtt_comma(const char **cursor)
+{
+    if (!cursor || !*cursor) {
+        return false;
+    }
+
+    const char *pos = *cursor;
+    while (isspace((unsigned char)*pos)) {
+        pos++;
+    }
+    if (*pos != ',') {
+        return false;
+    }
+    pos++;
+    while (isspace((unsigned char)*pos)) {
+        pos++;
+    }
+
+    *cursor = pos;
+    return true;
+}
+
+static esp_err_t parse_mping_uint(const char **cursor,
+                                  uint32_t max_value,
+                                  uint32_t *out_value)
+{
+    ESP_RETURN_ON_FALSE(cursor && *cursor && out_value,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const char *value = *cursor;
+    while (isspace((unsigned char)*value)) {
+        value++;
+    }
+    if (!isdigit((unsigned char)*value)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || errno == ERANGE || parsed > max_value) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *cursor = end;
+    *out_value = (uint32_t)parsed;
+    return ESP_OK;
+}
+
+static void calculate_ping_summary(const modem_ping_request_t *request,
+                                   modem_ping_reply_t *replies,
+                                   size_t reply_count,
+                                   modem_ping_summary_t *summary)
+{
+    if (!request || !replies || !summary) {
+        return;
+    }
+
+    memset(summary, 0, sizeof(*summary));
+    summary->sent = request->count;
+
+    uint64_t total_time_ms = 0;
+    size_t count = reply_count;
+    if (count > request->count) {
+        count = request->count;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (!replies[i].success) {
+            continue;
+        }
+
+        if (summary->received == 0 || replies[i].time_ms < summary->min_time_ms) {
+            summary->min_time_ms = replies[i].time_ms;
+        }
+        if (replies[i].time_ms > summary->max_time_ms) {
+            summary->max_time_ms = replies[i].time_ms;
+        }
+        total_time_ms += replies[i].time_ms;
+        summary->received++;
+    }
+
+    summary->lost = summary->sent - summary->received;
+    if (summary->received > 0) {
+        summary->avg_time_ms = (uint32_t)(total_time_ms / summary->received);
+    }
+}
+
+static esp_err_t parse_mping_reply_line(const char *line,
+                                        modem_ping_reply_t *reply)
+{
+    ESP_RETURN_ON_FALSE(line && reply, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const size_t prefix_len = sizeof(ML307R_MPING_PREFIX) - 1U;
+    if (strncmp(line, ML307R_MPING_PREFIX, prefix_len) != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = line + prefix_len;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (strncmp(cursor, "\"statistics\"", sizeof("\"statistics\"") - 1U) == 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    uint32_t result = 0;
+    esp_err_t ret = parse_mping_uint(&cursor, UINT32_MAX, &result);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING result");
+
+    modem_ping_reply_t parsed = {0};
+    if (result != 0) {
+        parsed.success = false;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (*cursor == ',') {
+            cursor++;
+            while (*cursor) {
+                if (*cursor == '\r' || *cursor == '\n') {
+                    return ESP_ERR_INVALID_RESPONSE;
+                }
+                cursor++;
+            }
+        } else if (*cursor != '\0') {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        *reply = parsed;
+        return ESP_OK;
+    }
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    if (*cursor != '"') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+    const char *ip_start = cursor;
+    const char *ip_end = strchr(ip_start, '"');
+    if (!ip_end || ip_end == ip_start ||
+        (size_t)(ip_end - ip_start) >= sizeof(parsed.ip)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor = ip_end + 1;
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    uint32_t packet_len = 0;
+    ret = parse_mping_uint(&cursor, 1400U, &packet_len);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING packet length");
+    if (packet_len == 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    ret = parse_mping_uint(&cursor, UINT32_MAX, &parsed.time_ms);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING reply time");
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    uint32_t ttl = 0;
+    ret = parse_mping_uint(&cursor, UINT8_MAX, &ttl);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING ttl");
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    memcpy(parsed.ip, ip_start, (size_t)(ip_end - ip_start));
+    parsed.ip[ip_end - ip_start] = '\0';
+    parsed.ttl = (uint8_t)ttl;
+    parsed.success = true;
+    *reply = parsed;
+    return ESP_OK;
+}
+
+static esp_err_t parse_mping_statistics_line(const char *line,
+                                             modem_ping_summary_t *summary)
+{
+    ESP_RETURN_ON_FALSE(line && summary, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const size_t prefix_len = sizeof(ML307R_MPING_PREFIX) - 1U;
+    if (strncmp(line, ML307R_MPING_PREFIX, prefix_len) != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = line + prefix_len;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (strncmp(cursor, "\"statistics\"", sizeof("\"statistics\"") - 1U) != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor += sizeof("\"statistics\"") - 1U;
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    uint32_t sent = 0;
+    esp_err_t ret = parse_mping_uint(&cursor, UINT8_MAX, &sent);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING sent count");
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    uint32_t lost = 0;
+    ret = parse_mping_uint(&cursor, UINT8_MAX, &lost);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING lost count");
+    if (lost > sent) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    modem_ping_summary_t parsed = {
+        .sent = (uint8_t)sent,
+        .received = (uint8_t)(sent - lost),
+        .lost = (uint8_t)lost,
+    };
+    ret = parse_mping_uint(&cursor, UINT32_MAX, &parsed.min_time_ms);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING min RTT");
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    ret = parse_mping_uint(&cursor, UINT32_MAX, &parsed.max_time_ms);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING max RTT");
+
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != ',') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cursor++;
+
+    ret = parse_mping_uint(&cursor, UINT32_MAX, &parsed.avg_time_ms);
+    ESP_RETURN_ON_ERROR(ret, TAG, "invalid +MPING avg RTT");
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (parsed.min_time_ms > parsed.max_time_ms) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (parsed.received > 0 &&
+        (parsed.avg_time_ms < parsed.min_time_ms ||
+         parsed.avg_time_ms > parsed.max_time_ms)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *summary = parsed;
+    return ESP_OK;
+}
+
+static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request)
+{
+    if (!request) {
+        return ML307R_DEFAULT_CMD_TIMEOUT_MS;
+    }
+
+    uint32_t timeout_s = ((uint32_t)request->timeout_100ms + 9U) / 10U;
+    if (timeout_s == 0) {
+        timeout_s = 1;
+    }
+
+    uint32_t derived_ms = (uint32_t)request->count * timeout_s * 1000U +
+                          ML307R_MPING_CMD_OVERHEAD_MS;
+    if (request->total_timeout_ms != 0 && request->total_timeout_ms > derived_ms) {
+        return request->total_timeout_ms;
+    }
+
+    return derived_ms;
+}

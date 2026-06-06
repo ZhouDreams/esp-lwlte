@@ -236,6 +236,63 @@ typedef struct {
     lwlte_air780ep_config_mqtt_client_t mqtt_client; /**< MQTT 客户端配置； MQTT client configuration */
 } lwlte_air780ep_config_t;
 
+/**
+ * @brief ML307R MQTT 客户端配置
+ * @details ML307R MQTT client configuration
+ * @note enabled 为 false 时 MQTT 服务禁用，其余字段被忽略。
+ * @note enabled 为 true 时 host、port 和 client_id 为必填字段；任务字段为 0 时使用下层默认值，非 0 值必须大于 0。
+ */
+typedef struct {
+    bool enabled;                         /**< 是否启用 MQTT 服务； Whether to enable MQTT service */
+    const char *host;                     /**< 必填 MQTT 服务器地址； Required MQTT broker host */
+    uint16_t port;                        /**< 必填 MQTT 服务器端口； Required MQTT broker port */
+    const char *client_id;                /**< 必填 MQTT 客户端 ID； Required MQTT client ID */
+    const char *username;                 /**< 可选用户名； Optional username */
+    const char *password;                 /**< 可选密码； Optional password */
+    uint16_t keepalive_s;                 /**< keepalive 秒数，0 使用下层默认值； Keepalive seconds, 0 uses default */
+    bool clean_session;                   /**< clean session 标志； Clean session flag */
+    int fsm_queue_size;                   /**< MQTT FSM 队列长度，0 使用默认值； MQTT FSM queue size, 0 uses default */
+    int fsm_task_stack;                   /**< MQTT FSM 任务栈大小，0 使用默认值； MQTT FSM task stack, 0 uses default */
+    int fsm_task_priority;                /**< MQTT FSM 任务优先级，0 使用默认值； MQTT FSM task priority, 0 uses default */
+} lwlte_ml307r_config_mqtt_client_t;
+
+/**
+ * @brief ML307R LTE 初始化配置
+ * @details ML307R LTE initialization configuration
+ * @note uart_num、uart_tx_pin、uart_rx_pin、uart_baud_rate 和 primary_cid 为必填字段。
+ * @note en_pin 可设为 GPIO_NUM_NC，以禁用门面对 EN GPIO 的控制。
+ * @note ML307R 启动不等待 +MATREADY；init_ready_timeout_ms 表示硬复位后重复发送 AT 并等待 OK 的总超时。
+ * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
+ * @note ML307R 门面当前仅支持 primary_cid 为 1。
+ */
+typedef struct {
+    uart_port_t uart_num;                 /**< 必填 UART 端口号； Required UART port number */
+    gpio_num_t uart_tx_pin;               /**< 必填 UART TX GPIO，不能为 GPIO_NUM_NC； Required UART TX GPIO, not GPIO_NUM_NC */
+    gpio_num_t uart_rx_pin;               /**< 必填 UART RX GPIO，不能为 GPIO_NUM_NC； Required UART RX GPIO, not GPIO_NUM_NC */
+    int uart_baud_rate;                   /**< 必填 UART 波特率，必须大于 0； Required UART baud rate, must be > 0 */
+    gpio_num_t en_pin;                    /**< 可选模块 EN GPIO，GPIO_NUM_NC 表示不控制； Optional module EN GPIO, GPIO_NUM_NC disables control */
+    const char *apn;                      /**< 可选 APN，NULL/空表示门面不配置； Optional APN, NULL/empty means facade does not configure it */
+    uint8_t primary_cid;                  /**< 必填主 PDP 上下文 ID，ML307R 门面当前仅支持 1； Required primary PDP context ID, ML307R facade currently supports 1 only */
+    uint32_t init_ready_timeout_ms;        /**< ML307R AT OK 等待总超时，0 使用下层默认值； ML307R AT OK wait timeout, 0 uses lower-layer default */
+    uint32_t net_activate_timeout_ms;      /**< 网络激活总超时，0 使用 Core 默认值； Network activation timeout, 0 uses Core default */
+    uint32_t reconnect_delay_ms;           /**< 重连延迟，0 使用 Core 默认值； Reconnect delay, 0 uses Core default */
+    int at_rx_buf_size;                   /**< AT RX 缓冲大小，0 使用默认值； AT RX buffer size, 0 uses default */
+    int at_rx_task_stack;                 /**< AT RX 任务栈大小，0 使用默认值； AT RX task stack, 0 uses default */
+    int at_rx_task_priority;              /**< AT RX 任务优先级，0 使用默认值； AT RX task priority, 0 uses default */
+    int at_rx_line_buf_size;              /**< AT 单行缓冲大小，0 使用默认值； AT line buffer size, 0 uses default */
+    int at_cmd_default_timeout_ms;         /**< AT 默认命令超时，0 使用默认值； AT default command timeout, 0 uses default */
+    int at_max_response_lines;             /**< AT 最大响应行数，0 使用默认值； AT maximum response lines, 0 uses default */
+    uint32_t modem_reset_pulse_ms;         /**< Modem 复位脉冲(EN 拉低保持)时长，0 表示不额外等待； Modem reset pulse (EN low hold) length, 0 skips extra wait */
+    uint32_t modem_default_cmd_timeout_ms; /**< Modem 默认命令超时，0 使用默认值； Modem default command timeout, 0 uses default */
+    int modem_event_queue_size;            /**< Modem 事件队列长度，0 使用默认值； Modem event queue size, 0 uses default */
+    int modem_event_task_stack;            /**< Modem 事件任务栈大小，0 使用默认值； Modem event task stack, 0 uses default */
+    int modem_event_task_priority;         /**< Modem 事件任务优先级，0 使用默认值； Modem event task priority, 0 uses default */
+    int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
+    int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
+    int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
+    lwlte_ml307r_config_mqtt_client_t mqtt_client; /**< MQTT 客户端配置； MQTT client configuration */
+} lwlte_ml307r_config_t;
+
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
@@ -260,6 +317,22 @@ typedef struct {
  */
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
                               lwlte_t **out_lte);
+
+/**
+ * @brief 初始化 ML307R LTE 用户门面
+ * @details Initialize ML307R LTE user facade
+ * @note 该函数只创建 LTE 用户门面及内部对象，不启动模块、不等待 AT ready、不激活 PDP。
+ * @note ML307R 启动阶段由 lwlte_start() 触发，modem_start() 使用 AT OK 探测，不等待 +MATREADY。
+ * @param[in] config ML307R LTE 初始化配置
+ * @param[out] out_lte LTE 用户门面句柄输出指针
+ * @return
+ *         - ESP_OK: 初始化成功，门面句柄可用
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: GPIO、UART、Modem 或 Core 创建失败
+ */
+esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
+                            lwlte_t **out_lte);
 
 /**
  * @brief 销毁 LTE 用户门面
