@@ -19,9 +19,9 @@ esp-lwlte 组件的全部源代码。公共 API 与内部实现按以下目录�
 ```
 src/
 ├── include/       # 用户公共头文件，仅导出 lwlte.h
-├── lwlte/         # 用户门面层（lwlte_t、模块 factory、资源组合根）
+├── lwlte/         # 用户门面层（lwlte_handle_t、模块 factory、资源组合根）
 ├── core/          # Core Service 层（网络状态机、PDP 管理、连接/重连）
-├── modem/         # 模块适配层（modem_t 抽象 + 具体模块实现）
+├── modem/         # 模块适配层（modem_handle_t 抽象 + 具体模块实现）
 └── at_engine/     # AT 引擎层（通用 AT 协议引擎 + UART 硬件操作）
 ```
 

@@ -9,25 +9,25 @@
 ### 1.1 所有公共 API 返回 `esp_err_t`
 
 ```c
-esp_err_t lwlte_start(lwlte_t *me);
-esp_err_t lwlte_disconnect(lwlte_t *me);
-esp_err_t lwlte_destroy(lwlte_t *me);
+esp_err_t lwlte_start(lwlte_handle_t *me);
+esp_err_t lwlte_disconnect(lwlte_handle_t *me);
+esp_err_t lwlte_destroy(lwlte_handle_t *me);
 ```
 
 ### 1.2 Modem 公共包装 API 和内部 ops 方法统一返回 `esp_err_t`
 
 ```c
 /* src/modem/modem.h：Core 调用层间 modem_* 包装 API */
-esp_err_t modem_start(modem_t *me);
-esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
-esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn);
+esp_err_t modem_start(modem_handle_t *me);
+esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal);
+esp_err_t modem_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
 
 /* Modem 层内部：wrapper 实现再分发到具体模块 ops */
 struct modem_ops {
-    esp_err_t (*start)(modem_t *me);
-    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
-    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
-    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
+    esp_err_t (*start)(modem_handle_t *me);
+    esp_err_t (*get_signal)(modem_handle_t *me, modem_signal_t *signal);
+    esp_err_t (*set_apn)(modem_handle_t *me, uint8_t cid, const char *apn);
+    esp_err_t (*activate_pdp)(modem_handle_t *me, uint8_t cid);
 };
 ```
 
@@ -83,7 +83,7 @@ ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_
 用于无需清理资源的场景：
 
 ```c
-esp_err_t core_start(core_t *me)
+esp_err_t core_start(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_START),
@@ -101,7 +101,7 @@ esp_err_t core_start(core_t *me)
 用于有资源需释放的场景。**硬性要求**：使用这些宏的函数必须在开头定义 `esp_err_t ret = ESP_OK;`，标签统一用 `err`。
 
 ```c
-esp_err_t core_init_resources(core_t *me, modem_t *modem)
+esp_err_t core_init_resources(core_handle_t *me, modem_handle_t *modem)
 {
     ESP_RETURN_ON_FALSE(me && modem, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -127,7 +127,7 @@ err:
 当清理动作简单（1-2 行），不值得单独写 goto 标签时使用：
 
 ```c
-esp_err_t modem_sample_signal(modem_t *me, int *rssi)
+esp_err_t modem_sample_signal(modem_handle_t *me, int *rssi)
 {
     ESP_RETURN_ON_FALSE(me && rssi, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -255,7 +255,7 @@ Core 层只调用 `modem_*` 包装 API，内部多态机制不向 Core 暴露。
 
 ```c
 /* Core 层通过 modem_* 包装 API 调用，错误向上传播 */
-esp_err_t core_refresh_signal(core_t *me, modem_signal_t *signal)
+esp_err_t core_refresh_signal(core_handle_t *me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && me->modem && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     return modem_get_signal(me->modem, signal);
@@ -265,7 +265,7 @@ esp_err_t core_refresh_signal(core_t *me, modem_signal_t *signal)
 ### 6.2 Modem wrapper 选填方法 — NULL 检查后提供默认行为
 
 ```c
-esp_err_t modem_sleep(modem_t *me)
+esp_err_t modem_sleep(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->ops, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 

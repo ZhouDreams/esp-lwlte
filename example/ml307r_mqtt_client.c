@@ -65,7 +65,7 @@
  * @param[in] data 事件数据
  * @param[in] user_ctx 用户上下文
  */
-static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
+static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
                          const lwlte_event_data_t *data, void *user_ctx);
 
 /**
@@ -73,7 +73,7 @@ static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
  * @details Publish one telemetry message
  * @param[in] lte LTE 用户门面句柄
  */
-static void publish_telemetry(lwlte_t *lte);
+static void publish_telemetry(lwlte_handle_t *lte);
 
 /**
  * @brief 进入常驻等待
@@ -107,7 +107,7 @@ void example_ml307r_mqtt_client_run(void)
     s_last_error = 0;
     s_counter = 0;
 
-    lwlte_t *lte = NULL;
+    lwlte_handle_t *lte = NULL;
     const char *mqtt_username = CONFIG_EXAMPLE_MQTT_TOKEN;
     if (mqtt_username[0] == '\0') {
         mqtt_username = NULL;
@@ -222,7 +222,7 @@ void example_ml307r_mqtt_client_run(void)
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
+static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
                          const lwlte_event_data_t *data, void *user_ctx)
 {
     (void)lte;
@@ -289,7 +289,7 @@ static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
     }
 }
 
-static void publish_telemetry(lwlte_t *lte)
+static void publish_telemetry(lwlte_handle_t *lte)
 {
     char payload[EXAMPLE_TELEMETRY_BUF_LEN] = {0};
     int len = snprintf(payload, sizeof(payload),

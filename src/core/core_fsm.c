@@ -45,7 +45,7 @@ static void fsm_task(void *arg);
  *         - true: 应停止
  *         - false: 继续运行
  */
-static bool fsm_should_stop(core_t *me);
+static bool fsm_should_stop(core_handle_t *me);
 
 /**
  * @brief 分发 FSM 信号
@@ -53,21 +53,21 @@ static bool fsm_should_stop(core_t *me);
  * @param[in] me LTE 核心服务句柄
  * @param[in] sig FSM 信号
  */
-static void handle_signal(core_t *me, core_fsm_sig_t *sig);
+static void handle_signal(core_handle_t *me, core_fsm_sig_t *sig);
 
 /**
  * @brief 处理启动信号
  * @details Handle start signal
  * @param[in] me LTE 核心服务句柄
  */
-static void handle_start(core_t *me);
+static void handle_start(core_handle_t *me);
 
 /**
  * @brief 处理停止信号
  * @details Handle stop signal
  * @param[in] me LTE 核心服务句柄
  */
-static void handle_stop(core_t *me);
+static void handle_stop(core_handle_t *me);
 
 /**
  * @brief 处理 Modem 事件
@@ -75,28 +75,28 @@ static void handle_stop(core_t *me);
  * @param[in] me LTE 核心服务句柄
  * @param[in] event Modem 事件
  */
-static void handle_modem_event(core_t *me, const modem_event_t *event);
-static void handle_service_cmd(core_t *me, core_cmd_t *cmd);
-static void handle_ping_cmd(core_t *me, core_cmd_t *cmd);
+static void handle_modem_event(core_handle_t *me, const modem_event_t *event);
+static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd);
+static void handle_ping_cmd(core_handle_t *me, core_cmd_t *cmd);
 static void copy_core_ping_replies(core_ping_reply_t *dst,
                                    const modem_ping_reply_t *src,
                                    size_t count);
 static void copy_core_ping_summary(core_ping_summary_t *dst,
                                    const modem_ping_summary_t *src);
 static core_cmd_result_t result_from_esp_err(esp_err_t err);
-static void finish_service_cmd(core_t *me, core_cmd_t *cmd,
+static void finish_service_cmd(core_handle_t *me, core_cmd_t *cmd,
                                core_cmd_result_t result,
                                const void *result_data);
 static void release_modem_protocol_payload(modem_event_t *event);
-static void release_fsm_signal_payload(core_t *me, core_fsm_sig_t *sig);
-static void drain_fsm_queue_payloads(core_t *me, QueueHandle_t queue);
+static void release_fsm_signal_payload(core_handle_t *me, core_fsm_sig_t *sig);
+static void drain_fsm_queue_payloads(core_handle_t *me, QueueHandle_t queue);
 
 /**
  * @brief 处理 Modem 就绪状态
  * @details Handle Modem ready state
  * @param[in] me LTE 核心服务句柄
  */
-static void handle_ready(core_t *me);
+static void handle_ready(core_handle_t *me);
 
 /**
  * @brief 处理 Core 错误
@@ -104,7 +104,7 @@ static void handle_ready(core_t *me);
  * @param[in] me LTE 核心服务句柄
  * @param[in] error_code 错误码
  */
-static void handle_core_error(core_t *me, int error_code);
+static void handle_core_error(core_handle_t *me, int error_code);
 
 /**
  * @brief 发布 Core 事件并记录失败
@@ -113,7 +113,7 @@ static void handle_core_error(core_t *me, int error_code);
  * @param[in] event_id LTE 核心服务事件 ID
  * @param[in] data LTE 核心服务事件数据，可能为 NULL
  */
-static void post_event_checked(core_t *me,
+static void post_event_checked(core_handle_t *me,
                                core_event_id_t event_id,
                                const core_event_data_t *data);
 
@@ -128,7 +128,7 @@ static void post_event_checked(core_t *me,
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-esp_err_t core_fsm_init(core_t *me)
+esp_err_t core_fsm_init(core_handle_t *me)
 {
     esp_err_t ret = ESP_OK;
 
@@ -177,7 +177,7 @@ err:
     return ret;
 }
 
-void core_fsm_stop(core_t *me)
+void core_fsm_stop(core_handle_t *me)
 {
     if (!me) {
         return;
@@ -212,7 +212,7 @@ void core_fsm_stop(core_t *me)
     me->fsm.running = false;
 }
 
-esp_err_t core_fsm_deinit(core_t *me)
+esp_err_t core_fsm_deinit(core_handle_t *me)
 {
     if (!me) {
         return ESP_ERR_INVALID_ARG;
@@ -249,7 +249,7 @@ esp_err_t core_fsm_deinit(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_fsm_send(core_t *me, const core_fsm_sig_t *sig)
+esp_err_t core_fsm_send(core_handle_t *me, const core_fsm_sig_t *sig)
 {
     ESP_RETURN_ON_FALSE(me && sig && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -270,7 +270,7 @@ esp_err_t core_fsm_send(core_t *me, const core_fsm_sig_t *sig)
     return ESP_OK;
 }
 
-bool core_fsm_is_task(core_t *me)
+bool core_fsm_is_task(core_handle_t *me)
 {
     return me && me->fsm.task && xTaskGetCurrentTaskHandle() == me->fsm.task;
 }
@@ -280,7 +280,7 @@ bool core_fsm_is_task(core_t *me)
  **********************/
 static void fsm_task(void *arg)
 {
-    core_t *me = (core_t *)arg;
+    core_handle_t *me = (core_handle_t *)arg;
 
     while (!fsm_should_stop(me)) {
         core_fsm_sig_t sig = {0};
@@ -309,7 +309,7 @@ static void fsm_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static bool fsm_should_stop(core_t *me)
+static bool fsm_should_stop(core_handle_t *me)
 {
     if (!me || !me->lock) {
         return true;
@@ -322,7 +322,7 @@ static bool fsm_should_stop(core_t *me)
     return stop;
 }
 
-static void handle_signal(core_t *me, core_fsm_sig_t *sig)
+static void handle_signal(core_handle_t *me, core_fsm_sig_t *sig)
 {
     if (!me || !sig) {
         return;
@@ -381,7 +381,7 @@ static void handle_signal(core_t *me, core_fsm_sig_t *sig)
     }
 }
 
-static void handle_start(core_t *me)
+static void handle_start(core_handle_t *me)
 {
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 1：前置状态检查
@@ -424,7 +424,7 @@ static void handle_start(core_t *me)
     }
 }
 
-static void handle_stop(core_t *me)
+static void handle_stop(core_handle_t *me)
 {
     core_state_t state = core_get_state_value(me);
 
@@ -440,7 +440,7 @@ static void handle_stop(core_t *me)
     post_event_checked(me, CORE_EVENT_STOPPED, NULL);
 }
 
-static void handle_modem_event(core_t *me, const modem_event_t *event)
+static void handle_modem_event(core_handle_t *me, const modem_event_t *event)
 {
     if (!me || !event) {
         return;
@@ -488,7 +488,7 @@ static void handle_modem_event(core_t *me, const modem_event_t *event)
     }
 }
 
-static void handle_ready(core_t *me)
+static void handle_ready(core_handle_t *me)
 {
     core_state_t state = core_get_state_value(me);
 
@@ -502,7 +502,7 @@ static void handle_ready(core_t *me)
     post_event_checked(me, CORE_EVENT_READY, NULL);
 }
 
-static void handle_core_error(core_t *me, int error_code)
+static void handle_core_error(core_handle_t *me, int error_code)
 {
     core_event_data_t data = {
         .net_state = CORE_NET_STATE_ERROR,
@@ -513,7 +513,7 @@ static void handle_core_error(core_t *me, int error_code)
     post_event_checked(me, CORE_EVENT_ERROR, &data);
 }
 
-static void post_event_checked(core_t *me,
+static void post_event_checked(core_handle_t *me,
                                core_event_id_t event_id,
                                const core_event_data_t *data)
 {
@@ -524,7 +524,7 @@ static void post_event_checked(core_t *me,
     }
 }
 
-static void handle_service_cmd(core_t *me, core_cmd_t *cmd)
+static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
 {
     if (!me || !cmd) {
         core_free_cmd(cmd);
@@ -596,7 +596,7 @@ static void handle_service_cmd(core_t *me, core_cmd_t *cmd)
     finish_service_cmd(me, cmd, result_from_esp_err(ret), NULL);
 }
 
-static void handle_ping_cmd(core_t *me, core_cmd_t *cmd)
+static void handle_ping_cmd(core_handle_t *me, core_cmd_t *cmd)
 {
     esp_err_t ret = ESP_ERR_INVALID_ARG;
 
@@ -694,7 +694,7 @@ static core_cmd_result_t result_from_esp_err(esp_err_t err)
     }
 }
 
-static void finish_service_cmd(core_t *me, core_cmd_t *cmd,
+static void finish_service_cmd(core_handle_t *me, core_cmd_t *cmd,
                                core_cmd_result_t result,
                                const void *result_data)
 {
@@ -721,7 +721,7 @@ static void release_modem_protocol_payload(modem_event_t *event)
     event->data.protocol_data.payload_len = 0;
 }
 
-static void release_fsm_signal_payload(core_t *me, core_fsm_sig_t *sig)
+static void release_fsm_signal_payload(core_handle_t *me, core_fsm_sig_t *sig)
 {
     if (!sig) {
         return;
@@ -740,7 +740,7 @@ static void release_fsm_signal_payload(core_t *me, core_fsm_sig_t *sig)
     }
 }
 
-static void drain_fsm_queue_payloads(core_t *me, QueueHandle_t queue)
+static void drain_fsm_queue_payloads(core_handle_t *me, QueueHandle_t queue)
 {
     if (!me || !queue) {
         return;

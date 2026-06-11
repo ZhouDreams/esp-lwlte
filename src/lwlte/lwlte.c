@@ -91,8 +91,8 @@ static void map_core_event_data(const core_event_data_t *core_data,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 状态无效
  */
-static esp_err_t begin_api_call(lwlte_t *me, bool require_core,
-                                core_t **out_core);
+static esp_err_t begin_api_call(lwlte_handle_t *me, bool require_core,
+                                core_handle_t **out_core);
 
 /**
  * @brief 进入 MQTT 门面 API 调用
@@ -101,14 +101,14 @@ static esp_err_t begin_api_call(lwlte_t *me, bool require_core,
  * @param[out] out_mqtt MQTT 客户端输出指针
  * @return esp_err_t
  */
-static esp_err_t begin_mqtt_api_call(lwlte_t *me, mqtt_client_t **out_mqtt);
+static esp_err_t begin_mqtt_api_call(lwlte_handle_t *me, mqtt_client_handle_t **out_mqtt);
 
 /**
  * @brief 退出门面 API 调用
  * @details End facade API call
  * @param[in] me LTE 用户门面句柄
  */
-static void end_api_call(lwlte_t *me);
+static void end_api_call(lwlte_handle_t *me);
 
 /**
  * @brief 等待 API 调用空闲
@@ -119,7 +119,7 @@ static void end_api_call(lwlte_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 内部状态无效
  */
-static esp_err_t wait_api_calls_idle(lwlte_t *me);
+static esp_err_t wait_api_calls_idle(lwlte_handle_t *me);
 
 /**
  * @brief 等待用户回调空闲
@@ -131,7 +131,7 @@ static esp_err_t wait_api_calls_idle(lwlte_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 当前任务正在执行回调或内部状态无效
  */
-static esp_err_t wait_callbacks_idle(lwlte_t *me, bool claim_waiter);
+static esp_err_t wait_callbacks_idle(lwlte_handle_t *me, bool claim_waiter);
 
 /**
  * @brief 检查任务是否正在执行用户回调
@@ -141,7 +141,7 @@ static esp_err_t wait_callbacks_idle(lwlte_t *me, bool claim_waiter);
  * @param[in] task 任务句柄
  * @return true: 任务可能正在执行回调； false: 任务未执行回调
  */
-static bool callback_task_active_locked(const lwlte_t *me, TaskHandle_t task);
+static bool callback_task_active_locked(const lwlte_handle_t *me, TaskHandle_t task);
 
 /**
  * @brief 登记正在执行用户回调的任务
@@ -151,7 +151,7 @@ static bool callback_task_active_locked(const lwlte_t *me, TaskHandle_t task);
  * @param[in] task 任务句柄
  * @return true: 已精确登记； false: 使用溢出保守登记
  */
-static bool add_callback_task_locked(lwlte_t *me, TaskHandle_t task);
+static bool add_callback_task_locked(lwlte_handle_t *me, TaskHandle_t task);
 
 /**
  * @brief 移除正在执行用户回调的任务
@@ -160,7 +160,7 @@ static bool add_callback_task_locked(lwlte_t *me, TaskHandle_t task);
  * @param[in] me LTE 用户门面句柄
  * @param[in] task 任务句柄
  */
-static void remove_callback_task_locked(lwlte_t *me, TaskHandle_t task);
+static void remove_callback_task_locked(lwlte_handle_t *me, TaskHandle_t task);
 
 /**
  * @brief 唤醒所有 ready 等待者
@@ -168,14 +168,14 @@ static void remove_callback_task_locked(lwlte_t *me, TaskHandle_t task);
  * @note 调用方必须持有 me->lock。
  * @param[in] me LTE 用户门面句柄
  */
-static void wake_ready_waiters_locked(lwlte_t *me);
+static void wake_ready_waiters_locked(lwlte_handle_t *me);
 
 /**
  * @brief 恢复销毁失败后的门面状态
  * @details Restore facade state after destroy failure
  * @param[in] me LTE 用户门面句柄
  */
-static void restore_after_destroy_failure(lwlte_t *me);
+static void restore_after_destroy_failure(lwlte_handle_t *me);
 
 /**
  * @brief 销毁门面持有的资源
@@ -185,7 +185,7 @@ static void restore_after_destroy_failure(lwlte_t *me);
  *         - ESP_OK: 成功
  *         - other: 下层销毁错误
  */
-static esp_err_t destroy_owned_resources(lwlte_t *me);
+static esp_err_t destroy_owned_resources(lwlte_handle_t *me);
 
 /**********************
  *  STATIC VARIABLES
@@ -198,12 +198,12 @@ static esp_err_t destroy_owned_resources(lwlte_t *me);
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-esp_err_t lwlte_create_empty(lwlte_t **out_lte)
+esp_err_t lwlte_create_empty(lwlte_handle_t **out_lte)
 {
     ESP_RETURN_ON_FALSE(out_lte, ESP_ERR_INVALID_ARG, TAG, "out_lte is NULL");
 
     *out_lte = NULL;
-    lwlte_t *me = calloc(1, sizeof(lwlte_t));
+    lwlte_handle_t *me = calloc(1, sizeof(*me));
     ESP_RETURN_ON_FALSE(me, ESP_ERR_NO_MEM, TAG, "calloc lwlte failed");
 
     me->lock = xSemaphoreCreateMutex();
@@ -240,7 +240,7 @@ esp_err_t lwlte_create_empty(lwlte_t **out_lte)
     return ESP_OK;
 }
 
-esp_err_t lwlte_destroy(lwlte_t *me)
+esp_err_t lwlte_destroy(lwlte_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -298,7 +298,7 @@ esp_err_t lwlte_destroy(lwlte_t *me)
     return ESP_OK;
 }
 
-esp_err_t lwlte_register_event_callback(lwlte_t *me,
+esp_err_t lwlte_register_event_callback(lwlte_handle_t *me,
                                         lwlte_event_callback_t callback,
                                         void *user_ctx)
 {
@@ -360,9 +360,9 @@ esp_err_t lwlte_register_event_callback(lwlte_t *me,
     return ret;
 }
 
-esp_err_t lwlte_start(lwlte_t *me)
+esp_err_t lwlte_start(lwlte_handle_t *me)
 {
-    core_t *core = NULL;
+    core_handle_t *core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
@@ -372,9 +372,9 @@ esp_err_t lwlte_start(lwlte_t *me)
     return ret;
 }
 
-esp_err_t lwlte_disconnect(lwlte_t *me)
+esp_err_t lwlte_disconnect(lwlte_handle_t *me)
 {
-    core_t *core = NULL;
+    core_handle_t *core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
@@ -384,10 +384,10 @@ esp_err_t lwlte_disconnect(lwlte_t *me)
     return ret;
 }
 
-esp_err_t lwlte_get_state(lwlte_t *me, lwlte_state_t *state)
+esp_err_t lwlte_get_state(lwlte_handle_t *me, lwlte_state_t *state)
 {
     ESP_RETURN_ON_FALSE(state, ESP_ERR_INVALID_ARG, TAG, "state is NULL");
-    core_t *core = NULL;
+    core_handle_t *core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
@@ -405,10 +405,10 @@ esp_err_t lwlte_get_state(lwlte_t *me, lwlte_state_t *state)
     return ESP_OK;
 }
 
-esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state)
+esp_err_t lwlte_get_net_state(lwlte_handle_t *me, lwlte_net_state_t *state)
 {
     ESP_RETURN_ON_FALSE(state, ESP_ERR_INVALID_ARG, TAG, "state is NULL");
-    core_t *core = NULL;
+    core_handle_t *core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
@@ -426,7 +426,7 @@ esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state)
     return ESP_OK;
 }
 
-esp_err_t lwlte_ping(lwlte_t *me,
+esp_err_t lwlte_ping(lwlte_handle_t *me,
                      const lwlte_ping_request_t *request,
                      lwlte_ping_reply_t *replies,
                      size_t max_replies,
@@ -445,7 +445,7 @@ esp_err_t lwlte_ping(lwlte_t *me,
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    ping_client_t *ping = me->ping;
+    ping_client_handle_t *ping = me->ping;
     xSemaphoreGive(me->lock);
     if (!ping) {
         end_api_call(me);
@@ -494,9 +494,9 @@ esp_err_t lwlte_ping(lwlte_t *me,
     return ret;
 }
 
-esp_err_t lwlte_mqtt_start(lwlte_t *me)
+esp_err_t lwlte_mqtt_start(lwlte_handle_t *me)
 {
-    mqtt_client_t *mqtt = NULL;
+    mqtt_client_handle_t *mqtt = NULL;
     esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
     ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
 
@@ -506,9 +506,9 @@ esp_err_t lwlte_mqtt_start(lwlte_t *me)
     return ret;
 }
 
-esp_err_t lwlte_mqtt_stop(lwlte_t *me)
+esp_err_t lwlte_mqtt_stop(lwlte_handle_t *me)
 {
-    mqtt_client_t *mqtt = NULL;
+    mqtt_client_handle_t *mqtt = NULL;
     esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
     ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
 
@@ -518,10 +518,10 @@ esp_err_t lwlte_mqtt_stop(lwlte_t *me)
     return ret;
 }
 
-esp_err_t lwlte_mqtt_get_state(lwlte_t *me, lwlte_mqtt_state_t *state)
+esp_err_t lwlte_mqtt_get_state(lwlte_handle_t *me, lwlte_mqtt_state_t *state)
 {
     ESP_RETURN_ON_FALSE(state, ESP_ERR_INVALID_ARG, TAG, "state is NULL");
-    mqtt_client_t *mqtt = NULL;
+    mqtt_client_handle_t *mqtt = NULL;
     esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
     ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
 
@@ -539,9 +539,9 @@ esp_err_t lwlte_mqtt_get_state(lwlte_t *me, lwlte_mqtt_state_t *state)
     return ESP_OK;
 }
 
-esp_err_t lwlte_mqtt_subscribe(lwlte_t *me, const char *topic, uint8_t qos)
+esp_err_t lwlte_mqtt_subscribe(lwlte_handle_t *me, const char *topic, uint8_t qos)
 {
-    mqtt_client_t *mqtt = NULL;
+    mqtt_client_handle_t *mqtt = NULL;
     esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
     ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
 
@@ -551,9 +551,9 @@ esp_err_t lwlte_mqtt_subscribe(lwlte_t *me, const char *topic, uint8_t qos)
     return ret;
 }
 
-esp_err_t lwlte_mqtt_unsubscribe(lwlte_t *me, const char *topic)
+esp_err_t lwlte_mqtt_unsubscribe(lwlte_handle_t *me, const char *topic)
 {
-    mqtt_client_t *mqtt = NULL;
+    mqtt_client_handle_t *mqtt = NULL;
     esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
     ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
 
@@ -563,11 +563,11 @@ esp_err_t lwlte_mqtt_unsubscribe(lwlte_t *me, const char *topic)
     return ret;
 }
 
-esp_err_t lwlte_mqtt_publish(lwlte_t *me, const char *topic,
+esp_err_t lwlte_mqtt_publish(lwlte_handle_t *me, const char *topic,
                              const uint8_t *payload, size_t payload_len,
                              uint8_t qos, bool retain)
 {
-    mqtt_client_t *mqtt = NULL;
+    mqtt_client_handle_t *mqtt = NULL;
     esp_err_t ret = begin_mqtt_api_call(me, &mqtt);
     ESP_RETURN_ON_ERROR(ret, TAG, "MQTT facade not usable");
 
@@ -584,7 +584,7 @@ esp_err_t lwlte_mqtt_publish(lwlte_t *me, const char *topic,
     return ret;
 }
 
-esp_err_t lwlte_wait_ready(lwlte_t *me, uint32_t timeout_ms)
+esp_err_t lwlte_wait_ready(lwlte_handle_t *me, uint32_t timeout_ms)
 {
     esp_err_t ret = begin_api_call(me, false, NULL);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
@@ -631,12 +631,12 @@ esp_err_t lwlte_wait_ready(lwlte_t *me, uint32_t timeout_ms)
     return ret;
 }
 
-void lwlte_handle_core_event(core_t *core, core_event_id_t event_id,
+void lwlte_handle_core_event(core_handle_t *core, core_event_id_t event_id,
                              const core_event_data_t *data, void *user_ctx)
 {
     (void)core;
 
-    lwlte_t *me = (lwlte_t *)user_ctx;
+    lwlte_handle_t *me = (lwlte_handle_t *)user_ctx;
     if (!me || !me->lock) {
         return;
     }
@@ -687,12 +687,12 @@ void lwlte_handle_core_event(core_t *core, core_event_id_t event_id,
     }
 }
 
-void lwlte_handle_mqtt_event(mqtt_client_t *mqtt,
+void lwlte_handle_mqtt_event(mqtt_client_handle_t *mqtt,
                              mqtt_client_event_id_t event_id,
                              const mqtt_client_event_data_t *data,
                              void *user_ctx)
 {
-    lwlte_t *me = (lwlte_t *)user_ctx;
+    lwlte_handle_t *me = (lwlte_handle_t *)user_ctx;
     if (!me || !me->lock) {
         return;
     }
@@ -885,8 +885,8 @@ static void map_core_event_data(const core_event_data_t *core_data,
     lwlte_data->error_code = core_data->error_code;
 }
 
-static esp_err_t begin_api_call(lwlte_t *me, bool require_core,
-                                core_t **out_core)
+static esp_err_t begin_api_call(lwlte_handle_t *me, bool require_core,
+                                core_handle_t **out_core)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && me->api_done_sema,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -910,7 +910,7 @@ static esp_err_t begin_api_call(lwlte_t *me, bool require_core,
     return ESP_OK;
 }
 
-static esp_err_t begin_mqtt_api_call(lwlte_t *me, mqtt_client_t **out_mqtt)
+static esp_err_t begin_mqtt_api_call(lwlte_handle_t *me, mqtt_client_handle_t **out_mqtt)
 {
     ESP_RETURN_ON_FALSE(out_mqtt, ESP_ERR_INVALID_ARG, TAG,
                         "out_mqtt is NULL");
@@ -920,7 +920,7 @@ static esp_err_t begin_mqtt_api_call(lwlte_t *me, mqtt_client_t **out_mqtt)
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    mqtt_client_t *mqtt = me->mqtt;
+    mqtt_client_handle_t *mqtt = me->mqtt;
     xSemaphoreGive(me->lock);
 
     if (!mqtt) {
@@ -932,7 +932,7 @@ static esp_err_t begin_mqtt_api_call(lwlte_t *me, mqtt_client_t **out_mqtt)
     return ESP_OK;
 }
 
-static void end_api_call(lwlte_t *me)
+static void end_api_call(lwlte_handle_t *me)
 {
     if (!me || !me->lock) {
         return;
@@ -951,7 +951,7 @@ static void end_api_call(lwlte_t *me)
     }
 }
 
-static esp_err_t wait_api_calls_idle(lwlte_t *me)
+static esp_err_t wait_api_calls_idle(lwlte_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -972,7 +972,7 @@ static esp_err_t wait_api_calls_idle(lwlte_t *me)
     }
 }
 
-static esp_err_t wait_callbacks_idle(lwlte_t *me, bool claim_waiter)
+static esp_err_t wait_callbacks_idle(lwlte_handle_t *me, bool claim_waiter)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -1016,7 +1016,7 @@ static esp_err_t wait_callbacks_idle(lwlte_t *me, bool claim_waiter)
     return ESP_OK;
 }
 
-static bool callback_task_active_locked(const lwlte_t *me, TaskHandle_t task)
+static bool callback_task_active_locked(const lwlte_handle_t *me, TaskHandle_t task)
 {
     if (!me || !task) {
         return false;
@@ -1031,7 +1031,7 @@ static bool callback_task_active_locked(const lwlte_t *me, TaskHandle_t task)
     return me->callback_task_overflow > 0;
 }
 
-static bool add_callback_task_locked(lwlte_t *me, TaskHandle_t task)
+static bool add_callback_task_locked(lwlte_handle_t *me, TaskHandle_t task)
 {
     if (!me || !task) {
         return false;
@@ -1056,7 +1056,7 @@ static bool add_callback_task_locked(lwlte_t *me, TaskHandle_t task)
     return false;
 }
 
-static void remove_callback_task_locked(lwlte_t *me, TaskHandle_t task)
+static void remove_callback_task_locked(lwlte_handle_t *me, TaskHandle_t task)
 {
     if (!me || !task) {
         return;
@@ -1079,7 +1079,7 @@ static void remove_callback_task_locked(lwlte_t *me, TaskHandle_t task)
     }
 }
 
-static void wake_ready_waiters_locked(lwlte_t *me)
+static void wake_ready_waiters_locked(lwlte_handle_t *me)
 {
     if (!me || !me->ready_sema) {
         return;
@@ -1091,7 +1091,7 @@ static void wake_ready_waiters_locked(lwlte_t *me)
     }
 }
 
-static void restore_after_destroy_failure(lwlte_t *me)
+static void restore_after_destroy_failure(lwlte_handle_t *me)
 {
     if (!me || !me->lock) {
         return;
@@ -1106,7 +1106,7 @@ static void restore_after_destroy_failure(lwlte_t *me)
     xSemaphoreGive(me->lock);
 }
 
-static esp_err_t destroy_owned_resources(lwlte_t *me)
+static esp_err_t destroy_owned_resources(lwlte_handle_t *me)
 {
     esp_err_t ret = ESP_OK;
 

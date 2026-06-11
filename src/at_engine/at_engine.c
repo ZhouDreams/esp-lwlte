@@ -64,7 +64,7 @@ typedef enum {
 /**
  * @brief 当前 AT 命令上下文
  * @details Current AT command context
- * @note 该结构只在命令执行期间有效，由 at_engine_t 内嵌存储，不单独分配。
+ * @note 该结构只在命令执行期间有效，由 at_engine_handle_t 内嵌存储，不单独分配。
  */
 typedef struct {
     const char *cmd;                    /**< AT 命令字符串，借用调用方内存； AT command string, borrowed */
@@ -84,9 +84,9 @@ typedef struct {
 /**
  * @brief AT Engine 句柄实际定义
  * @details Actual definition of the opaque AT Engine handle
- * @note 该结构只在本文件可见，对外通过 at_engine_t opaque pointer 暴露。
+ * @note 该结构只在本文件可见，对外通过 at_engine_handle_t opaque pointer 暴露。
  */
-struct at_engine {
+struct at_engine_handle {
     /* ── Configuration ─────────────────────────────────────────── */
     at_engine_config_t config;          /**< 归一化后的配置副本； Normalized configuration copy */
 
@@ -151,7 +151,7 @@ static esp_err_t normalize_config(const at_engine_config_t *in, at_engine_config
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: UART driver 返回的错误码
  */
-static esp_err_t init_uart(at_engine_t *me);
+static esp_err_t init_uart(at_engine_handle_t *me);
 
 /**
  * @brief 初始化 AT Engine 内部资源
@@ -162,14 +162,14 @@ static esp_err_t init_uart(at_engine_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_NO_MEM: 内存或同步对象不足
  */
-static esp_err_t init_resources(at_engine_t *me);
+static esp_err_t init_resources(at_engine_handle_t *me);
 
 /**
  * @brief 清理 AT Engine 内部资源
  * @details Clean up AT Engine internal resources
  * @param[in] me AT Engine 实例，可为 NULL
  */
-static void cleanup_resources(at_engine_t *me);
+static void cleanup_resources(at_engine_handle_t *me);
 
 /**
  * @brief UART RX 任务入口
@@ -188,7 +188,7 @@ static void rx_task(void *arg);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_STATE: 实例正在销毁
  */
-static esp_err_t begin_send_call(at_engine_t *me);
+static esp_err_t begin_send_call(at_engine_handle_t *me);
 
 /**
  * @brief 标记一次命令路径调用结束
@@ -196,7 +196,7 @@ static esp_err_t begin_send_call(at_engine_t *me);
  * @note 内部会获取 me->lock，并减少 active_callers 计数。
  * @param[in] me AT Engine 实例
  */
-static void end_send_call(at_engine_t *me);
+static void end_send_call(at_engine_handle_t *me);
 
 /**
  * @brief 执行通用命令发送流程
@@ -216,7 +216,7 @@ static void end_send_call(at_engine_t *me);
  *         - ESP_ERR_TIMEOUT: 等待命令路径或响应超时
  *         - ESP_FAIL: UART 写入失败
  */
-static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
+static esp_err_t send_cmd_internal(at_engine_handle_t *me, const char *cmd,
                                    const uint8_t *payload, size_t payload_len,
                                    const char *payload_prompt,
                                    at_response_t *response,
@@ -234,7 +234,7 @@ static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
  *         - ESP_ERR_NO_MEM: 临时缓冲分配失败
  *         - ESP_FAIL: UART 写入失败
  */
-static esp_err_t write_cmd(at_engine_t *me, const char *cmd);
+static esp_err_t write_cmd(at_engine_handle_t *me, const char *cmd);
 
 /**
  * @brief 写入原始 payload
@@ -248,7 +248,7 @@ static esp_err_t write_cmd(at_engine_t *me, const char *cmd);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_FAIL: UART 写入失败
  */
-static esp_err_t write_payload(at_engine_t *me, const uint8_t *payload,
+static esp_err_t write_payload(at_engine_handle_t *me, const uint8_t *payload,
                                size_t payload_len);
 
 /**
@@ -283,14 +283,14 @@ static void reset_response(at_response_t *response);
  * @note 调用方必须持有 me->lock。
  * @param[in] me AT Engine 实例
  */
-static void clear_response_pool(at_engine_t *me);
+static void clear_response_pool(at_engine_handle_t *me);
 
 /**
  * @brief 清空命令完成信号
  * @details Clear command completion signal
  * @param[in] me AT Engine 实例
  */
-static void clear_done_signal(at_engine_t *me);
+static void clear_done_signal(at_engine_handle_t *me);
 
 /**
  * @brief 清空 UART RX 输入和行缓冲
@@ -298,7 +298,7 @@ static void clear_done_signal(at_engine_t *me);
  * @note 调用方必须持有 me->lock；函数会递增 rx_epoch 使旧 RX 数据失效。
  * @param[in] me AT Engine 实例
  */
-static void flush_rx_input_locked(at_engine_t *me);
+static void flush_rx_input_locked(at_engine_handle_t *me);
 
 /**
  * @brief 处理一批 RX 字节
@@ -309,7 +309,7 @@ static void flush_rx_input_locked(at_engine_t *me);
  * @param[in] len RX 字节数
  * @param[in] epoch 本批数据所属 RX epoch
  */
-static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint32_t epoch);
+static void process_rx_bytes(at_engine_handle_t *me, const uint8_t *data, int len, uint32_t epoch);
 
 /**
  * @brief 处理单个 RX 字符
@@ -319,7 +319,7 @@ static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint
  * @param[in] c RX 字符
  * @param[in] epoch 当前字符所属 RX epoch
  */
-static void process_rx_char(at_engine_t *me, char c, uint32_t epoch);
+static void process_rx_char(at_engine_handle_t *me, char c, uint32_t epoch);
 
 /**
  * @brief 处理完整响应行
@@ -329,7 +329,7 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch);
  * @param[in] line 完整响应行，不含 CR/LF
  * @param[in] epoch 当前行所属 RX epoch
  */
-static void handle_line(at_engine_t *me, const char *line, uint32_t epoch);
+static void handle_line(at_engine_handle_t *me, const char *line, uint32_t epoch);
 
 /**
  * @brief 判断响应行是否为命令 echo
@@ -421,7 +421,7 @@ static int parse_error_code(const char *line);
  * @param[in,out] ctx 当前命令上下文
  * @param[in] line 响应行
  */
-static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line);
+static void append_response_line_locked(at_engine_handle_t *me, at_cmd_ctx_t *ctx, const char *line);
 
 /**
  * @brief 追加最终成功匹配响应行
@@ -431,7 +431,7 @@ static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, cons
  * @param[in,out] ctx 当前命令上下文
  * @param[in] line 响应行
  */
-static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line);
+static void append_final_response_line_locked(at_engine_handle_t *me, at_cmd_ctx_t *ctx, const char *line);
 
 /**
  * @brief 完成当前命令
@@ -441,7 +441,7 @@ static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx
  * @param[in] status 响应状态
  * @param[in] error_code CME/CMS 错误码，无错误时为 0
  */
-static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int error_code);
+static void finish_cmd_locked(at_engine_handle_t *me, at_response_status_t status, int error_code);
 
 /**
  * @brief 分发 URC 行
@@ -452,7 +452,7 @@ static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int 
  * @param[in] epoch 当前行所属 RX epoch
  * @return true 表示找到并调用匹配 handler，false 表示未分发
  */
-static bool dispatch_urc(at_engine_t *me, const char *line, uint32_t epoch);
+static bool dispatch_urc(at_engine_handle_t *me, const char *line, uint32_t epoch);
 
 /**
  * @brief 判断字符串前缀
@@ -487,7 +487,7 @@ static void log_uart_line(const char *prefix, const char *data, size_t len);
  *   GLOBAL FUNCTIONS
  **********************/
 
-at_engine_t *at_engine_create(const at_engine_config_t *config)
+at_engine_handle_t *at_engine_create(const at_engine_config_t *config)
 {
     esp_err_t ret = ESP_OK;
     at_engine_config_t normalized = {0};
@@ -498,7 +498,7 @@ at_engine_t *at_engine_create(const at_engine_config_t *config)
         return NULL;
     }
 
-    at_engine_t *me = calloc(1, sizeof(at_engine_t));
+    at_engine_handle_t *me = calloc(1, sizeof(*me));
     if (!me) {
         ESP_LOGE(TAG, "calloc at_engine failed");
         return NULL;
@@ -533,7 +533,7 @@ err:
     return NULL;
 }
 
-esp_err_t at_engine_destroy(at_engine_t *me)
+esp_err_t at_engine_destroy(at_engine_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -571,7 +571,7 @@ esp_err_t at_engine_destroy(at_engine_t *me)
     return ESP_OK;
 }
 
-esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
+esp_err_t at_engine_send_cmd(at_engine_handle_t *me, const char *cmd,
                              at_response_t *response, uint32_t timeout_ms)
 {
     const at_cmd_options_t options = {
@@ -584,14 +584,14 @@ esp_err_t at_engine_send_cmd(at_engine_t *me, const char *cmd,
     return at_engine_send_cmd_with_options(me, cmd, response, &options);
 }
 
-esp_err_t at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
+esp_err_t at_engine_send_cmd_with_options(at_engine_handle_t *me, const char *cmd,
                                           at_response_t *response,
                                           const at_cmd_options_t *options)
 {
     return send_cmd_internal(me, cmd, NULL, 0, NULL, response, options);
 }
 
-esp_err_t at_engine_send_cmd_with_payload(at_engine_t *me, const char *cmd,
+esp_err_t at_engine_send_cmd_with_payload(at_engine_handle_t *me, const char *cmd,
                                           const uint8_t *payload,
                                           size_t payload_len,
                                           const char *payload_prompt,
@@ -606,7 +606,7 @@ esp_err_t at_engine_send_cmd_with_payload(at_engine_t *me, const char *cmd,
                              response, options);
 }
 
-esp_err_t at_engine_begin_exclusive(at_engine_t *me)
+esp_err_t at_engine_begin_exclusive(at_engine_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && me->cmd_mutex,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -634,7 +634,7 @@ esp_err_t at_engine_begin_exclusive(at_engine_t *me)
     return ESP_OK;
 }
 
-esp_err_t at_engine_flush_rx_exclusive(at_engine_t *me)
+esp_err_t at_engine_flush_rx_exclusive(at_engine_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -650,7 +650,7 @@ esp_err_t at_engine_flush_rx_exclusive(at_engine_t *me)
     return ESP_OK;
 }
 
-void at_engine_end_exclusive(at_engine_t *me)
+void at_engine_end_exclusive(at_engine_handle_t *me)
 {
     if (!me) {
         return;
@@ -664,7 +664,7 @@ void at_engine_end_exclusive(at_engine_t *me)
     }
 }
 
-esp_err_t at_engine_flush_rx(at_engine_t *me)
+esp_err_t at_engine_flush_rx(at_engine_handle_t *me)
 {
     esp_err_t ret = at_engine_begin_exclusive(me);
     if (ret != ESP_OK) {
@@ -677,7 +677,7 @@ esp_err_t at_engine_flush_rx(at_engine_t *me)
     return ret;
 }
 
-esp_err_t at_engine_register_urc(at_engine_t *me, const char *prefix,
+esp_err_t at_engine_register_urc(at_engine_handle_t *me, const char *prefix,
                                  at_urc_handler_t *handler)
 {
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -719,7 +719,7 @@ esp_err_t at_engine_register_urc(at_engine_t *me, const char *prefix,
     return ESP_OK;
 }
 
-esp_err_t at_engine_unregister_urc(at_engine_t *me, const char *prefix)
+esp_err_t at_engine_unregister_urc(at_engine_handle_t *me, const char *prefix)
 {
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 1：参数校验
@@ -786,7 +786,7 @@ static esp_err_t validate_options(const at_cmd_options_t *options)
     return ESP_OK;
 }
 
-static esp_err_t begin_send_call(at_engine_t *me)
+static esp_err_t begin_send_call(at_engine_handle_t *me)
 {
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->destroying) {
@@ -798,7 +798,7 @@ static esp_err_t begin_send_call(at_engine_t *me)
     return ESP_OK;
 }
 
-static void end_send_call(at_engine_t *me)
+static void end_send_call(at_engine_handle_t *me)
 {
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->active_callers > 0) {
@@ -807,7 +807,7 @@ static void end_send_call(at_engine_t *me)
     xSemaphoreGive(me->lock);
 }
 
-static esp_err_t send_cmd_internal(at_engine_t *me, const char *cmd,
+static esp_err_t send_cmd_internal(at_engine_handle_t *me, const char *cmd,
                                    const uint8_t *payload, size_t payload_len,
                                    const char *payload_prompt,
                                    at_response_t *response,
@@ -972,7 +972,7 @@ static TickType_t remaining_timeout_ticks(TickType_t start_ticks,
 
 static void rx_task(void *arg)
 {
-    at_engine_t *me = (at_engine_t *)arg;
+    at_engine_handle_t *me = (at_engine_handle_t *)arg;
     uint8_t rx_buf[128];
     uart_event_t event;
 
@@ -1038,7 +1038,7 @@ static void rx_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint32_t epoch)
+static void process_rx_bytes(at_engine_handle_t *me, const uint8_t *data, int len, uint32_t epoch)
 {
     /* 字节数组的 trampoline：逐字节交给 process_rx_char 做行解析；
      * epoch 透传下去，让每个字符都能在临界区内做幂等校验，
@@ -1048,7 +1048,7 @@ static void process_rx_bytes(at_engine_t *me, const uint8_t *data, int len, uint
     }
 }
 
-static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
+static void process_rx_char(at_engine_handle_t *me, char c, uint32_t epoch)
 {
     /* 局部捕获用于"在临界区外"调用 write_payload 时的快照（避免持锁阻塞写 UART） */
     bool line_ready = false;
@@ -1155,7 +1155,7 @@ static void process_rx_char(at_engine_t *me, char c, uint32_t epoch)
     xSemaphoreGive(me->lock);
 }
 
-static void handle_line(at_engine_t *me, const char *line, uint32_t epoch)
+static void handle_line(at_engine_handle_t *me, const char *line, uint32_t epoch)
 {
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 1：加锁并做 epoch 幂等校验
@@ -1355,7 +1355,7 @@ static int parse_error_code(const char *line)
     return atoi(colon + 1);
 }
 
-static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line)
+static void append_response_line_locked(at_engine_handle_t *me, at_cmd_ctx_t *ctx, const char *line)
 {
     int limit = ctx->response->max_lines;
     if (limit > me->response_pool_lines) {
@@ -1372,7 +1372,7 @@ static void append_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, cons
     ctx->response->line_count = ctx->data_line_index;
 }
 
-static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx, const char *line)
+static void append_final_response_line_locked(at_engine_handle_t *me, at_cmd_ctx_t *ctx, const char *line)
 {
     int limit = ctx->response->max_lines;
     if (limit > me->response_pool_lines) {
@@ -1392,7 +1392,7 @@ static void append_final_response_line_locked(at_engine_t *me, at_cmd_ctx_t *ctx
     ctx->response->line_count = limit;
 }
 
-static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int error_code)
+static void finish_cmd_locked(at_engine_handle_t *me, at_response_status_t status, int error_code)
 {
     if (me->cmd_ctx && me->cmd_ctx->response) {
         me->cmd_ctx->response->status = status;
@@ -1403,7 +1403,7 @@ static void finish_cmd_locked(at_engine_t *me, at_response_status_t status, int 
     xSemaphoreGive(me->cmd_done_sema);
 }
 
-static bool dispatch_urc(at_engine_t *me, const char *line, uint32_t epoch)
+static bool dispatch_urc(at_engine_handle_t *me, const char *line, uint32_t epoch)
 {
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (epoch != me->rx_epoch) {
@@ -1431,7 +1431,7 @@ static bool starts_with(const char *str, const char *prefix)
     return strncmp(str, prefix, prefix_len) == 0;
 }
 
-static esp_err_t write_cmd(at_engine_t *me, const char *cmd)
+static esp_err_t write_cmd(at_engine_handle_t *me, const char *cmd)
 {
     size_t len = strlen(cmd);
     ESP_RETURN_ON_FALSE(len > 0, ESP_ERR_INVALID_ARG, TAG, "empty command");
@@ -1462,7 +1462,7 @@ static esp_err_t write_cmd(at_engine_t *me, const char *cmd)
     return ESP_OK;
 }
 
-static esp_err_t write_payload(at_engine_t *me, const uint8_t *payload,
+static esp_err_t write_payload(at_engine_handle_t *me, const uint8_t *payload,
                                size_t payload_len)
 {
     ESP_RETURN_ON_FALSE(me && payload && payload_len > 0,
@@ -1502,7 +1502,7 @@ static void reset_response(at_response_t *response)
     }
 }
 
-static void clear_response_pool(at_engine_t *me)
+static void clear_response_pool(at_engine_handle_t *me)
 {
     if (me->response_pool) {
         memset(me->response_pool, 0,
@@ -1510,13 +1510,13 @@ static void clear_response_pool(at_engine_t *me)
     }
 }
 
-static void clear_done_signal(at_engine_t *me)
+static void clear_done_signal(at_engine_handle_t *me)
 {
     while (xSemaphoreTake(me->cmd_done_sema, 0) == pdTRUE) {
     }
 }
 
-static void flush_rx_input_locked(at_engine_t *me)
+static void flush_rx_input_locked(at_engine_handle_t *me)
 {
     (void)uart_flush_input(me->config.uart_num);
     if (me->uart_queue) {
@@ -1564,7 +1564,7 @@ static esp_err_t normalize_config(const at_engine_config_t *in, at_engine_config
     return ESP_OK;
 }
 
-static esp_err_t init_resources(at_engine_t *me)
+static esp_err_t init_resources(at_engine_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -1595,7 +1595,7 @@ static esp_err_t init_resources(at_engine_t *me)
     return ESP_OK;
 }
 
-static esp_err_t init_uart(at_engine_t *me)
+static esp_err_t init_uart(at_engine_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -1624,7 +1624,7 @@ static esp_err_t init_uart(at_engine_t *me)
     return ESP_OK;
 }
 
-static void cleanup_resources(at_engine_t *me)
+static void cleanup_resources(at_engine_handle_t *me)
 {
     if (!me) {
         return;

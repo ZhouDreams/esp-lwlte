@@ -43,88 +43,88 @@ extern "C" {
  * @brief 无额外参数的调制解调器操作函数
  * @details Modem operation function without extra arguments
  */
-typedef esp_err_t (*modem_no_arg_fn)(modem_t *me);
+typedef esp_err_t (*modem_no_arg_fn)(modem_handle_t *me);
 
 /**
  * @brief 获取模块信息操作函数
  * @details Get modem information operation function
  */
-typedef esp_err_t (*modem_get_info_fn)(modem_t *me, modem_info_t *info);
+typedef esp_err_t (*modem_get_info_fn)(modem_handle_t *me, modem_info_t *info);
 
 /**
  * @brief 获取 SIM 状态操作函数
  * @details Get SIM status operation function
  */
-typedef esp_err_t (*modem_get_sim_status_fn)(modem_t *me,
+typedef esp_err_t (*modem_get_sim_status_fn)(modem_handle_t *me,
                                              modem_sim_status_t *status);
 
 /**
  * @brief 获取信号质量操作函数
  * @details Get signal quality operation function
  */
-typedef esp_err_t (*modem_get_signal_fn)(modem_t *me,
+typedef esp_err_t (*modem_get_signal_fn)(modem_handle_t *me,
                                          modem_signal_t *signal);
 
 /**
  * @brief 获取注册状态操作函数
  * @details Get registration status operation function
  */
-typedef esp_err_t (*modem_get_registration_fn)(modem_t *me,
+typedef esp_err_t (*modem_get_registration_fn)(modem_handle_t *me,
                                                modem_reg_status_t *status);
 
 /**
  * @brief 获取分组域附着状态操作函数
  * @details Get packet attach status operation function
  */
-typedef esp_err_t (*modem_get_packet_attach_status_fn)(modem_t *me,
+typedef esp_err_t (*modem_get_packet_attach_status_fn)(modem_handle_t *me,
                                                        bool *attached);
 
 /**
  * @brief 设置 APN 操作函数
  * @details Set APN operation function
  */
-typedef esp_err_t (*modem_set_apn_fn)(modem_t *me, uint8_t cid,
+typedef esp_err_t (*modem_set_apn_fn)(modem_handle_t *me, uint8_t cid,
                                       const char *apn);
 
 /**
  * @brief PDP 上下文 ID 操作函数
  * @details PDP context ID operation function
  */
-typedef esp_err_t (*modem_pdp_cid_fn)(modem_t *me, uint8_t cid);
+typedef esp_err_t (*modem_pdp_cid_fn)(modem_handle_t *me, uint8_t cid);
 
 /**
  * @brief 获取 PDP 上下文操作函数
  * @details Get PDP context operation function
  */
-typedef esp_err_t (*modem_get_pdp_context_fn)(modem_t *me, uint8_t cid,
+typedef esp_err_t (*modem_get_pdp_context_fn)(modem_handle_t *me, uint8_t cid,
                                               modem_pdp_context_t *pdp);
 
 /**
  * @brief 配置 MQTT 操作函数
  * @details Configure MQTT operation function
  */
-typedef esp_err_t (*modem_mqtt_configure_fn)(modem_t *me,
+typedef esp_err_t (*modem_mqtt_configure_fn)(modem_handle_t *me,
                                              const modem_mqtt_config_t *config);
 
 /**
  * @brief MQTT 主题操作函数
  * @details MQTT topic operation function
  */
-typedef esp_err_t (*modem_mqtt_topic_fn)(modem_t *me,
+typedef esp_err_t (*modem_mqtt_topic_fn)(modem_handle_t *me,
                                          const modem_mqtt_topic_t *topic);
 
 /**
  * @brief MQTT 发布操作函数
  * @details MQTT publish operation function
  */
-typedef esp_err_t (*modem_mqtt_publish_fn)(modem_t *me,
+typedef esp_err_t (*modem_mqtt_publish_fn)(modem_handle_t *me,
                                            const modem_mqtt_publish_t *publish);
 
 /**
  * @brief Ping 诊断操作函数
  * @details Ping diagnostic operation function
  */
-typedef esp_err_t (*modem_ping_fn)(modem_t *me,
+typedef esp_err_t (*modem_ping_fn)(modem_handle_t *me,
                                    const modem_ping_request_t *request,
                                    modem_ping_reply_t *replies,
                                    size_t max_replies,
@@ -162,9 +162,9 @@ typedef struct modem_ops {
  * @brief 调制解调器基类
  * @details Modem base class
  */
-struct modem {
+struct modem_handle {
     const modem_ops_t *ops;                       /**< 虚函数表； Virtual function table */
-    at_engine_t *at;                              /**< AT 引擎句柄，借用； Borrowed AT engine handle */
+    at_engine_handle_t *at;                              /**< AT 引擎句柄，借用； Borrowed AT engine handle */
     SemaphoreHandle_t lock;                       /**< 内部状态锁； Internal state lock */
     QueueHandle_t event_queue;                    /**< 事件队列； Event queue */
     TaskHandle_t event_task;                      /**< 事件任务； Event task */
@@ -198,7 +198,7 @@ struct modem {
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_NO_MEM: 内存不足
  */
-esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
+esp_err_t modem_base_init(modem_handle_t *me, const char *name, at_engine_handle_t *at,
                           const modem_ops_t *ops, int event_queue_size,
                           int event_task_stack, int event_task_priority);
 
@@ -211,7 +211,7 @@ esp_err_t modem_base_init(modem_t *me, const char *name, at_engine_t *at,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 状态错误
  */
-esp_err_t modem_base_deinit(modem_t *me);
+esp_err_t modem_base_deinit(modem_handle_t *me);
 
 /**
  * @brief 停止调制解调器事件任务
@@ -222,7 +222,7 @@ esp_err_t modem_base_deinit(modem_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 状态错误
  */
-esp_err_t modem_base_stop_event_task(modem_t *me);
+esp_err_t modem_base_stop_event_task(modem_handle_t *me);
 
 /**
  * @brief 投递调制解调器事件
@@ -235,7 +235,7 @@ esp_err_t modem_base_stop_event_task(modem_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_ERR_TIMEOUT: 事件队列已满
  */
-esp_err_t modem_post_event(modem_t *me, const modem_event_t *event);
+esp_err_t modem_post_event(modem_handle_t *me, const modem_event_t *event);
 
 /**
  * @brief 设置调制解调器状态
@@ -247,7 +247,7 @@ esp_err_t modem_post_event(modem_t *me, const modem_event_t *event);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 状态错误
  */
-esp_err_t modem_set_state(modem_t *me, modem_state_t state);
+esp_err_t modem_set_state(modem_handle_t *me, modem_state_t state);
 
 /**********************
  *      MACROS

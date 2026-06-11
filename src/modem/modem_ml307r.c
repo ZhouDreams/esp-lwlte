@@ -75,7 +75,7 @@ typedef struct {
  * @details ML307R modem instance
  */
 typedef struct {
-    modem_t base;
+    modem_handle_t base;
     modem_ml307r_config_t config;
     at_urc_handler_t cpin_handler;
     at_urc_handler_t creg_handler;
@@ -99,37 +99,37 @@ typedef struct {
 /**********************
  *  STATIC PROTOTYPES
  **********************/
-static esp_err_t ml307r_destroy(modem_t *me);
-static esp_err_t ml307r_start(modem_t *me);
-static esp_err_t ml307r_reset(modem_t *me);
-static esp_err_t ml307r_get_info(modem_t *me, modem_info_t *info);
-static esp_err_t ml307r_get_sim_status(modem_t *me, modem_sim_status_t *status);
-static esp_err_t ml307r_get_signal(modem_t *me, modem_signal_t *signal);
-static esp_err_t ml307r_get_registration(modem_t *me, modem_reg_status_t *status);
-static esp_err_t ml307r_get_packet_attach_status(modem_t *me, bool *attached);
-static esp_err_t ml307r_set_apn(modem_t *me, uint8_t cid, const char *apn);
-static esp_err_t ml307r_activate_pdp(modem_t *me, uint8_t cid);
-static esp_err_t ml307r_deactivate_pdp(modem_t *me, uint8_t cid);
-static esp_err_t ml307r_get_pdp_context(modem_t *me, uint8_t cid,
+static esp_err_t ml307r_destroy(modem_handle_t *me);
+static esp_err_t ml307r_start(modem_handle_t *me);
+static esp_err_t ml307r_reset(modem_handle_t *me);
+static esp_err_t ml307r_get_info(modem_handle_t *me, modem_info_t *info);
+static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
+static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal);
+static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t *status);
+static esp_err_t ml307r_get_packet_attach_status(modem_handle_t *me, bool *attached);
+static esp_err_t ml307r_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
+static esp_err_t ml307r_activate_pdp(modem_handle_t *me, uint8_t cid);
+static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid);
+static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
                                          modem_pdp_context_t *pdp);
-static esp_err_t ml307r_mqtt_configure(modem_t *me,
+static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
                                         const modem_mqtt_config_t *config);
-static esp_err_t ml307r_mqtt_tcp_connect(modem_t *me);
-static esp_err_t ml307r_mqtt_connect(modem_t *me);
-static esp_err_t ml307r_mqtt_disconnect(modem_t *me);
-static esp_err_t ml307r_mqtt_tcp_disconnect(modem_t *me);
-static esp_err_t ml307r_mqtt_subscribe(modem_t *me,
+static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_connect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_disconnect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_subscribe(modem_handle_t *me,
                                         const modem_mqtt_topic_t *topic);
-static esp_err_t ml307r_mqtt_unsubscribe(modem_t *me,
+static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t *me,
                                           const modem_mqtt_topic_t *topic);
-static esp_err_t ml307r_mqtt_publish(modem_t *me,
+static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
                                       const modem_mqtt_publish_t *publish);
-static esp_err_t ml307r_ping(modem_t *me,
+static esp_err_t ml307r_ping(modem_handle_t *me,
                              const modem_ping_request_t *request,
                              modem_ping_reply_t *replies,
                              size_t max_replies,
                              modem_ping_summary_t *summary);
-static modem_ml307r_t *to_ml307r(modem_t *me);
+static modem_ml307r_t *to_ml307r(modem_handle_t *me);
 static void init_cmd_ctx(ml307r_cmd_ctx_t *ctx);
 static esp_err_t send_cmd(modem_ml307r_t *self, const char *cmd,
                           ml307r_cmd_ctx_t *ctx, uint32_t timeout_ms);
@@ -190,7 +190,7 @@ static bool elapsed_at_least(uint32_t start_ms, uint32_t timeout_ms);
 static void delay_init_retry(void);
 static esp_err_t wait_at_ready(modem_ml307r_t *self);
 static esp_err_t run_basic_init_cmds(modem_ml307r_t *self);
-static esp_err_t finish_modem_ready(modem_t *me, modem_ml307r_t *self);
+static esp_err_t finish_modem_ready(modem_handle_t *me, modem_ml307r_t *self);
 static esp_err_t hardware_reset(modem_ml307r_t *self);
 static esp_err_t register_urcs(modem_ml307r_t *self);
 static esp_err_t unregister_urcs(modem_ml307r_t *self);
@@ -259,7 +259,7 @@ static const modem_ops_t s_ml307r_ops = {
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-modem_t *modem_ml307r_create(at_engine_t *at,
+modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
                              const modem_ml307r_config_t *config)
 {
     if (!at || !config) {
@@ -304,7 +304,7 @@ modem_t *modem_ml307r_create(at_engine_t *at,
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static modem_ml307r_t *to_ml307r(modem_t *me)
+static modem_ml307r_t *to_ml307r(modem_handle_t *me)
 {
     return MODEM_CONTAINER_OF(me, modem_ml307r_t, base);
 }
@@ -530,7 +530,7 @@ static esp_err_t post_event_nonblocking(modem_ml307r_t *self,
         return ESP_ERR_TIMEOUT;
     }
 
-    modem_t *me = &self->base;
+    modem_handle_t *me = &self->base;
     if (me->destroying || me->state == MODEM_STATE_DESTROYING ||
         me->event_task_stop_requested || !me->event_task || !me->event_queue) {
         xSemaphoreGive(me->lock);
@@ -1283,7 +1283,7 @@ static esp_err_t run_basic_init_cmds(modem_ml307r_t *self)
     return ESP_OK;
 }
 
-static esp_err_t finish_modem_ready(modem_t *me, modem_ml307r_t *self)
+static esp_err_t finish_modem_ready(modem_handle_t *me, modem_ml307r_t *self)
 {
     ESP_RETURN_ON_FALSE(me && self, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -1467,7 +1467,7 @@ static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self)
     return ret;
 }
 
-static esp_err_t ml307r_destroy(modem_t *me)
+static esp_err_t ml307r_destroy(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -1488,7 +1488,7 @@ static esp_err_t ml307r_destroy(modem_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_start(modem_t *me)
+static esp_err_t ml307r_start(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -1545,7 +1545,7 @@ err:
     return ret;
 }
 
-static esp_err_t ml307r_reset(modem_t *me)
+static esp_err_t ml307r_reset(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -1602,7 +1602,7 @@ err:
     return ret;
 }
 
-static esp_err_t ml307r_get_info(modem_t *me, modem_info_t *info)
+static esp_err_t ml307r_get_info(modem_handle_t *me, modem_info_t *info)
 {
     ESP_RETURN_ON_FALSE(me && info, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -1685,7 +1685,7 @@ static esp_err_t ml307r_get_info(modem_t *me, modem_info_t *info)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_sim_status(modem_t *me, modem_sim_status_t *status)
+static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -1706,7 +1706,7 @@ static esp_err_t ml307r_get_sim_status(modem_t *me, modem_sim_status_t *status)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_signal(modem_t *me, modem_signal_t *signal)
+static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -1748,7 +1748,7 @@ static esp_err_t ml307r_get_signal(modem_t *me, modem_signal_t *signal)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_registration(modem_t *me, modem_reg_status_t *status)
+static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -1836,14 +1836,14 @@ static esp_err_t ml307r_get_registration(modem_t *me, modem_reg_status_t *status
     return last_err;
 }
 
-static esp_err_t ml307r_get_packet_attach_status(modem_t *me, bool *attached)
+static esp_err_t ml307r_get_packet_attach_status(modem_handle_t *me, bool *attached)
 {
     ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     return query_cgatt(to_ml307r(me), attached);
 }
 
-static esp_err_t ml307r_set_apn(modem_t *me, uint8_t cid, const char *apn)
+static esp_err_t ml307r_set_apn(modem_handle_t *me, uint8_t cid, const char *apn)
 {
     ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
@@ -1882,7 +1882,7 @@ static esp_err_t ml307r_set_apn(modem_t *me, uint8_t cid, const char *apn)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_activate_pdp(modem_t *me, uint8_t cid)
+static esp_err_t ml307r_activate_pdp(modem_handle_t *me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
@@ -2004,7 +2004,7 @@ static esp_err_t ml307r_activate_pdp(modem_t *me, uint8_t cid)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_deactivate_pdp(modem_t *me, uint8_t cid)
+static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
@@ -2067,7 +2067,7 @@ static esp_err_t ml307r_deactivate_pdp(modem_t *me, uint8_t cid)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_pdp_context(modem_t *me, uint8_t cid,
+static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
                                          modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -2097,7 +2097,7 @@ static esp_err_t ml307r_get_pdp_context(modem_t *me, uint8_t cid,
     return ESP_OK;
 }
 
-static esp_err_t ml307r_mqtt_configure(modem_t *me,
+static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
                                         const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host &&
@@ -2194,7 +2194,7 @@ cleanup:
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_tcp_connect(modem_t *me)
+static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -2211,7 +2211,7 @@ static esp_err_t ml307r_mqtt_tcp_connect(modem_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_mqtt_connect(modem_t *me)
+static esp_err_t ml307r_mqtt_connect(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -2306,7 +2306,7 @@ cleanup:
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_disconnect(modem_t *me)
+static esp_err_t ml307r_mqtt_disconnect(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -2353,7 +2353,7 @@ static esp_err_t ml307r_mqtt_disconnect(modem_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_mqtt_tcp_disconnect(modem_t *me)
+static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -2369,7 +2369,7 @@ static esp_err_t ml307r_mqtt_tcp_disconnect(modem_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_mqtt_subscribe(modem_t *me,
+static esp_err_t ml307r_mqtt_subscribe(modem_handle_t *me,
                                         const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->topic[0] &&
@@ -2416,7 +2416,7 @@ static esp_err_t ml307r_mqtt_subscribe(modem_t *me,
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_unsubscribe(modem_t *me,
+static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t *me,
                                           const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->topic[0] &&
@@ -2461,7 +2461,7 @@ static esp_err_t ml307r_mqtt_unsubscribe(modem_t *me,
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_publish(modem_t *me,
+static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
                                       const modem_mqtt_publish_t *publish)
 {
     ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
@@ -2526,7 +2526,7 @@ static esp_err_t ml307r_mqtt_publish(modem_t *me,
     return ret;
 }
 
-static esp_err_t ml307r_ping(modem_t *me,
+static esp_err_t ml307r_ping(modem_handle_t *me,
                              const modem_ping_request_t *request,
                              modem_ping_reply_t *replies,
                              size_t max_replies,

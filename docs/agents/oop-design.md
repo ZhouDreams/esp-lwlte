@@ -43,11 +43,11 @@ static bool param_valid(uint32_t param);
 **用户公共头文件（`src/include/lwlte.h`）**：
 
 ```c
-typedef struct lwlte lwlte_t;  /* 前置声明，不暴露内部 */
+typedef struct lwlte_handle lwlte_handle_t;  /* 前置声明，不暴露内部 */
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_t **out_lte);
-esp_err_t lwlte_destroy(lwlte_t *me);
+                              lwlte_handle_t **out_lte);
+esp_err_t lwlte_destroy(lwlte_handle_t *me);
 ```
 
 内部层 factory 可沿用该层既定的指针返回 create 模式，例如 `core_create()`、`modem_air780ep_create()`；不要把内部 factory 形态投射成用户公共 API。
@@ -167,9 +167,9 @@ static unsigned int s_init_count;
 
 ```c
 /* 基类：Modem Adapter 通用对象 */
-struct modem {
+struct modem_handle {
     const modem_ops_t      *ops;          /* vptr，见第3章 */
-    at_engine_t            *at;
+    at_engine_handle_t            *at;
     SemaphoreHandle_t       lock;
     QueueHandle_t           event_queue;
     modem_event_callback_t  event_cb;
@@ -180,7 +180,7 @@ struct modem {
 
 /* 子类：Air780EP Modem 实现 */
 typedef struct {
-    modem_t                  base;        /* 第一个字段——继承 */
+    modem_handle_t                  base;        /* 第一个字段——继承 */
     modem_air780ep_config_t  config;
     modem_signal_t           last_signal;
     modem_sim_status_t       last_sim_status;
@@ -197,7 +197,7 @@ typedef struct {
 
 ```c
 static esp_err_t air780ep_object_init(modem_air780ep_t *me,
-                                      at_engine_t *at,
+                                      at_engine_handle_t *at,
                                       const modem_air780ep_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && at && config, ESP_ERR_INVALID_ARG, TAG,
@@ -230,17 +230,17 @@ modem_air780ep_t air780ep;
 air780ep_object_init(&air780ep, at, &config);
 
 /* 正确：取 base 成员地址 */
-modem_t *base = &air780ep.base;
+modem_handle_t *base = &air780ep.base;
 
 /* 错误：强转——base 不在偏移 0 时会出错 */
-modem_t *bad_base = (modem_t *)&air780ep;  /* 禁止 */
+modem_handle_t *bad_base = (modem_handle_t *)&air780ep;  /* 禁止 */
 ```
 
 教程原文："让编译器自己算偏移，你别去碰。"
 
 ### 2.4 向下转型（Downcasting）：MODEM_CONTAINER_OF
 
-当函数收到 `modem_t *` 基类指针，需要反推出具体子类对象时，使用 `MODEM_CONTAINER_OF` 宏（教程第13章）：
+当函数收到 `modem_handle_t *` 基类指针，需要反推出具体子类对象时，使用 `MODEM_CONTAINER_OF` 宏（教程第13章）：
 
 ```c
 /* 放入 Modem 模块私有头文件 */
@@ -261,7 +261,7 @@ modem_t *bad_base = (modem_t *)&air780ep;  /* 禁止 */
     ((type *)((char *)(ptr) - offsetof(type, member)))
 
 /* Air780EP 子类方法中从 base 反推自身 */
-static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
+static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
 {
     modem_air780ep_t *self = MODEM_CONTAINER_OF(me, modem_air780ep_t, base);
 
@@ -328,12 +328,12 @@ static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
 
 ```c
 /* src/modem/modem_priv.h — Modem 内部多态接口 */
-typedef esp_err_t (*modem_no_arg_fn)(modem_t *me);
-typedef esp_err_t (*modem_get_signal_fn)(modem_t *me,
+typedef esp_err_t (*modem_no_arg_fn)(modem_handle_t *me);
+typedef esp_err_t (*modem_get_signal_fn)(modem_handle_t *me,
                                          modem_signal_t *signal);
-typedef esp_err_t (*modem_set_apn_fn)(modem_t *me, uint8_t cid,
+typedef esp_err_t (*modem_set_apn_fn)(modem_handle_t *me, uint8_t cid,
                                       const char *apn);
-typedef esp_err_t (*modem_pdp_cid_fn)(modem_t *me, uint8_t cid);
+typedef esp_err_t (*modem_pdp_cid_fn)(modem_handle_t *me, uint8_t cid);
 
 typedef struct modem_ops {
     modem_no_arg_fn destroy;
@@ -356,9 +356,9 @@ typedef struct modem_ops {
 
 ```c
 /* src/modem/modem_priv.h — 基类持有 vptr */
-struct modem {
+struct modem_handle {
     const modem_ops_t *ops;  /* vptr：指向具体模块操作表 */
-    at_engine_t       *at;
+    at_engine_handle_t       *at;
     modem_state_t      state;
     QueueHandle_t      event_queue;
 };
@@ -368,14 +368,14 @@ struct modem {
 
 ```c
 typedef struct {
-    modem_t                 base;    /* 第一个字段，实现向上转型 */
+    modem_handle_t                 base;    /* 第一个字段，实现向上转型 */
     modem_air780ep_config_t config;
     modem_signal_t          last_signal;
 } modem_air780ep_t;
 
-static esp_err_t modem_base_init(modem_t *me,
+static esp_err_t modem_base_init(modem_handle_t *me,
                                  const modem_ops_t *ops,
-                                 at_engine_t *at)
+                                 at_engine_handle_t *at)
 {
     if (!me || !ops || !at) {
         return ESP_ERR_INVALID_ARG;
@@ -410,7 +410,7 @@ static const modem_ops_t air780ep_ops = {
     .deactivate_pdp = air780ep_deactivate_pdp,
 };
 
-modem_t *modem_air780ep_create(at_engine_t *at,
+modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
                                const modem_air780ep_config_t *config)
 {
     modem_air780ep_t *self = calloc(1, sizeof(*self));
@@ -435,7 +435,7 @@ modem_t *modem_air780ep_create(at_engine_t *at,
 
 ```c
 /* Core 只调用 modem_* 层间包装 API，不知道具体模块型号。 */
-esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
+esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->get_signal,
@@ -445,7 +445,7 @@ esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
 }
 
 /* Air780EP 子类方法中从 base 反推自身，并直接调用下层 AT Engine。 */
-static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
+static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
 {
     modem_air780ep_t *self = MODEM_CONTAINER_OF(me, modem_air780ep_t, base);
 
@@ -461,7 +461,7 @@ static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
 }
 ```
 
-**关键效果**（教程第12章）：Core 只认识 `modem_t` 和 `modem_*` 包装 API，不认识 Air780EP、SIM800 等具体模块。换模块时替换具体 Modem 子类和 Facade factory 装配，Core 代码零改动。
+**关键效果**（教程第12章）：Core 只认识 `modem_handle_t` 和 `modem_*` 包装 API，不认识 Air780EP、SIM800 等具体模块。换模块时替换具体 Modem 子类和 Facade factory 装配，Core 代码零改动。
 
 ### 3.6 多态规则总结
 
@@ -496,7 +496,7 @@ static esp_err_t air780ep_get_signal(modem_t *me, modem_signal_t *signal)
 
 ```c
 /* 统一接口——assert 守卫 */
-esp_err_t modem_require_start(modem_t *me)
+esp_err_t modem_require_start(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -509,7 +509,7 @@ esp_err_t modem_require_start(modem_t *me)
 带 Release 兜底的稳健写法（教程第14章）：
 
 ```c
-esp_err_t modem_require_start(modem_t *me)
+esp_err_t modem_require_start(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -524,7 +524,7 @@ esp_err_t modem_require_start(modem_t *me)
 ### 4.3 策略二：选填（optional）
 
 ```c
-esp_err_t modem_reset_optional(modem_t *me)
+esp_err_t modem_reset_optional(modem_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->ops, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -604,7 +604,7 @@ int lwlte_channel_send(struct lwlte_channel *me,
 
 ### 5.1 App / Facade / 内部分层
 
-本项目保留"业务逻辑与装配分离"的思想：业务代码只操作 `lwlte_t`，板级初始化或 App 自有配置代码可通过公开 config 填写 UART/GPIO，真正的依赖树装配集中在 LWLTE Facade 模块 factory 内部。
+本项目保留"业务逻辑与装配分离"的思想：业务代码只操作 `lwlte_handle_t`，板级初始化或 App 自有配置代码可通过公开 config 填写 UART/GPIO，真正的依赖树装配集中在 LWLTE Facade 模块 factory 内部。
 
 ```
 应用层 (main.c / app.c)
@@ -626,26 +626,26 @@ int lwlte_channel_send(struct lwlte_channel *me,
 
 ```c
 /* src/core/core.h — 层间头文件 */
-typedef struct core core_t;
+typedef struct core_handle core_handle_t;
 
-core_t *core_create(const core_config_t *config, modem_t *modem);
-esp_err_t core_destroy(core_t *me);
-esp_err_t core_start(core_t *me);
-esp_err_t core_connect(core_t *me);
+core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
+esp_err_t core_destroy(core_handle_t *me);
+esp_err_t core_start(core_handle_t *me);
+esp_err_t core_connect(core_handle_t *me);
 
 /* src/core/core_priv.h — Core 模块私有结构 */
-struct core {
+struct core_handle {
     core_config_t config;
-    modem_t      *modem;
+    modem_handle_t      *modem;
     core_fsm_t    fsm;
     net_mgr_t     net_mgr;
     pdp_mgr_t     pdp_mgr;
 };
 
 /* src/core/core.c — 内部实现 */
-core_t *core_create(const core_config_t *config, modem_t *modem)
+core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem)
 {
-    core_t *me = calloc(1, sizeof(core_t));
+    core_handle_t *me = calloc(1, sizeof(*me));
     if (!me) return NULL;
 
     me->config = *config;
@@ -670,7 +670,7 @@ App 或板级文件只调用用户门面 factory；真正认识 AT Engine、Mode
 ```c
 /* app_lte.c — App 只看到用户 API */
 
-lwlte_t *g_lte;
+lwlte_handle_t *g_lte;
 
 int lwlte_board_init(void)
 {
@@ -695,7 +695,7 @@ int lwlte_board_init(void)
 
 ### 5.4 业务 App 代码边界
 
-业务 App 代码只 include `lwlte.h` 并操作 `lwlte_t`，不暴露任何子类类型。板级初始化或 App 自有配置代码也 include `lwlte.h`，并填写其中声明的模块配置如 `lwlte_air780ep_config_t`。
+业务 App 代码只 include `lwlte.h` 并操作 `lwlte_handle_t`，不暴露任何子类类型。板级初始化或 App 自有配置代码也 include `lwlte.h`，并填写其中声明的模块配置如 `lwlte_air780ep_config_t`。
 
 ```c
 /* app.c — 业务操作代码 */
@@ -718,22 +718,22 @@ void app_main(void)
 
 ### 5.5 生命周期模板
 
-用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_t *`，便于区分参数错误、内存不足和下层对象创建失败。`AT OK`/AT ready 和网络 online 是 `lwlte_start()` 之后的运行期结果；前者由 `modem_start()` 阻塞完成，后者通过事件上报：
+用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_handle_t *`，便于区分参数错误、内存不足和下层对象创建失败。`AT OK`/AT ready 和网络 online 是 `lwlte_start()` 之后的运行期结果；前者由 `modem_start()` 阻塞完成，后者通过事件上报：
 
 ```c
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_t **out_lte);
-esp_err_t lwlte_start(lwlte_t *me);
-esp_err_t lwlte_destroy(lwlte_t *me);
+                              lwlte_handle_t **out_lte);
+esp_err_t lwlte_start(lwlte_handle_t *me);
+esp_err_t lwlte_destroy(lwlte_handle_t *me);
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_t **out_lte)
+                              lwlte_handle_t **out_lte)
 {
     ESP_RETURN_ON_FALSE(config && out_lte, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
 
     esp_err_t ret = ESP_OK;
-    lwlte_t *me = calloc(1, sizeof(*me));
+    lwlte_handle_t *me = calloc(1, sizeof(*me));
     ESP_RETURN_ON_FALSE(me, ESP_ERR_NO_MEM, TAG, "calloc facade failed");
 
     ret = create_at_modem_core_tree(me, config);
@@ -750,11 +750,11 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
 内部 service 和模块 factory 可以沿用本层既定的指针返回模式；失败原因由日志和清理路径记录，调用方按依赖树反向释放：
 
 ```c
-core_t *core_create(const core_config_t *config, modem_t *modem);
-modem_t *modem_air780ep_create(at_engine_t *at,
+core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
+modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
                                const modem_air780ep_config_t *config);
 
-modem_t *modem_air780ep_create(at_engine_t *at,
+modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
                                const modem_air780ep_config_t *config)
 {
     modem_air780ep_t *self = calloc(1, sizeof(*self));

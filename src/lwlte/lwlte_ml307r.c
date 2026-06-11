@@ -35,13 +35,13 @@ static esp_err_t validate_config(const lwlte_ml307r_config_t *config);
 static bool gpio_required_valid(gpio_num_t pin);
 static bool gpio_optional_valid(gpio_num_t pin);
 static bool non_negative_int(int value);
-static esp_err_t cleanup_after_failure(lwlte_t *me, esp_err_t original_err);
+static esp_err_t cleanup_after_failure(lwlte_handle_t *me, esp_err_t original_err);
 
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
 esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
-                            lwlte_t **out_lte)
+                            lwlte_handle_t **out_lte)
 {
     ESP_RETURN_ON_FALSE(out_lte, ESP_ERR_INVALID_ARG, TAG, "out_lte is NULL");
     *out_lte = NULL;
@@ -49,7 +49,7 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
     esp_err_t ret = validate_config(config);
     ESP_RETURN_ON_ERROR(ret, TAG, "invalid config");
 
-    lwlte_t *me = NULL;
+    lwlte_handle_t *me = NULL;
     ret = lwlte_create_empty(&me);
     ESP_RETURN_ON_ERROR(ret, TAG, "create facade failed");
 
@@ -210,7 +210,7 @@ static bool non_negative_int(int value)
     return value >= 0;
 }
 
-static esp_err_t cleanup_after_failure(lwlte_t *me, esp_err_t original_err)
+static esp_err_t cleanup_after_failure(lwlte_handle_t *me, esp_err_t original_err)
 {
     esp_err_t ret = original_err;
     if (ret == ESP_OK) {

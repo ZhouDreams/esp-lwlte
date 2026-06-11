@@ -69,7 +69,7 @@ static uint32_t now_ms(void);
  *         - ESP_OK: 成功
  *         - other: 状态设置或事件发布失败
  */
-static esp_err_t enter_activation(core_t *me);
+static esp_err_t enter_activation(core_handle_t *me);
 
 /**
  * @brief 执行网络激活阶段循环
@@ -81,7 +81,7 @@ static esp_err_t enter_activation(core_t *me);
  *         - ESP_ERR_TIMEOUT: 激活超时
  *         - other: 激活失败
  */
-static esp_err_t run_activation_loop(core_t *me,
+static esp_err_t run_activation_loop(core_handle_t *me,
                                      uint32_t activation_start_ms);
 
 /**
@@ -94,7 +94,7 @@ static esp_err_t run_activation_loop(core_t *me,
  *         - ESP_ERR_NOT_FINISHED: 当前阶段仍需等待
  *         - other: 当前阶段失败
  */
-static esp_err_t run_activation_step(core_t *me,
+static esp_err_t run_activation_step(core_handle_t *me,
                                      uint32_t activation_start_ms);
 
 /**
@@ -103,7 +103,7 @@ static esp_err_t run_activation_step(core_t *me,
  * @param[in] me LTE 核心服务句柄
  * @param[in] step 网络激活阶段
  */
-static void set_activation_step(core_t *me, net_mgr_step_t step);
+static void set_activation_step(core_handle_t *me, net_mgr_step_t step);
 
 /**
  * @brief 等待下一次网络激活轮询
@@ -115,7 +115,7 @@ static void set_activation_step(core_t *me, net_mgr_step_t step);
  *         - ESP_ERR_INVALID_STATE: Core 正在销毁
  *         - ESP_ERR_TIMEOUT: 网络激活已超时
  */
-static esp_err_t wait_next_poll(core_t *me, uint32_t activation_start_ms);
+static esp_err_t wait_next_poll(core_handle_t *me, uint32_t activation_start_ms);
 
 /**
  * @brief 完成网络激活
@@ -126,7 +126,7 @@ static esp_err_t wait_next_poll(core_t *me, uint32_t activation_start_ms);
  *         - ESP_OK: 成功
  *         - other: 状态设置或事件发布失败
  */
-static esp_err_t complete_activation(core_t *me,
+static esp_err_t complete_activation(core_handle_t *me,
                                      const modem_pdp_context_t *pdp);
 
 /**
@@ -140,7 +140,7 @@ static esp_err_t complete_activation(core_t *me,
  *         - ESP_ERR_TIMEOUT: 网络激活已超时
  *         - other: 前置条件查询失败
  */
-static esp_err_t classify_pdp_activation_invalid_state(core_t *me,
+static esp_err_t classify_pdp_activation_invalid_state(core_handle_t *me,
                                                        uint32_t activation_start_ms);
 
 /**
@@ -152,7 +152,7 @@ static esp_err_t classify_pdp_activation_invalid_state(core_t *me,
  *         - true: 已超时
  *         - false: 未超时
  */
-static bool activation_timed_out(core_t *me, uint32_t activation_start_ms);
+static bool activation_timed_out(core_handle_t *me, uint32_t activation_start_ms);
 
 /**
  * @brief 检查网络激活是否应继续
@@ -164,7 +164,7 @@ static bool activation_timed_out(core_t *me, uint32_t activation_start_ms);
  *         - ESP_ERR_INVALID_STATE: Core 正在销毁
  *         - ESP_ERR_TIMEOUT: 网络激活已超时
  */
-static esp_err_t check_activation_continue(core_t *me,
+static esp_err_t check_activation_continue(core_handle_t *me,
                                             uint32_t activation_start_ms);
 
 /**
@@ -174,7 +174,7 @@ static esp_err_t check_activation_continue(core_t *me,
  * @param[in] err 错误码
  * @return 传入的错误码
  */
-static esp_err_t fail_activation(core_t *me, esp_err_t err);
+static esp_err_t fail_activation(core_handle_t *me, esp_err_t err);
 
 /**
  * @brief 判断网络注册状态是否就绪
@@ -215,7 +215,7 @@ static bool registration_denied(modem_reg_status_t status);
  *         - true: 主 PDP 上下文
  *         - false: 非主 PDP 上下文
  */
-static bool is_primary_pdp(core_t *me, const modem_pdp_context_t *pdp);
+static bool is_primary_pdp(core_handle_t *me, const modem_pdp_context_t *pdp);
 
 /**
  * @brief 发布网络状态事件
@@ -225,7 +225,7 @@ static bool is_primary_pdp(core_t *me, const modem_pdp_context_t *pdp);
  * @param[in] net_state LTE 网络状态
  * @param[in] error_code 错误码
  */
-static void post_net_state(core_t *me, core_event_id_t event_id,
+static void post_net_state(core_handle_t *me, core_event_id_t event_id,
                            core_net_state_t net_state, int error_code);
 
 /**********************
@@ -239,7 +239,7 @@ static void post_net_state(core_t *me, core_event_id_t event_id,
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-esp_err_t net_mgr_init(core_t *me)
+esp_err_t net_mgr_init(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -267,7 +267,7 @@ esp_err_t net_mgr_init(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t net_mgr_deinit(core_t *me)
+esp_err_t net_mgr_deinit(core_handle_t *me)
 {
     if (!me) {
         return ESP_ERR_INVALID_ARG;
@@ -337,7 +337,7 @@ esp_err_t net_mgr_deinit(core_t *me)
     return ESP_OK;
 }
 
-void net_mgr_cancel_reconnect(core_t *me)
+void net_mgr_cancel_reconnect(core_handle_t *me)
 {
     if (!me || !me->net_mgr.reconnect_timer) {
         return;
@@ -348,7 +348,7 @@ void net_mgr_cancel_reconnect(core_t *me)
     }
 }
 
-void net_mgr_set_reconnect_enabled(core_t *me, bool enabled)
+void net_mgr_set_reconnect_enabled(core_handle_t *me, bool enabled)
 {
     if (!me) {
         return;
@@ -357,7 +357,7 @@ void net_mgr_set_reconnect_enabled(core_t *me, bool enabled)
     me->net_mgr.reconnect_enabled = enabled;
 }
 
-esp_err_t net_mgr_get_state(core_t *me, core_net_state_t *state)
+esp_err_t net_mgr_get_state(core_handle_t *me, core_net_state_t *state)
 {
     ESP_RETURN_ON_FALSE(me && state && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -369,7 +369,7 @@ esp_err_t net_mgr_get_state(core_t *me, core_net_state_t *state)
     return ESP_OK;
 }
 
-esp_err_t net_mgr_set_state(core_t *me, core_net_state_t state)
+esp_err_t net_mgr_set_state(core_handle_t *me, core_net_state_t state)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(state >= CORE_NET_STATE_OFFLINE &&
@@ -388,7 +388,7 @@ esp_err_t net_mgr_set_state(core_t *me, core_net_state_t state)
     return ESP_OK;
 }
 
-esp_err_t net_mgr_start_activation(core_t *me)
+esp_err_t net_mgr_start_activation(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->modem, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -413,7 +413,7 @@ esp_err_t net_mgr_start_activation(core_t *me)
     return fail_activation(me, ret);
 }
 
-esp_err_t net_mgr_deactivate(core_t *me)
+esp_err_t net_mgr_deactivate(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->modem, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -443,7 +443,7 @@ esp_err_t net_mgr_deactivate(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t net_mgr_handle_pdp_activated(core_t *me,
+esp_err_t net_mgr_handle_pdp_activated(core_handle_t *me,
                                        const modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -472,7 +472,7 @@ esp_err_t net_mgr_handle_pdp_activated(core_t *me,
     return complete_activation(me, pdp);
 }
 
-esp_err_t net_mgr_handle_pdp_deactivated(core_t *me,
+esp_err_t net_mgr_handle_pdp_deactivated(core_handle_t *me,
                                           const modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -557,13 +557,13 @@ static esp_err_t wait_timer_service_idle(void)
     return ESP_OK;
 }
 
-static bool activation_timed_out(core_t *me, uint32_t activation_start_ms)
+static bool activation_timed_out(core_handle_t *me, uint32_t activation_start_ms)
 {
     return me &&
            now_ms() - activation_start_ms >= me->config.net_activate_timeout_ms;
 }
 
-static esp_err_t check_activation_continue(core_t *me,
+static esp_err_t check_activation_continue(core_handle_t *me,
                                             uint32_t activation_start_ms)
 {
     if (core_is_destroying(me)) {
@@ -578,7 +578,7 @@ static esp_err_t check_activation_continue(core_t *me,
 
 static void reconnect_timer_cb(TimerHandle_t timer)
 {
-    core_t *core = (core_t *)pvTimerGetTimerID(timer);
+    core_handle_t *core = (core_handle_t *)pvTimerGetTimerID(timer);
     if (!core) {
         return;
     }
@@ -614,7 +614,7 @@ static void reconnect_timer_cb(TimerHandle_t timer)
     }
 }
 
-static esp_err_t enter_activation(core_t *me)
+static esp_err_t enter_activation(core_handle_t *me)
 {
     esp_err_t ret = core_set_state(me, CORE_STATE_NET_ACTIVATING);
     if (ret != ESP_OK) {
@@ -633,7 +633,7 @@ static esp_err_t enter_activation(core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t run_activation_loop(core_t *me,
+static esp_err_t run_activation_loop(core_handle_t *me,
                                      uint32_t activation_start_ms)
 {
     while (true) {
@@ -661,7 +661,7 @@ static esp_err_t run_activation_loop(core_t *me,
     }
 }
 
-static esp_err_t run_activation_step(core_t *me,
+static esp_err_t run_activation_step(core_handle_t *me,
                                      uint32_t activation_start_ms)
 {
     esp_err_t ret = ESP_OK;
@@ -825,13 +825,13 @@ static esp_err_t run_activation_step(core_t *me,
     }
 }
 
-static void set_activation_step(core_t *me, net_mgr_step_t step)
+static void set_activation_step(core_handle_t *me, net_mgr_step_t step)
 {
     me->net_mgr.current_step = step;
     me->net_mgr.step_start_time_ms = now_ms();
 }
 
-static esp_err_t wait_next_poll(core_t *me, uint32_t activation_start_ms)
+static esp_err_t wait_next_poll(core_handle_t *me, uint32_t activation_start_ms)
 {
     esp_err_t ret = check_activation_continue(me, activation_start_ms);
     if (ret != ESP_OK) {
@@ -854,7 +854,7 @@ static esp_err_t wait_next_poll(core_t *me, uint32_t activation_start_ms)
     return check_activation_continue(me, activation_start_ms);
 }
 
-static esp_err_t classify_pdp_activation_invalid_state(core_t *me,
+static esp_err_t classify_pdp_activation_invalid_state(core_handle_t *me,
                                                        uint32_t activation_start_ms)
 {
     modem_sim_status_t sim_status = MODEM_SIM_UNKNOWN;
@@ -912,7 +912,7 @@ static esp_err_t classify_pdp_activation_invalid_state(core_t *me,
     return ESP_ERR_INVALID_STATE;
 }
 
-static esp_err_t complete_activation(core_t *me,
+static esp_err_t complete_activation(core_handle_t *me,
                                      const modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(pdp && pdp->active && pdp->ip_addr[0] != '\0',
@@ -934,7 +934,7 @@ static esp_err_t complete_activation(core_t *me,
     return ESP_OK;
 }
 
-static esp_err_t fail_activation(core_t *me, esp_err_t err)
+static esp_err_t fail_activation(core_handle_t *me, esp_err_t err)
 {
     if (core_is_destroying(me)) {
         return ESP_ERR_INVALID_STATE;
@@ -973,12 +973,12 @@ static bool registration_denied(modem_reg_status_t status)
     return status == MODEM_REG_DENIED;
 }
 
-static bool is_primary_pdp(core_t *me, const modem_pdp_context_t *pdp)
+static bool is_primary_pdp(core_handle_t *me, const modem_pdp_context_t *pdp)
 {
     return me && pdp && pdp->cid == me->config.primary_cid;
 }
 
-static void post_net_state(core_t *me, core_event_id_t event_id,
+static void post_net_state(core_handle_t *me, core_event_id_t event_id,
                            core_net_state_t net_state, int error_code)
 {
     core_event_data_t data = {

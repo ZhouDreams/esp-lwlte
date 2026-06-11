@@ -60,7 +60,7 @@
  * @param[in] data 事件数据
  * @param[in] user_ctx 用户上下文
  */
-static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
+static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
                          const lwlte_event_data_t *data, void *user_ctx);
 
 /**
@@ -68,7 +68,7 @@ static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
  * @details Run one Ping test
  * @param[in] lte LTE 用户门面句柄
  */
-static void do_ping(lwlte_t *lte);
+static void do_ping(lwlte_handle_t *lte);
 
 /**
  * @brief 进入常驻等待
@@ -96,7 +96,7 @@ void example_ml307r_basic_connect_run(void)
     s_net_error = false;
     s_last_error = 0;
 
-    lwlte_t *lte = NULL;
+    lwlte_handle_t *lte = NULL;
     const lwlte_ml307r_config_t config = {
         .uart_num = EXAMPLE_LTE_UART_NUM,
         .uart_tx_pin = EXAMPLE_LTE_UART_TX_PIN,
@@ -160,7 +160,7 @@ void example_ml307r_basic_connect_run(void)
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
+static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
                          const lwlte_event_data_t *data, void *user_ctx)
 {
     (void)lte;
@@ -195,7 +195,7 @@ static void lte_event_cb(lwlte_t *lte, lwlte_event_id_t event_id,
     }
 }
 
-static void do_ping(lwlte_t *lte)
+static void do_ping(lwlte_handle_t *lte)
 {
     const lwlte_ping_request_t req = {
         .host = EXAMPLE_PING_HOST,

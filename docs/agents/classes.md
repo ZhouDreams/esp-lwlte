@@ -26,7 +26,7 @@ AT Engine 是内部最底层，负责 AT 协议解析和 UART 硬件操作。该
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
 | `at_engine_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | UART 硬件参数 + 任务参数 |
-| `at_engine_t` | 层间 API (opaque) | Modem 层 + Facade 模块 factory | 句柄 | AT Engine 实例句柄 |
+| `at_engine_handle_t` | 层间 API (opaque) | Modem 层 + Facade 模块 factory | 句柄 | AT Engine 实例句柄 |
 | `at_response_t` | 层间 API | Modem 层 | 值对象 | 一次 AT 命令的响应结果 |
 | `at_cmd_options_t` | 层间 API | Modem 层 | 值对象 | 单次命令的超时、成功终止匹配和 OK 处理选项 |
 | `at_cmd_success_match_t` | 层间 API | Modem 层 | 值对象 | 自定义成功响应匹配规则 |
@@ -60,7 +60,7 @@ typedef struct {
 } at_engine_config_t;
 ```
 
-### 1.3 `at_engine_t` — 引擎句柄
+### 1.3 `at_engine_handle_t` — 引擎句柄
 
 **所属层**：AT Engine  
 **可见性**：层间 API (opaque) — Facade 模块 factory 创建，Modem 层持有句柄；struct 定义在 `.c` 中
@@ -69,28 +69,28 @@ typedef struct {
 **层间方法**：
 
 ```c
-at_engine_t *at_engine_create(const at_engine_config_t *config);
-esp_err_t    at_engine_destroy(at_engine_t *me);
+at_engine_handle_t *at_engine_create(const at_engine_config_t *config);
+esp_err_t    at_engine_destroy(at_engine_handle_t *me);
 
 /* 发送普通 AT 命令（阻塞调用，直到 OK/ERROR/CME/CMS 或超时） */
-esp_err_t    at_engine_send_cmd(at_engine_t *me, const char *cmd,
+esp_err_t    at_engine_send_cmd(at_engine_handle_t *me, const char *cmd,
                                 at_response_t *response, uint32_t timeout_ms);
 
 /* 使用单次命令选项发送 AT 命令，支持自定义成功终止响应 */
-esp_err_t    at_engine_send_cmd_with_options(at_engine_t *me, const char *cmd,
+esp_err_t    at_engine_send_cmd_with_options(at_engine_handle_t *me, const char *cmd,
                                              at_response_t *response,
                                              const at_cmd_options_t *options);
 
 /* URC 回调注册 / 注销 */
-esp_err_t    at_engine_register_urc(at_engine_t *me, const char *prefix,
+esp_err_t    at_engine_register_urc(at_engine_handle_t *me, const char *prefix,
                                      at_urc_handler_t *handler);
-esp_err_t    at_engine_unregister_urc(at_engine_t *me, const char *prefix);
+esp_err_t    at_engine_unregister_urc(at_engine_handle_t *me, const char *prefix);
 ```
 
 **内部结构**（定义在 `.c` 或 `_priv.h`）：
 
 ```c
-struct at_engine {
+struct at_engine_handle {
     at_engine_config_t   config;              // 配置快照
     uart_port_t          uart_num;            // UART 端口号
     QueueHandle_t        uart_queue;          // ESP-IDF UART 事件队列
@@ -231,7 +231,7 @@ typedef struct at_urc_handler {
 ```c
 /* Modem Adapter 定义 URC handler */
 static void cgev_handler(const char *prefix, const char *line, void *user_ctx) {
-    modem_t *me = (modem_t *)user_ctx;
+    modem_handle_t *me = (modem_handle_t *)user_ctx;
     // "+CGEV: ME PDN DEACT 1" → MODEM_EVENT_PDP_DEACTIVATED
     // 生成 modem_event_t 并投递到 me->event_queue；
     // Core 之后由 Modem event_task 通知。
@@ -327,13 +327,13 @@ typedef struct {
 
 Modem Adapter 是 Core Service 的紧邻下层，负责把 Core 的语义操作翻译为具体模块的 AT 指令，并把模块 URC 翻译为 Core 可理解的事件。该层包含通用 Modem 基类、内部 ops 多态表、语义值对象，以及 Air780EP 具体子类。
 
-Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT Engine，不写 AT 指令字符串，也不 include 具体模块头文件。`modem_ops_t` 是 Modem 层内部多态机制，包装 API 内部再调用 `me->ops->method(me, ...)`。
+Core 只通过 `modem_*` 层间包装 API 使用 `modem_handle_t`，不直接调用 AT Engine，不写 AT 指令字符串，也不 include 具体模块头文件。`modem_ops_t` 是 Modem 层内部多态机制，包装 API 内部再调用 `me->ops->method(me, ...)`。
 
 ### 2.1 类总览
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
-| `modem_t` | 层间 API (opaque) + 内部基类 | Core + Facade 模块 factory + Modem 实现 | 抽象基类/句柄 | Core 持有的 Modem 句柄，内部保存 ops、AT Engine、事件队列等公共资源 |
+| `modem_handle_t` | 层间 API (opaque) + 内部基类 | Core + Facade 模块 factory + Modem 实现 | 抽象基类/句柄 | Core 持有的 Modem 句柄，内部保存 ops、AT Engine、事件队列等公共资源 |
 | `modem_ops_t` | 内部 | Modem 通用包装函数 + 具体子类 | 虚函数表 | 不暴露给 Core，子类用 `static const` ops 表实现多态 |
 | `modem_state_t` | 层间 API | Core + Modem 层 | 状态枚举 | Modem 层本地生命周期和低层连接状态 |
 | `modem_reg_status_t` | 层间 API | Core + Modem 层 | 状态枚举 | 蜂窝网络注册状态，来自 `+CEREG` / `+CGREG` / `+CREG` |
@@ -353,60 +353,60 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_t`，不直接调用 AT 
 | `modem_protocol_data_t` | 层间 API | Core + Modem 层 | 值对象 | Modem 上报给 Core 的协议数据事件 |
 | `modem_event_callback_t` | 层间 API | Core + Modem 层 | 回调接口 | Core 注册，Modem event task 调用 |
 | `modem_air780ep_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Air780EP GPIO、事件任务、默认超时等参数 |
-| `modem_air780ep_t` | 内部 | Air780EP 实现自身 | 子类 | 继承 `modem_t`，实现 Air780EP AT 指令和 URC 翻译 |
+| `modem_air780ep_t` | 内部 | Air780EP 实现自身 | 子类 | 继承 `modem_handle_t`，实现 Air780EP AT 指令和 URC 翻译 |
 | `air780ep_cmd_ctx_t` | 内部 | Air780EP 实现自身 | 工作上下文 | 单次 AT 命令解析的临时数据 |
 
-### 2.2 `modem_t` — 通用 Modem 句柄和基类
+### 2.2 `modem_handle_t` — 通用 Modem 句柄和基类
 
 **所属层**：Modem Adapter
-**可见性**：层间 API opaque + 内部结构体；`src/modem/modem.h` 只暴露前置声明，`struct modem` 定义在 `src/modem/modem_priv.h` 或 `.c` 中
+**可见性**：层间 API opaque + 内部结构体；`src/modem/modem.h` 只暴露前置声明，`struct modem_handle` 定义在 `src/modem/modem_priv.h` 或 `.c` 中
 **OOP 角色**：抽象基类 + 顶层句柄
 
 **公开类型**：
 
 ```c
-typedef struct modem modem_t;
+typedef struct modem_handle modem_handle_t;
 ```
 
-**声明顺序说明**：实际 `src/modem/modem.h` 中应先完成 `modem_t` 前置声明，再定义状态枚举、值对象、事件对象和回调类型，最后声明以下函数原型。本节为了说明 `modem_t` 的使用方式，先集中列出层间方法。
+**声明顺序说明**：实际 `src/modem/modem.h` 中应先完成 `modem_handle_t` 前置声明，再定义状态枚举、值对象、事件对象和回调类型，最后声明以下函数原型。本节为了说明 `modem_handle_t` 的使用方式，先集中列出层间方法。
 
 **层间方法**（`src/modem/modem.h`）：
 
 ```c
-esp_err_t modem_destroy(modem_t *me);
-esp_err_t modem_start(modem_t *me);
-esp_err_t modem_reset(modem_t *me);
+esp_err_t modem_destroy(modem_handle_t *me);
+esp_err_t modem_start(modem_handle_t *me);
+esp_err_t modem_reset(modem_handle_t *me);
 
-esp_err_t modem_register_event_callback(modem_t *me,
+esp_err_t modem_register_event_callback(modem_handle_t *me,
                                          modem_event_callback_t callback,
                                          void *user_ctx);
 
-esp_err_t modem_get_state(modem_t *me, modem_state_t *state);
-esp_err_t modem_get_info(modem_t *me, modem_info_t *info);
-esp_err_t modem_get_sim_status(modem_t *me, modem_sim_status_t *status);
-esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal);
-esp_err_t modem_get_registration(modem_t *me, modem_reg_status_t *status);
-esp_err_t modem_get_packet_attach_status(modem_t *me, bool *attached);
+esp_err_t modem_get_state(modem_handle_t *me, modem_state_t *state);
+esp_err_t modem_get_info(modem_handle_t *me, modem_info_t *info);
+esp_err_t modem_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
+esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal);
+esp_err_t modem_get_registration(modem_handle_t *me, modem_reg_status_t *status);
+esp_err_t modem_get_packet_attach_status(modem_handle_t *me, bool *attached);
 
-esp_err_t modem_set_apn(modem_t *me, uint8_t cid, const char *apn);
-esp_err_t modem_activate_pdp(modem_t *me, uint8_t cid);
-esp_err_t modem_deactivate_pdp(modem_t *me, uint8_t cid);
-esp_err_t modem_get_pdp_context(modem_t *me, uint8_t cid,
+esp_err_t modem_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
+esp_err_t modem_activate_pdp(modem_handle_t *me, uint8_t cid);
+esp_err_t modem_deactivate_pdp(modem_handle_t *me, uint8_t cid);
+esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
 
-esp_err_t modem_mqtt_configure(modem_t *me,
+esp_err_t modem_mqtt_configure(modem_handle_t *me,
                                const modem_mqtt_config_t *config);
-esp_err_t modem_mqtt_tcp_connect(modem_t *me);
-esp_err_t modem_mqtt_connect(modem_t *me);
-esp_err_t modem_mqtt_disconnect(modem_t *me);
-esp_err_t modem_mqtt_tcp_disconnect(modem_t *me);
-esp_err_t modem_mqtt_subscribe(modem_t *me,
+esp_err_t modem_mqtt_tcp_connect(modem_handle_t *me);
+esp_err_t modem_mqtt_connect(modem_handle_t *me);
+esp_err_t modem_mqtt_disconnect(modem_handle_t *me);
+esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me);
+esp_err_t modem_mqtt_subscribe(modem_handle_t *me,
                                const modem_mqtt_topic_t *topic);
-esp_err_t modem_mqtt_unsubscribe(modem_t *me,
+esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
                                  const modem_mqtt_topic_t *topic);
-esp_err_t modem_mqtt_publish(modem_t *me,
+esp_err_t modem_mqtt_publish(modem_handle_t *me,
                              const modem_mqtt_publish_t *publish);
-esp_err_t modem_ping(modem_t *me,
+esp_err_t modem_ping(modem_handle_t *me,
                      const modem_ping_request_t *request,
                      modem_ping_reply_t *replies,
                      size_t max_replies,
@@ -425,7 +425,7 @@ esp_err_t modem_ping(modem_t *me,
 - `name`：模块实现名称，如 `air780ep`，用于日志和诊断。
 
 **关键设计决策**：
-- `modem_t` 对 Core opaque，Core 不直接访问 `ops` 或内部字段。
+- `modem_handle_t` 对 Core opaque，Core 不直接访问 `ops` 或内部字段。
 - 通用包装 API 统一做参数检查、状态检查和必填方法检查。
 - `event_queue + event_task` 属于基类资源，所有具体模块共用同一套上行事件解耦机制。
 - `at` 句柄由 Facade 模块 factory 创建并传入具体模块工厂；Modem 不拥有 AT Engine 生命周期，只在 destroy 前注销自己注册的 URC handler。
@@ -493,32 +493,32 @@ typedef struct {
 
 ```c
 typedef struct modem_ops {
-    esp_err_t (*destroy)(modem_t *me);
-    esp_err_t (*start)(modem_t *me);
-    esp_err_t (*reset)(modem_t *me);
-    esp_err_t (*get_info)(modem_t *me, modem_info_t *info);
-    esp_err_t (*get_sim_status)(modem_t *me, modem_sim_status_t *status);
-    esp_err_t (*get_signal)(modem_t *me, modem_signal_t *signal);
-    esp_err_t (*get_registration)(modem_t *me, modem_reg_status_t *status);
-    esp_err_t (*get_packet_attach_status)(modem_t *me, bool *attached);
-    esp_err_t (*set_apn)(modem_t *me, uint8_t cid, const char *apn);
-    esp_err_t (*activate_pdp)(modem_t *me, uint8_t cid);
-    esp_err_t (*deactivate_pdp)(modem_t *me, uint8_t cid);
-    esp_err_t (*get_pdp_context)(modem_t *me, uint8_t cid,
+    esp_err_t (*destroy)(modem_handle_t *me);
+    esp_err_t (*start)(modem_handle_t *me);
+    esp_err_t (*reset)(modem_handle_t *me);
+    esp_err_t (*get_info)(modem_handle_t *me, modem_info_t *info);
+    esp_err_t (*get_sim_status)(modem_handle_t *me, modem_sim_status_t *status);
+    esp_err_t (*get_signal)(modem_handle_t *me, modem_signal_t *signal);
+    esp_err_t (*get_registration)(modem_handle_t *me, modem_reg_status_t *status);
+    esp_err_t (*get_packet_attach_status)(modem_handle_t *me, bool *attached);
+    esp_err_t (*set_apn)(modem_handle_t *me, uint8_t cid, const char *apn);
+    esp_err_t (*activate_pdp)(modem_handle_t *me, uint8_t cid);
+    esp_err_t (*deactivate_pdp)(modem_handle_t *me, uint8_t cid);
+    esp_err_t (*get_pdp_context)(modem_handle_t *me, uint8_t cid,
                                   modem_pdp_context_t *pdp);
-    esp_err_t (*mqtt_configure)(modem_t *me,
+    esp_err_t (*mqtt_configure)(modem_handle_t *me,
                                 const modem_mqtt_config_t *config);
-    esp_err_t (*mqtt_tcp_connect)(modem_t *me);
-    esp_err_t (*mqtt_connect)(modem_t *me);
-    esp_err_t (*mqtt_disconnect)(modem_t *me);
-    esp_err_t (*mqtt_tcp_disconnect)(modem_t *me);
-    esp_err_t (*mqtt_subscribe)(modem_t *me,
+    esp_err_t (*mqtt_tcp_connect)(modem_handle_t *me);
+    esp_err_t (*mqtt_connect)(modem_handle_t *me);
+    esp_err_t (*mqtt_disconnect)(modem_handle_t *me);
+    esp_err_t (*mqtt_tcp_disconnect)(modem_handle_t *me);
+    esp_err_t (*mqtt_subscribe)(modem_handle_t *me,
                                 const modem_mqtt_topic_t *topic);
-    esp_err_t (*mqtt_unsubscribe)(modem_t *me,
+    esp_err_t (*mqtt_unsubscribe)(modem_handle_t *me,
                                   const modem_mqtt_topic_t *topic);
-    esp_err_t (*mqtt_publish)(modem_t *me,
+    esp_err_t (*mqtt_publish)(modem_handle_t *me,
                               const modem_mqtt_publish_t *publish);
-    esp_err_t (*ping)(modem_t *me,
+    esp_err_t (*ping)(modem_handle_t *me,
                       const modem_ping_request_t *request,
                       modem_ping_reply_t *replies,
                       size_t max_replies,
@@ -529,7 +529,7 @@ typedef struct modem_ops {
 **调用模式**：
 
 ```c
-esp_err_t modem_get_signal(modem_t *me, modem_signal_t *signal)
+esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->get_signal,
@@ -738,12 +738,12 @@ typedef struct {
     } data;
 } modem_event_t;
 
-typedef void (*modem_event_callback_t)(modem_t *modem,
+typedef void (*modem_event_callback_t)(modem_handle_t *modem,
                                        const modem_event_t *event,
                                        void *user_ctx);
 ```
 
-**硬约束**：Air780EP 的 AT Engine URC handler 不得直接调用 `modem_event_callback_t`。URC handler 只能把 `modem_event_t` 投递到 `modem_t.event_queue`，由 `modem_t.event_task` 调用 Core 注册的回调。
+**硬约束**：Air780EP 的 AT Engine URC handler 不得直接调用 `modem_event_callback_t`。URC handler 只能把 `modem_event_t` 投递到 Modem 基类对象的 `event_queue`，由 Modem 基类对象的 `event_task` 调用 Core 注册的回调。
 
 `MODEM_EVENT_PROTOCOL_DATA` 和 `MODEM_EVENT_PROTOCOL_CLOSED` 追加在 `MODEM_EVENT_ERROR` 之后，避免改变既有事件 ID 的数值。
 
@@ -766,13 +766,13 @@ typedef struct {
     int        event_task_priority;     // Modem event task 优先级
 } modem_air780ep_config_t;
 
-modem_t *modem_air780ep_create(at_engine_t *at,
+modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
                                const modem_air780ep_config_t *config);
 ```
 
 **关键设计决策**：
 - `modem_air780ep_create()` 是具体模块工厂，只应出现在 Facade 模块 factory 装配代码中。
-- Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_t *`。
+- Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_handle_t *`。
 - GPIO 控制属于 Modem 层职责，Air780EP 实现可以直接使用 ESP-IDF `driver/gpio.h`。
 - 硬件复位通过 EN 引脚实现：拉低 EN，等待 reset_pulse_ms，再拉高 EN；随后在 ready 总超时内轮询 `AT` 到 `OK`，再执行基础 AT 初始化命令。`air780ep_start()` 和 `air780ep_reset()` 都使用此方式。
 
@@ -786,7 +786,7 @@ modem_t *modem_air780ep_create(at_engine_t *at,
 #define AIR780EP_MAX_PDP_CONTEXTS  4
 
 typedef struct {
-    modem_t                  base;          // 必须是第一个字段，实现向上转型
+    modem_handle_t                  base;          // 必须是第一个字段，实现向上转型
     modem_air780ep_config_t  config;        // 配置快照
     at_urc_handler_t         cpin_handler;  // +CPIN: URC handler
     at_urc_handler_t         creg_handler;  // +CREG: URC handler
@@ -813,7 +813,7 @@ typedef struct {
 
 **关键设计决策**：
 - `base` 必须位于结构体第一个字段，子类返回给上层时使用 `&self->base`。
-- 从 `modem_t *` 反推 `modem_air780ep_t *` 时使用 `container_of(me, modem_air780ep_t, base)`，禁止裸强转。
+- 从 `modem_handle_t *` 反推 `modem_air780ep_t *` 时使用 `container_of(me, modem_air780ep_t, base)`，禁止裸强转。
 - URC handler 节点生命周期由 Air780EP 对象拥有，基础 AT 初始化完成后注册 `+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT`、`+MSUB:`，`destroy` 时注销。
 - `+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:` 既可能是查询响应，也可能是空闲期 URC；Air780EP handler 只处理 AT Engine 分发出来的空闲期 URC，命令响应由对应 ops 方法解析。
 - `+MSUB:` 是当前 MQTT 下行数据路径入口；handler 只在 `mqtt_data_enabled` 后复制 topic/payload 并投递 `MODEM_EVENT_PROTOCOL_DATA`。
@@ -886,24 +886,24 @@ typedef struct {
 
 ## 3. Core Service（核心服务层）
 
-Core Service 是内部 service 层，负责网络状态机、PDP 管理和连接恢复。Core 只通过 `modem_*` 包装 API 操作 `modem_t`，不直接调用 AT Engine，不写 AT 指令字符串。Core 通过 `esp_event` 和回调把状态变化交给 LWLTE Facade，由 Facade 再翻译为用户事件。
+Core Service 是内部 service 层，负责网络状态机、PDP 管理和连接恢复。Core 只通过 `modem_*` 包装 API 操作 `modem_handle_t`，不直接调用 AT Engine，不写 AT 指令字符串。Core 通过 `esp_event` 和回调把状态变化交给 LWLTE Facade，由 Facade 再翻译为用户事件。
 
 ```
 Core Service
-├── core_t        层间 API opaque 句柄，Facade 持有并调用
-├── core_fsm_t    Core 内部组件，属于 core_t，负责串行处理 Core 信号
-├── net_mgr_t     Core 内部组件，属于 core_t，负责网络激活和重连策略
-└── pdp_mgr_t     Core 内部组件，属于 core_t，负责 PDP 上下文状态缓存
+├── core_handle_t        层间 API opaque 句柄，Facade 持有并调用
+├── core_fsm_t    Core 内部组件，属于 core_handle_t，负责串行处理 Core 信号
+├── net_mgr_t     Core 内部组件，属于 core_handle_t，负责网络激活和重连策略
+└── pdp_mgr_t     Core 内部组件，属于 core_handle_t，负责 PDP 上下文状态缓存
 ```
 
-`net_mgr_t`、`pdp_mgr_t`、`core_fsm_t` 不是 `core_t` 子类。它们不能向上转型为 `core_t *`，也不实现 `core_ops`；它们是 `core_t` 的组合成员。`modem_air780ep_t` 才是 `modem_t` 的子类，因为它以 `modem_t base` 为第一个成员并实现 `modem_ops`。
+`net_mgr_t`、`pdp_mgr_t`、`core_fsm_t` 不是 `core_handle_t` 子类。它们不能向上转型为 `core_handle_t *`，也不实现 `core_ops`；它们是 `core_handle_t` 的组合成员。`modem_air780ep_t` 才是 `modem_handle_t` 的子类，因为它以 `modem_handle_t base` 为第一个成员并实现 `modem_ops`。
 
 ### 3.1 类总览
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
 | `core_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Core 创建参数 |
-| `core_t` | 层间 API (opaque) | Facade | 句柄 | Core Service 实例句柄 |
+| `core_handle_t` | 层间 API (opaque) | Facade | 句柄 | Core Service 实例句柄 |
 | `core_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | Core 生命周期状态 |
 | `core_net_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | 网络连接状态 |
 | `core_event_id_t` | 层间 API | Facade + esp_event | 事件枚举 | Core 上行事件类型，同时作为 esp_event event_id |
@@ -944,7 +944,7 @@ typedef struct {
 
 Event loop 参数不放入 config，Core 内部用默认值创建。Modem 引用在 `core_create()` 参数中单独传入。Facade factory 只注入 APN、PDP 和 FSM 参数；用户通过 `lwlte_start()` 显式提交启动请求。
 
-### 3.3 `core_t` — Core 句柄
+### 3.3 `core_handle_t` — Core 句柄
 
 **所属层**：Core Service
 **可见性**：层间 API (opaque) — Facade 持有句柄；struct 定义在 `src/core/core_priv.h`
@@ -953,22 +953,22 @@ Event loop 参数不放入 config，Core 内部用默认值创建。Modem 引用
 **层间方法**（`src/core/core.h`）：
 
 ```c
-core_t *core_create(const core_config_t *config, modem_t *modem);
-esp_err_t core_destroy(core_t *me);
-esp_err_t core_start(core_t *me);
-esp_err_t core_stop(core_t *me);
+core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
+esp_err_t core_destroy(core_handle_t *me);
+esp_err_t core_start(core_handle_t *me);
+esp_err_t core_stop(core_handle_t *me);
 
-esp_err_t core_register_event_callback(core_t *me,
+esp_err_t core_register_event_callback(core_handle_t *me,
                                        core_event_callback_t callback,
                                        void *user_ctx);
-esp_event_loop_handle_t core_get_event_loop(core_t *me);
+esp_event_loop_handle_t core_get_event_loop(core_handle_t *me);
 
-esp_err_t core_get_state(core_t *me, core_state_t *state);
-esp_err_t core_get_net_state(core_t *me, core_net_state_t *state);
+esp_err_t core_get_state(core_handle_t *me, core_state_t *state);
+esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
 
-esp_err_t core_connect(core_t *me);
-esp_err_t core_disconnect(core_t *me);
-esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
+esp_err_t core_connect(core_handle_t *me);
+esp_err_t core_disconnect(core_handle_t *me);
+esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 ```
 
 `core_start()` 是 Facade `lwlte_start()` 的内部入口，只投递 `CORE_SIG_START` 后返回。Core FSM 在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程；最终网络 online 通过 `CORE_EVENT_NET_ONLINE` 传给 Facade，再映射为 `LWLTE_EVENT_NET_ONLINE`。
@@ -978,9 +978,9 @@ esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
 **关键内部字段类别**（非完整代码快照，实际以 `src/core/core_priv.h` 为准）：
 
 - `config`：Core 层间配置快照，保存 APN、PDP 和 FSM 参数。
-- `modem`：Facade factory 注入的 `modem_t` 句柄，Core 借用但不拥有生命周期。
+- `modem`：Facade factory 注入的 `modem_handle_t` 句柄，Core 借用但不拥有生命周期。
 - `event_loop`、`event_callback`、`event_user_ctx`：Core 事件分发和 Facade 桥接回调。
-- `fsm`、`net_mgr`、`pdp_mgr`：`core_t` 的组合成员，分别负责信号串行化、网络激活/重连、PDP 缓存。
+- `fsm`、`net_mgr`、`pdp_mgr`：`core_handle_t` 的组合成员，分别负责信号串行化、网络激活/重连、PDP 缓存。
 - `state`、`destroying`、`lock`：Core 生命周期状态和并发保护。
 
 **关键设计决策**：
@@ -1047,7 +1047,7 @@ typedef struct {
     core_protocol_data_t protocol_data;
 } core_event_data_t;
 
-typedef void (*core_event_callback_t)(core_t *core,
+typedef void (*core_event_callback_t)(core_handle_t *core,
                                       core_event_id_t event_id,
                                       const core_event_data_t *data,
                                       void *user_ctx);
@@ -1102,7 +1102,7 @@ typedef struct {
     uint32_t avg_time_ms;
 } core_ping_summary_t;
 
-typedef void (*core_cmd_done_callback_t)(core_t *core,
+typedef void (*core_cmd_done_callback_t)(core_handle_t *core,
                                          core_cmd_type_t type,
                                          core_cmd_result_t result,
                                          const void *result_data,
@@ -1175,7 +1175,7 @@ typedef struct {
 
 **所属层**：Core Service
 **可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
-**OOP 角色**：`core_t` 的组合成员，管理 FSM 线程和信号队列
+**OOP 角色**：`core_handle_t` 的组合成员，管理 FSM 线程和信号队列
 
 ```c
 typedef enum {
@@ -1215,7 +1215,7 @@ typedef struct {
 
 **所属层**：Core Service
 **可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
-**OOP 角色**：`core_t` 的组合成员，管理网络激活子状态机 + 重连定时器
+**OOP 角色**：`core_handle_t` 的组合成员，管理网络激活子状态机 + 重连定时器
 
 ```c
 typedef enum {
@@ -1270,7 +1270,7 @@ typedef struct {
 
 **所属层**：Core Service
 **可见性**：模块私有 API — `src/core/core_priv.h`，只允许 Core 源码 include
-**OOP 角色**：`core_t` 的组合成员，缓存 PDP context 状态
+**OOP 角色**：`core_handle_t` 的组合成员，缓存 PDP context 状态
 
 ```c
 #define CORE_MAX_PDP_CONTEXTS 4
@@ -1375,16 +1375,16 @@ core_config_t core_cfg = {
     .fsm_task_priority       = 8,
 };
 
-core_t *core = core_create(&core_cfg, modem);
+core_handle_t *core = core_create(&core_cfg, modem);
 core_register_event_callback(core, facade_core_event_handler, lte);
 ```
 
 Facade 模块 factory 到这里结束，只完成装配和事件桥接，不启动模块。用户调用 `lwlte_start()` 后，Facade 通用 API 再把启动请求交给 Core：
 
 ```c
-esp_err_t lwlte_start(lwlte_t *me)
+esp_err_t lwlte_start(lwlte_handle_t *me)
 {
-    core_t *core = NULL;
+    core_handle_t *core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     if (ret != ESP_OK) {
         return ret;
@@ -1397,8 +1397,8 @@ esp_err_t lwlte_start(lwlte_t *me)
 ```
 
 **关键设计决策**：
-- `core_create()` 接收 `modem_t *`，和 `modem_air780ep_create()` 接收 `at_engine_t *` 的模式一致。
-- Core 不 include 具体模块头文件，只认识 `modem_t`。
+- `core_create()` 接收 `modem_handle_t *`，和 `modem_air780ep_create()` 接收 `at_engine_handle_t *` 的模式一致。
+- Core 不 include 具体模块头文件，只认识 `modem_handle_t`。
 - 换模块时 Core 代码零改动。
 
 **错误处理规则**：
@@ -1427,7 +1427,7 @@ MQTT 可以直接使用 ESP-IDF / FreeRTOS API，例如 `xTaskCreate()`、`xQueu
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
 | `mqtt_client_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Broker、client_id、认证、keepalive、FSM 参数 |
-| `mqtt_client_t` | 层间 API (opaque) | Facade | service 句柄 | MQTT Client Service 实例 |
+| `mqtt_client_handle_t` | 层间 API (opaque) | Facade | service 句柄 | MQTT Client Service 实例 |
 | `mqtt_client_transport_t` | 层间 API | Facade + MQTT 内部 | 枚举 | MQTT 传输类型，第一版只支持 Plain TCP |
 | `mqtt_client_state_t` | 层间 API | Facade + MQTT 内部 | 状态枚举 | MQTT 生命周期和连接状态 |
 | `mqtt_client_event_id_t` | 层间 API | Facade + esp_event | 事件枚举 | MQTT 上行事件类型，同时作为 esp_event event_id |
@@ -1489,7 +1489,7 @@ typedef struct {
 
 `config->mqtt_client.enabled == false` 时 Facade 不创建 MQTT service，用户调用 `lwlte_mqtt_*` 返回 `ESP_ERR_INVALID_STATE`。`enabled == true` 时，`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t` 时按空字符串处理。
 
-### 4.3 `mqtt_client_t` — MQTT 客户端句柄
+### 4.3 `mqtt_client_handle_t` — MQTT 客户端句柄
 
 **所属层**：MQTT Client Service
 **可见性**：层间 API (opaque) — Facade 持有句柄；struct 定义在 `src/mqtt_client/mqtt_client_priv.h` 或 `.c` 中
@@ -1498,31 +1498,31 @@ typedef struct {
 **层间方法**（`src/mqtt_client/mqtt_client.h`）：
 
 ```c
-mqtt_client_t *mqtt_client_create(const mqtt_client_config_t *config,
-                                  core_t *core);
-esp_err_t mqtt_client_destroy(mqtt_client_t *me);
-esp_err_t mqtt_client_start(mqtt_client_t *me);
-esp_err_t mqtt_client_stop(mqtt_client_t *me);
+mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
+                                  core_handle_t *core);
+esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me);
+esp_err_t mqtt_client_start(mqtt_client_handle_t *me);
+esp_err_t mqtt_client_stop(mqtt_client_handle_t *me);
 
-esp_err_t mqtt_client_register_event_callback(mqtt_client_t *me,
+esp_err_t mqtt_client_register_event_callback(mqtt_client_handle_t *me,
                                               mqtt_client_event_callback_t callback,
                                               void *user_ctx);
-esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_t *me);
+esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_handle_t *me);
 
-esp_err_t mqtt_client_get_state(mqtt_client_t *me,
+esp_err_t mqtt_client_get_state(mqtt_client_handle_t *me,
                                 mqtt_client_state_t *state);
-esp_err_t mqtt_client_subscribe(mqtt_client_t *me,
+esp_err_t mqtt_client_subscribe(mqtt_client_handle_t *me,
                                 const char *topic,
                                 uint8_t qos);
-esp_err_t mqtt_client_unsubscribe(mqtt_client_t *me,
+esp_err_t mqtt_client_unsubscribe(mqtt_client_handle_t *me,
                                   const char *topic);
-esp_err_t mqtt_client_publish(mqtt_client_t *me,
+esp_err_t mqtt_client_publish(mqtt_client_handle_t *me,
                               const mqtt_client_publish_t *request);
 ```
 
 **关键内部字段类别**：
 - `config`：配置快照，包含复制后的 host、client_id、username、password。
-- `core`：Facade factory 注入的 `core_t` 句柄，MQTT 借用但不拥有生命周期。
+- `core`：Facade factory 注入的 `core_handle_t` 句柄，MQTT 借用但不拥有生命周期。
 - `event_loop`、`event_callback`、`event_user_ctx`：MQTT 事件分发和 Facade 桥接回调。
 - `fsm_task`、`fsm_queue`、`fsm_task_done_sema`：MQTT 独立状态机线程和信号队列。
 - `state`、`connect_step`、`pending_cmd`：MQTT 生命周期、连接子步骤和等待中的 Core command。
@@ -1530,8 +1530,8 @@ esp_err_t mqtt_client_publish(mqtt_client_t *me,
 
 **关键设计决策**：
 - MQTT 没有 ops 多态；第一版只有一个 MQTT service 实现。
-- MQTT 不是 Core 的子类，不能向上转型为 `core_t *`。
-- MQTT 不保存 `modem_t *`、`at_engine_t *` 或具体模块句柄。
+- MQTT 不是 Core 的子类，不能向上转型为 `core_handle_t *`。
+- MQTT 不保存 `modem_handle_t *`、`at_engine_handle_t *` 或具体模块句柄。
 - `lock` 只保护短字段，MQTT FSM 调用 `core_submit_cmd()` 时不持锁。
 - Facade 通过 public `lwlte_mqtt_*` API 包装本层 `mqtt_client_*` 方法，App 不直接 include `mqtt_client.h`。
 
@@ -1599,7 +1599,7 @@ typedef struct {
     } data;
 } mqtt_client_event_data_t;
 
-typedef void (*mqtt_client_event_callback_t)(mqtt_client_t *client,
+typedef void (*mqtt_client_event_callback_t)(mqtt_client_handle_t *client,
                                              mqtt_client_event_id_t event_id,
                                              const mqtt_client_event_data_t *data,
                                              void *user_ctx);
@@ -1797,11 +1797,11 @@ Ping Service 不创建自己的 FSM task、FSM queue 或 esp_event loop。它只
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
-| `ping_client_t` | 层间 API (opaque) | Facade | service 句柄 | Ping Service 实例，持有 Core 依赖和短生命周期同步逻辑 |
+| `ping_client_handle_t` | 层间 API (opaque) | Facade | service 句柄 | Ping Service 实例，持有 Core 依赖和短生命周期同步逻辑 |
 | `ping_client_request_t` | 层间 API | Facade + Ping Service | 值对象 | Ping 请求参数，Facade 从用户 `lwlte_ping_request_t` 映射而来 |
 | `ping_wait_ctx_t` | 模块私有 API | Ping Service | 工作上下文 | 单次同步 ping 调用的完成信号量、结果码和 Core command result |
 
-### 5.2 `ping_client_t` — Ping 服务句柄
+### 5.2 `ping_client_handle_t` — Ping 服务句柄
 
 **所属层**：Ping Service
 **可见性**：层间 API (opaque) — Facade 持有句柄；struct 定义在 `src/ping_client/ping_client_priv.h` 或 `.c` 中
@@ -1810,7 +1810,7 @@ Ping Service 不创建自己的 FSM task、FSM queue 或 esp_event loop。它只
 **层间方法**（`src/ping_client/ping_client.h`）：
 
 ```c
-typedef struct ping_client ping_client_t;
+typedef struct ping_client_handle ping_client_handle_t;
 
 typedef struct {
     const char *host;
@@ -1821,9 +1821,9 @@ typedef struct {
     uint32_t total_timeout_ms;
 } ping_client_request_t;
 
-ping_client_t *ping_client_create(core_t *core);
-esp_err_t ping_client_destroy(ping_client_t *me);
-esp_err_t ping_client_ping(ping_client_t *me,
+ping_client_handle_t *ping_client_create(core_handle_t *core);
+esp_err_t ping_client_destroy(ping_client_handle_t *me);
+esp_err_t ping_client_ping(ping_client_handle_t *me,
                            const ping_client_request_t *request,
                            core_ping_reply_t *replies,
                            size_t max_replies,
@@ -1831,12 +1831,12 @@ esp_err_t ping_client_ping(ping_client_t *me,
 ```
 
 **关键内部字段类别**：
-- `core`：Facade factory 注入的 `core_t` 句柄，Ping Service 借用但不拥有生命周期。
+- `core`：Facade factory 注入的 `core_handle_t` 句柄，Ping Service 借用但不拥有生命周期。
 - `lock`、`destroying`：保护短生命周期状态，销毁开始后拒绝新的 ping 调用。
 
 **关键设计决策**：
-- Ping Service 没有独立状态机；`ping_client_t` 不保存 connected/error 等长期状态。
-- Ping Service 不保存 `modem_t *`、`at_engine_t *` 或具体模块句柄。
+- Ping Service 没有独立状态机；`ping_client_handle_t` 不保存 connected/error 等长期状态。
+- Ping Service 不保存 `modem_handle_t *`、`at_engine_handle_t *` 或具体模块句柄。
 - `ping_client_ping()` 可以阻塞调用 task，直到 Core command 完成或总超时到达。
 - `timeout_100ms == 0` 是无效参数；`total_timeout_ms == 0` 表示根据 `count * timeout_100ms * 100` 加命令开销派生默认总等待预算。
 
@@ -1923,7 +1923,7 @@ lwlte_ping()
 第一版只实现同步阻塞 `lwlte_ping()`。后续可以增加：
 
 ```c
-esp_err_t lwlte_ping_async(lwlte_t *me,
+esp_err_t lwlte_ping_async(lwlte_handle_t *me,
                            const lwlte_ping_request_t *request,
                            void *user_ctx);
 ```
@@ -1940,9 +1940,9 @@ esp_err_t lwlte_ping_async(lwlte_t *me,
 
 ```c
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_t **out_lte);
-esp_err_t lwlte_start(lwlte_t *me);
-esp_err_t lwlte_destroy(lwlte_t *me);
+                              lwlte_handle_t **out_lte);
+esp_err_t lwlte_start(lwlte_handle_t *me);
+esp_err_t lwlte_destroy(lwlte_handle_t *me);
 ```
 
 `lwlte_air780ep_init()` 只创建和装配 Facade、AT Engine、Modem、Core、Ping/MQTT service；`lwlte_start()` 才是用户显式启动入口，异步提交启动请求，最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
@@ -1988,7 +1988,7 @@ typedef struct {
     uint32_t avg_time_ms;
 } lwlte_ping_summary_t;
 
-esp_err_t lwlte_ping(lwlte_t *me,
+esp_err_t lwlte_ping(lwlte_handle_t *me,
                      const lwlte_ping_request_t *request,
                      lwlte_ping_reply_t *replies,
                      size_t max_replies,

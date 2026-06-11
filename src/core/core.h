@@ -35,7 +35,7 @@ extern "C" {
  * @brief LTE 核心服务句柄
  * @details LTE core service handle
  */
-typedef struct core core_t;
+typedef struct core_handle core_handle_t;
 
 /**
  * @brief LTE 核心服务配置
@@ -169,7 +169,7 @@ typedef struct {
  * @brief Core 服务命令完成回调
  * @details Core service command done callback
  */
-typedef void (*core_cmd_done_callback_t)(core_t *core,
+typedef void (*core_cmd_done_callback_t)(core_handle_t *core,
                                          core_cmd_type_t type,
                                          core_cmd_result_t result,
                                          const void *result_data,
@@ -239,7 +239,7 @@ typedef struct {
  * @param[in] data LTE 核心服务事件数据，可能为 NULL
  * @param[in] user_ctx 用户上下文
  */
-typedef void (*core_event_callback_t)(core_t *core,
+typedef void (*core_event_callback_t)(core_handle_t *core,
                                       core_event_id_t event_id,
                                       const core_event_data_t *data,
                                       void *user_ctx);
@@ -258,7 +258,7 @@ typedef void (*core_event_callback_t)(core_t *core,
  *         - 非 NULL: 创建并初始化成功，返回 LTE 核心服务句柄
  *         - NULL: 参数无效、内存不足或初始化失败
  */
-core_t *core_create(const core_config_t *config, modem_t *modem);
+core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
 
 /**
  * @brief 销毁 LTE 核心服务
@@ -270,7 +270,7 @@ core_t *core_create(const core_config_t *config, modem_t *modem);
  *         - ESP_ERR_INVALID_STATE: 当前状态不允许销毁
  *         - other: 下层资源清理错误码
  */
-esp_err_t core_destroy(core_t *me);
+esp_err_t core_destroy(core_handle_t *me);
 
 /**
  * @brief 启动 LTE 核心服务
@@ -284,7 +284,7 @@ esp_err_t core_destroy(core_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t core_start(core_t *me);
+esp_err_t core_start(core_handle_t *me);
 
 /**
  * @brief 停止 LTE 核心服务
@@ -297,7 +297,7 @@ esp_err_t core_start(core_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t core_stop(core_t *me);
+esp_err_t core_stop(core_handle_t *me);
 
 /**
  * @brief 注册 LTE 核心服务事件回调
@@ -310,7 +310,7 @@ esp_err_t core_stop(core_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t core_register_event_callback(core_t *me,
+esp_err_t core_register_event_callback(core_handle_t *me,
                                        core_event_callback_t callback,
                                        void *user_ctx);
 
@@ -322,7 +322,7 @@ esp_err_t core_register_event_callback(core_t *me,
  *         - 非 NULL: LTE 核心服务事件循环句柄
  *         - NULL: 参数无效或事件循环未创建
  */
-esp_event_loop_handle_t core_get_event_loop(core_t *me);
+esp_event_loop_handle_t core_get_event_loop(core_handle_t *me);
 
 /**
  * @brief 获取 LTE 核心服务状态
@@ -333,7 +333,7 @@ esp_event_loop_handle_t core_get_event_loop(core_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t core_get_state(core_t *me, core_state_t *state);
+esp_err_t core_get_state(core_handle_t *me, core_state_t *state);
 
 /**
  * @brief 获取 LTE 网络状态
@@ -344,7 +344,7 @@ esp_err_t core_get_state(core_t *me, core_state_t *state);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t core_get_net_state(core_t *me, core_net_state_t *state);
+esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
 
 /**
  * @brief 连接 LTE 网络
@@ -357,7 +357,7 @@ esp_err_t core_get_net_state(core_t *me, core_net_state_t *state);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t core_connect(core_t *me);
+esp_err_t core_connect(core_handle_t *me);
 
 /**
  * @brief 断开 LTE 网络
@@ -370,7 +370,7 @@ esp_err_t core_connect(core_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t core_disconnect(core_t *me);
+esp_err_t core_disconnect(core_handle_t *me);
 
 /**
  * @brief 提交 Core 服务命令
@@ -385,7 +385,7 @@ esp_err_t core_disconnect(core_t *me);
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_ERR_TIMEOUT: FSM 队列已满
  */
-esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd);
+esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 
 /**
  * @brief 释放 Core 协议事件负载

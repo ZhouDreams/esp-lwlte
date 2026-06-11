@@ -39,7 +39,7 @@
  *         - true: 配置有效
  *         - false: 配置无效
  */
-static bool config_valid(const core_config_t *config, modem_t *modem);
+static bool config_valid(const core_config_t *config, modem_handle_t *modem);
 
 /**
  * @brief 归一化 Core 配置默认值
@@ -63,7 +63,7 @@ static esp_err_t normalize_config(const core_config_t *config,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: ESP Event 错误码
  */
-static esp_err_t create_event_loop(core_t *me);
+static esp_err_t create_event_loop(core_handle_t *me);
 
 /**
  * @brief 销毁 Core 自有事件循环
@@ -74,7 +74,7 @@ static esp_err_t create_event_loop(core_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: ESP Event 错误码
  */
-static esp_err_t destroy_event_loop(core_t *me);
+static esp_err_t destroy_event_loop(core_handle_t *me);
 
 /**
  * @brief 发送简单 FSM 信号
@@ -86,7 +86,7 @@ static esp_err_t destroy_event_loop(core_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_TIMEOUT: FSM 队列已满
  */
-static esp_err_t send_simple_signal(core_t *me,
+static esp_err_t send_simple_signal(core_handle_t *me,
                                     core_fsm_sig_type_t sig_type);
 
 /**
@@ -98,7 +98,7 @@ static esp_err_t send_simple_signal(core_t *me,
  *         - true: 允许操作
  *         - false: 不允许操作
  */
-static bool api_state_allows(core_t *me, core_fsm_sig_type_t sig_type);
+static bool api_state_allows(core_handle_t *me, core_fsm_sig_type_t sig_type);
 
 /**
  * @brief Modem 事件回调
@@ -107,7 +107,7 @@ static bool api_state_allows(core_t *me, core_fsm_sig_type_t sig_type);
  * @param[in] event Modem 事件
  * @param[in] user_ctx 用户上下文
  */
-static void core_modem_event_cb(modem_t *modem, const modem_event_t *event,
+static void core_modem_event_cb(modem_handle_t *modem, const modem_event_t *event,
                                 void *user_ctx);
 
 /**
@@ -130,7 +130,7 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 当前任务正在执行回调或内部状态无效
  */
-static esp_err_t wait_event_callbacks_idle(core_t *me);
+static esp_err_t wait_event_callbacks_idle(core_handle_t *me);
 
 /**
  * @brief 初始化 Core 内部资源
@@ -144,8 +144,8 @@ static esp_err_t wait_event_callbacks_idle(core_t *me);
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - other: ESP Event 或内部组件错误码
  */
-static esp_err_t core_init(core_t *me, const core_config_t *config,
-                           modem_t *modem);
+static esp_err_t core_init(core_handle_t *me, const core_config_t *config,
+                           modem_handle_t *modem);
 
 /**
  * @brief 反初始化 Core 内部资源
@@ -156,7 +156,7 @@ static esp_err_t core_init(core_t *me, const core_config_t *config,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: ESP Event 错误码
  */
-static esp_err_t core_deinit(core_t *me);
+static esp_err_t core_deinit(core_handle_t *me);
 
 /**
  * @brief 判断 Core 内部资源是否已完整反初始化
@@ -166,7 +166,7 @@ static esp_err_t core_deinit(core_t *me);
  *         - true: 已完整反初始化
  *         - false: 仍有资源未释放
  */
-static bool core_deinit_complete(const core_t *me);
+static bool core_deinit_complete(const core_handle_t *me);
 
 /**
  * @brief 注销 Modem 事件回调
@@ -177,7 +177,7 @@ static bool core_deinit_complete(const core_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - other: Modem 错误码
  */
-static esp_err_t core_unregister_modem_callback(core_t *me);
+static esp_err_t core_unregister_modem_callback(core_handle_t *me);
 static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd);
 static void free_core_cmd(core_cmd_t *cmd);
 static char *clone_optional_string(const char *value);
@@ -202,9 +202,9 @@ ESP_EVENT_DEFINE_BASE(CORE_EVENT);
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-core_t *core_create(const core_config_t *config, modem_t *modem)
+core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem)
 {
-    core_t *me = calloc(1, sizeof(core_t));
+    core_handle_t *me = calloc(1, sizeof(*me));
     if (!me) {
         ESP_LOGE(TAG, "calloc core failed");
         return NULL;
@@ -224,7 +224,7 @@ core_t *core_create(const core_config_t *config, modem_t *modem)
     return me;
 }
 
-esp_err_t core_destroy(core_t *me)
+esp_err_t core_destroy(core_handle_t *me)
 {
     core_state_t previous_state = CORE_STATE_STOPPED;
     bool retry_destroy = false;
@@ -299,7 +299,7 @@ esp_err_t core_destroy(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_start(core_t *me)
+esp_err_t core_start(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -311,7 +311,7 @@ esp_err_t core_start(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_stop(core_t *me)
+esp_err_t core_stop(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -323,7 +323,7 @@ esp_err_t core_stop(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_register_event_callback(core_t *me,
+esp_err_t core_register_event_callback(core_handle_t *me,
                                        core_event_callback_t callback,
                                        void *user_ctx)
 {
@@ -361,7 +361,7 @@ esp_err_t core_register_event_callback(core_t *me,
     }
 }
 
-esp_event_loop_handle_t core_get_event_loop(core_t *me)
+esp_event_loop_handle_t core_get_event_loop(core_handle_t *me)
 {
     if (!me || !me->lock) {
         return NULL;
@@ -374,7 +374,7 @@ esp_event_loop_handle_t core_get_event_loop(core_t *me)
     return event_loop;
 }
 
-esp_err_t core_get_state(core_t *me, core_state_t *state)
+esp_err_t core_get_state(core_handle_t *me, core_state_t *state)
 {
     ESP_RETURN_ON_FALSE(me && state && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -384,14 +384,14 @@ esp_err_t core_get_state(core_t *me, core_state_t *state)
     return ESP_OK;
 }
 
-esp_err_t core_get_net_state(core_t *me, core_net_state_t *state)
+esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state)
 {
     ESP_RETURN_ON_FALSE(me && state, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     return net_mgr_get_state(me, state);
 }
 
-esp_err_t core_connect(core_t *me)
+esp_err_t core_connect(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -403,7 +403,7 @@ esp_err_t core_connect(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_disconnect(core_t *me)
+esp_err_t core_disconnect(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -415,7 +415,7 @@ esp_err_t core_disconnect(core_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd)
+esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && cmd, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -442,7 +442,7 @@ esp_err_t core_submit_cmd(core_t *me, const core_cmd_t *cmd)
     return ESP_OK;
 }
 
-esp_err_t core_set_state(core_t *me, core_state_t state)
+esp_err_t core_set_state(core_handle_t *me, core_state_t state)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -461,7 +461,7 @@ esp_err_t core_set_state(core_t *me, core_state_t state)
     return ESP_OK;
 }
 
-core_state_t core_get_state_value(core_t *me)
+core_state_t core_get_state_value(core_handle_t *me)
 {
     if (!me || !me->lock) {
         return CORE_STATE_STOPPED;
@@ -474,7 +474,7 @@ core_state_t core_get_state_value(core_t *me)
     return state;
 }
 
-bool core_is_destroying(core_t *me)
+bool core_is_destroying(core_handle_t *me)
 {
     if (!me || !me->lock) {
         return true;
@@ -487,7 +487,7 @@ bool core_is_destroying(core_t *me)
     return destroying;
 }
 
-esp_err_t core_post_event(core_t *me, core_event_id_t event_id,
+esp_err_t core_post_event(core_handle_t *me, core_event_id_t event_id,
                           const core_event_data_t *event_data)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && me->event_loop, ESP_ERR_INVALID_ARG, TAG,
@@ -524,7 +524,7 @@ void core_release_event_payload(core_event_data_t *event_data)
     release_core_event_payload(event_data);
 }
 
-esp_err_t core_post_protocol_data(core_t *me,
+esp_err_t core_post_protocol_data(core_handle_t *me,
                                   const core_protocol_data_t *protocol_data)
 {
     ESP_RETURN_ON_FALSE(me && protocol_data, ESP_ERR_INVALID_ARG, TAG,
@@ -548,7 +548,7 @@ esp_err_t core_post_protocol_data(core_t *me,
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static bool config_valid(const core_config_t *config, modem_t *modem)
+static bool config_valid(const core_config_t *config, modem_handle_t *modem)
 {
     return config && modem && config->apn &&
            config->primary_cid <= CORE_MAX_PDP_CONTEXTS;
@@ -590,7 +590,7 @@ static esp_err_t normalize_config(const core_config_t *config,
     return ESP_OK;
 }
 
-static esp_err_t create_event_loop(core_t *me)
+static esp_err_t create_event_loop(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(!me->event_loop, ESP_ERR_INVALID_STATE, TAG,
@@ -624,7 +624,7 @@ static esp_err_t create_event_loop(core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t destroy_event_loop(core_t *me)
+static esp_err_t destroy_event_loop(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     if (!me->event_loop) {
@@ -650,7 +650,7 @@ static esp_err_t destroy_event_loop(core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t send_simple_signal(core_t *me,
+static esp_err_t send_simple_signal(core_handle_t *me,
                                     core_fsm_sig_type_t sig_type)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
@@ -667,7 +667,7 @@ static esp_err_t send_simple_signal(core_t *me,
     return core_fsm_send(me, &sig);
 }
 
-static bool api_state_allows(core_t *me, core_fsm_sig_type_t sig_type)
+static bool api_state_allows(core_handle_t *me, core_fsm_sig_type_t sig_type)
 {
     if (!me || !me->lock) {
         return false;
@@ -699,12 +699,12 @@ static bool api_state_allows(core_t *me, core_fsm_sig_type_t sig_type)
     }
 }
 
-static void core_modem_event_cb(modem_t *modem, const modem_event_t *event,
+static void core_modem_event_cb(modem_handle_t *modem, const modem_event_t *event,
                                 void *user_ctx)
 {
     (void)modem;
 
-    core_t *me = (core_t *)user_ctx;
+    core_handle_t *me = (core_handle_t *)user_ctx;
     if (!me || !event) {
         return;
     }
@@ -736,7 +736,7 @@ static void core_modem_event_cb(modem_t *modem, const modem_event_t *event,
 static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
-    core_t *me = (core_t *)handler_arg;
+    core_handle_t *me = (core_handle_t *)handler_arg;
     if (!me) {
         return;
     }
@@ -794,7 +794,7 @@ static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
 
 }
 
-static esp_err_t wait_event_callbacks_idle(core_t *me)
+static esp_err_t wait_event_callbacks_idle(core_handle_t *me)
 {
     if (!me || !me->lock) {
         return ESP_ERR_INVALID_ARG;
@@ -843,8 +843,8 @@ static esp_err_t wait_event_callbacks_idle(core_t *me)
     return ESP_OK;
 }
 
-static esp_err_t core_init(core_t *me, const core_config_t *config,
-                           modem_t *modem)
+static esp_err_t core_init(core_handle_t *me, const core_config_t *config,
+                           modem_handle_t *modem)
 {
     esp_err_t ret = ESP_OK;
 
@@ -925,7 +925,7 @@ err:
     return ret;
 }
 
-static esp_err_t core_deinit(core_t *me)
+static esp_err_t core_deinit(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -975,7 +975,7 @@ static esp_err_t core_deinit(core_t *me)
     return ESP_OK;
 }
 
-static bool core_deinit_complete(const core_t *me)
+static bool core_deinit_complete(const core_handle_t *me)
 {
     if (!me) {
         return true;
@@ -988,14 +988,14 @@ static bool core_deinit_complete(const core_t *me)
            !me->event_callback_done_sema && !me->lock && !me->config.apn;
 }
 
-static esp_err_t core_unregister_modem_callback(core_t *me)
+static esp_err_t core_unregister_modem_callback(core_handle_t *me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     if (!me->modem) {
         return ESP_OK;
     }
 
-    modem_t *modem = me->modem;
+    modem_handle_t *modem = me->modem;
     esp_err_t ret = modem_register_event_callback(modem, NULL, NULL);
     if (ret == ESP_OK) {
         me->modem = NULL;

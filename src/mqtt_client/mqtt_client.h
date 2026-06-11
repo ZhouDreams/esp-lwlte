@@ -29,7 +29,7 @@ extern "C" {
 /**********************
  *      TYPEDEFS
  **********************/
-typedef struct mqtt_client mqtt_client_t;
+typedef struct mqtt_client_handle mqtt_client_handle_t;
 
 typedef enum {
     MQTT_CLIENT_TRANSPORT_PLAIN_TCP = 0,
@@ -107,7 +107,7 @@ typedef struct {
     } data;
 } mqtt_client_event_data_t;
 
-typedef void (*mqtt_client_event_callback_t)(mqtt_client_t *client,
+typedef void (*mqtt_client_event_callback_t)(mqtt_client_handle_t *client,
                                              mqtt_client_event_id_t event_id,
                                              const mqtt_client_event_data_t *data,
                                              void *user_ctx);
@@ -115,24 +115,24 @@ typedef void (*mqtt_client_event_callback_t)(mqtt_client_t *client,
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
-mqtt_client_t *mqtt_client_create(const mqtt_client_config_t *config,
-                                  core_t *core);
-esp_err_t mqtt_client_destroy(mqtt_client_t *me);
-esp_err_t mqtt_client_start(mqtt_client_t *me);
-esp_err_t mqtt_client_stop(mqtt_client_t *me);
-esp_err_t mqtt_client_register_event_callback(mqtt_client_t *me,
-                                              mqtt_client_event_callback_t callback,
-                                              void *user_ctx);
-esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_t *me);
-esp_err_t mqtt_client_get_state(mqtt_client_t *me,
-                                mqtt_client_state_t *state);
-esp_err_t mqtt_client_subscribe(mqtt_client_t *me,
-                                const char *topic,
-                                uint8_t qos);
-esp_err_t mqtt_client_unsubscribe(mqtt_client_t *me,
-                                  const char *topic);
-esp_err_t mqtt_client_publish(mqtt_client_t *me,
-                              const mqtt_client_publish_t *request);
+mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
+                                         core_handle_t *core);
+esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me);
+esp_err_t mqtt_client_start(mqtt_client_handle_t *me);
+esp_err_t mqtt_client_stop(mqtt_client_handle_t *me);
+esp_err_t mqtt_client_register_event_callback(mqtt_client_handle_t *me,
+                                               mqtt_client_event_callback_t callback,
+                                               void *user_ctx);
+esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_handle_t *me);
+esp_err_t mqtt_client_get_state(mqtt_client_handle_t *me,
+                                 mqtt_client_state_t *state);
+esp_err_t mqtt_client_subscribe(mqtt_client_handle_t *me,
+                                 const char *topic,
+                                 uint8_t qos);
+esp_err_t mqtt_client_unsubscribe(mqtt_client_handle_t *me,
+                                   const char *topic);
+esp_err_t mqtt_client_publish(mqtt_client_handle_t *me,
+                               const mqtt_client_publish_t *request);
 
 /**********************
  *      MACROS

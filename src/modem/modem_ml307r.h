@@ -56,8 +56,8 @@ typedef struct {
  *         - 调制解调器句柄: 成功
  *         - NULL: 失败
  */
-modem_t *modem_ml307r_create(at_engine_t *at,
-                             const modem_ml307r_config_t *config);
+modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
+                                    const modem_ml307r_config_t *config);
 
 /**********************
  *      MACROS

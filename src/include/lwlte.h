@@ -34,7 +34,7 @@ extern "C" {
  * @brief LTE 用户门面句柄
  * @details LTE user facade handle
  */
-typedef struct lwlte lwlte_t;
+typedef struct lwlte_handle lwlte_handle_t;
 
 /**
  * @brief LTE 门面状态
@@ -170,7 +170,7 @@ typedef struct {
  * @param[in] data 事件数据，可能为 NULL
  * @param[in] user_ctx 用户上下文
  */
-typedef void (*lwlte_event_callback_t)(lwlte_t *lte,
+typedef void (*lwlte_event_callback_t)(lwlte_handle_t *lte,
                                        lwlte_event_id_t event_id,
                                        const lwlte_event_data_t *data,
                                        void *user_ctx);
@@ -316,7 +316,7 @@ typedef struct {
  *         - 其他 esp_err_t: 下层创建、初始化或清理错误
  */
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_t **out_lte);
+                              lwlte_handle_t **out_lte);
 
 /**
  * @brief 初始化 ML307R LTE 用户门面
@@ -332,7 +332,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
  *         - ESP_FAIL: GPIO、UART、Modem 或 Core 创建失败
  */
 esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
-                            lwlte_t **out_lte);
+                            lwlte_handle_t **out_lte);
 
 /**
  * @brief 销毁 LTE 用户门面
@@ -347,7 +347,7 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
  *         - ESP_FAIL: 下层清理失败
  *         - 其他 esp_err_t: 下层销毁或清理错误
  */
-esp_err_t lwlte_destroy(lwlte_t *me);
+esp_err_t lwlte_destroy(lwlte_handle_t *me);
 
 /**
  * @brief 注册 LTE 用户事件回调
@@ -362,7 +362,7 @@ esp_err_t lwlte_destroy(lwlte_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 门面正在销毁
  */
-esp_err_t lwlte_register_event_callback(lwlte_t *me,
+esp_err_t lwlte_register_event_callback(lwlte_handle_t *me,
                                         lwlte_event_callback_t callback,
                                         void *user_ctx);
 
@@ -380,7 +380,7 @@ esp_err_t lwlte_register_event_callback(lwlte_t *me,
  *         - ESP_FAIL: 请求提交失败
  *         - 其他 esp_err_t: 下层请求提交错误
  */
-esp_err_t lwlte_start(lwlte_t *me);
+esp_err_t lwlte_start(lwlte_handle_t *me);
 
 /**
  * @brief 断开 LTE 网络
@@ -394,7 +394,7 @@ esp_err_t lwlte_start(lwlte_t *me);
  *         - ESP_FAIL: 请求提交失败
  *         - 其他 esp_err_t: 下层断开错误
  */
-esp_err_t lwlte_disconnect(lwlte_t *me);
+esp_err_t lwlte_disconnect(lwlte_handle_t *me);
 
 /**
  * @brief 获取 LTE 门面状态
@@ -406,7 +406,7 @@ esp_err_t lwlte_disconnect(lwlte_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 门面正在销毁
  */
-esp_err_t lwlte_get_state(lwlte_t *me, lwlte_state_t *state);
+esp_err_t lwlte_get_state(lwlte_handle_t *me, lwlte_state_t *state);
 
 /**
  * @brief 获取 LTE 网络状态
@@ -418,7 +418,7 @@ esp_err_t lwlte_get_state(lwlte_t *me, lwlte_state_t *state);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 门面正在销毁
  */
-esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state);
+esp_err_t lwlte_get_net_state(lwlte_handle_t *me, lwlte_net_state_t *state);
 
 /**
  * @brief 执行同步 Ping 诊断
@@ -438,7 +438,7 @@ esp_err_t lwlte_get_net_state(lwlte_t *me, lwlte_net_state_t *state);
  *         - ESP_ERR_INVALID_RESPONSE: 模块响应格式无效
  *         - other: 下层错误
  */
-esp_err_t lwlte_ping(lwlte_t *me,
+esp_err_t lwlte_ping(lwlte_handle_t *me,
                      const lwlte_ping_request_t *request,
                      lwlte_ping_reply_t *replies,
                      size_t max_replies,
@@ -455,7 +455,7 @@ esp_err_t lwlte_ping(lwlte_t *me,
  *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用或门面正在销毁
  *         - 其他 esp_err_t: 下层 MQTT 服务错误
  */
-esp_err_t lwlte_mqtt_start(lwlte_t *me);
+esp_err_t lwlte_mqtt_start(lwlte_handle_t *me);
 
 /**
  * @brief 停止 MQTT 客户端
@@ -468,7 +468,7 @@ esp_err_t lwlte_mqtt_start(lwlte_t *me);
  *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用或门面正在销毁
  *         - 其他 esp_err_t: 下层 MQTT 服务错误
  */
-esp_err_t lwlte_mqtt_stop(lwlte_t *me);
+esp_err_t lwlte_mqtt_stop(lwlte_handle_t *me);
 
 /**
  * @brief 获取 MQTT 状态
@@ -481,7 +481,7 @@ esp_err_t lwlte_mqtt_stop(lwlte_t *me);
  *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用或门面正在销毁
  *         - 其他 esp_err_t: 下层 MQTT 服务错误
  */
-esp_err_t lwlte_mqtt_get_state(lwlte_t *me, lwlte_mqtt_state_t *state);
+esp_err_t lwlte_mqtt_get_state(lwlte_handle_t *me, lwlte_mqtt_state_t *state);
 
 /**
  * @brief 订阅 MQTT 主题
@@ -495,7 +495,7 @@ esp_err_t lwlte_mqtt_get_state(lwlte_t *me, lwlte_mqtt_state_t *state);
  *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用、未连接或门面正在销毁
  *         - 其他 esp_err_t: 下层 MQTT 服务错误
  */
-esp_err_t lwlte_mqtt_subscribe(lwlte_t *me, const char *topic, uint8_t qos);
+esp_err_t lwlte_mqtt_subscribe(lwlte_handle_t *me, const char *topic, uint8_t qos);
 
 /**
  * @brief 取消订阅 MQTT 主题
@@ -508,7 +508,7 @@ esp_err_t lwlte_mqtt_subscribe(lwlte_t *me, const char *topic, uint8_t qos);
  *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用、未连接或门面正在销毁
  *         - 其他 esp_err_t: 下层 MQTT 服务错误
  */
-esp_err_t lwlte_mqtt_unsubscribe(lwlte_t *me, const char *topic);
+esp_err_t lwlte_mqtt_unsubscribe(lwlte_handle_t *me, const char *topic);
 
 /**
  * @brief 发布 MQTT 消息
@@ -525,7 +525,7 @@ esp_err_t lwlte_mqtt_unsubscribe(lwlte_t *me, const char *topic);
  *         - ESP_ERR_INVALID_STATE: MQTT 服务未启用、未连接或门面正在销毁
  *         - 其他 esp_err_t: 下层 MQTT 服务错误
  */
-esp_err_t lwlte_mqtt_publish(lwlte_t *me, const char *topic,
+esp_err_t lwlte_mqtt_publish(lwlte_handle_t *me, const char *topic,
                              const uint8_t *payload, size_t payload_len,
                              uint8_t qos, bool retain);
 
