@@ -32,7 +32,7 @@ src/
 
 根 ESP-IDF 项目的 main 组件。`example/main.c` 是唯一示例入口，通过 `EXAMPLE_SELECTED` 宏选择要构建烧录后运行的示例。
 
-示例实现按文件拆分，例如 `air780ep_basic_connect.c`、`air780ep_mqtt_client.c`、`ml307r_probe.c`。新增示例时应在 `example/example.h` 中新增选择宏和 run 函数声明，并在 `example/main.c` 的选择逻辑中接入。
+示例实现按文件拆分，例如 `air780ep_basic_connect.c`、`air780ep_mqtt_client.c`、`ml307r_basic_connect.c`、`ml307r_mqtt_client.c`。新增示例时应在 `example/example.h` 中新增选择宏和 run 函数声明，并在 `example/main.c` 的选择逻辑中接入。
 
 ### docs/ — 项目文档
 

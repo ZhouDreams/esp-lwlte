@@ -42,7 +42,7 @@
 #define ML307R_MIPCALL_TIMEOUT_MS        90000
 #define ML307R_MQTT_CMD_TIMEOUT_MS       9000
 #define ML307R_MQTT_CONNECT_TIMEOUT_MS   60000
-#define ML307R_MQTT_MAX_TEXT_PAYLOAD_LEN 1460U
+#define ML307R_MQTT_MAX_PAYLOAD_LEN      1024U
 #define ML307R_MPING_PREFIX              "+MPING:"
 #define ML307R_MPING_STATISTICS_PREFIX   "+MPING: \"statistics\""
 #define ML307R_MPING_MAX_COUNT           100
@@ -165,7 +165,6 @@ static modem_sim_status_t parse_sim_status_line(const char *line);
 static void cache_sim_status(modem_ml307r_t *self, modem_sim_status_t status);
 static esp_err_t query_cgatt(modem_ml307r_t *self, bool *attached);
 static bool at_arg_safe(const char *value);
-static bool at_text_payload_safe(const uint8_t *payload, size_t payload_len);
 static bool looks_like_ip_addr(const char *line);
 static TickType_t timeout_ticks(uint32_t timeout_ms);
 static void set_initialized(modem_ml307r_t *self, bool initialized);
@@ -177,7 +176,7 @@ static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
 static void free_mqtt_config(modem_mqtt_config_t *config);
 static void clear_mqtt_state(modem_ml307r_t *self);
 static char *escape_at_string(const char *value);
-static char *copy_payload_text(const uint8_t *payload, size_t payload_len);
+static char *hex_encode_payload(const uint8_t *payload, size_t payload_len);
 static esp_err_t post_mqtt_data_event(modem_ml307r_t *self, char *topic,
                                        size_t topic_len, uint8_t *payload,
                                        size_t payload_len);
@@ -932,22 +931,6 @@ static bool at_arg_safe(const char *value)
     return true;
 }
 
-static bool at_text_payload_safe(const uint8_t *payload, size_t payload_len)
-{
-    if (!payload && payload_len > 0) {
-        return false;
-    }
-
-    for (size_t i = 0; i < payload_len; i++) {
-        if (payload[i] == '\0' || payload[i] == '"' ||
-            payload[i] == '\r' || payload[i] == '\n') {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 static bool looks_like_ip_addr(const char *line)
 {
     if (!line || line[0] == '\0') {
@@ -1172,22 +1155,26 @@ static char *escape_at_string(const char *value)
     return escaped;
 }
 
-static char *copy_payload_text(const uint8_t *payload, size_t payload_len)
+static char *hex_encode_payload(const uint8_t *payload, size_t payload_len)
 {
-    if (payload_len > ML307R_MQTT_MAX_TEXT_PAYLOAD_LEN ||
-        payload_len > SIZE_MAX - 1U ||
-        !at_text_payload_safe(payload, payload_len)) {
+    static const char hex[] = "0123456789ABCDEF";
+
+    if ((!payload && payload_len > 0) ||
+        payload_len > ML307R_MQTT_MAX_PAYLOAD_LEN ||
+        payload_len > (SIZE_MAX - 1U) / 2U) {
         return NULL;
     }
 
-    char *text = malloc(payload_len + 1U);
+    char *text = malloc((payload_len * 2U) + 1U);
     if (!text) {
         return NULL;
     }
-    if (payload_len > 0) {
-        memcpy(text, payload, payload_len);
+
+    for (size_t i = 0; i < payload_len; i++) {
+        text[i * 2U] = hex[payload[i] >> 4];
+        text[(i * 2U) + 1U] = hex[payload[i] & 0x0FU];
     }
-    text[payload_len] = '\0';
+    text[payload_len * 2U] = '\0';
     return text;
 }
 
@@ -2132,11 +2119,12 @@ static esp_err_t ml307r_mqtt_configure(modem_t *me,
     ESP_RETURN_ON_ERROR(ret, TAG, "copy MQTT config failed");
 
     /* AT command shapes: AT+MQTTCFG="version",0,4; AT+MQTTCFG="cid",0,1;
-     * AT+MQTTCFG="keepalive",0,%u; AT+MQTTCFG="clean",0,%u;
-     * AT+MQTTCFG="cached",0,0. */
+     * AT+MQTTCFG="encoding",0,1,0; AT+MQTTCFG="keepalive",0,%u;
+     * AT+MQTTCFG="clean",0,%u; AT+MQTTCFG="cached",0,0. */
     const char *fixed_cmds[] = {
         "AT+MQTTCFG=\"version\",0,4",
         "AT+MQTTCFG=\"cid\",0,1",
+        "AT+MQTTCFG=\"encoding\",0,1,0",
     };
     for (size_t i = 0; i < sizeof(fixed_cmds) / sizeof(fixed_cmds[0]); i++) {
         ml307r_cmd_ctx_t ctx;
@@ -2479,14 +2467,10 @@ static esp_err_t ml307r_mqtt_publish(modem_t *me,
     ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
                         publish->topic[0] && publish->payload_len > 0 &&
                         publish->qos <= 2 &&
-                        publish->payload_len <= ML307R_MQTT_MAX_TEXT_PAYLOAD_LEN &&
+                        publish->payload_len <= ML307R_MQTT_MAX_PAYLOAD_LEN &&
                         publish->payload_len <= UINT_MAX &&
                         publish->payload_len <= SIZE_MAX - 1U,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-
-    if (!at_text_payload_safe(publish->payload, publish->payload_len)) {
-        return ESP_ERR_INVALID_ARG;
-    }
 
     modem_ml307r_t *self = to_ml307r(me);
     if (self->base.lock) {
@@ -2499,36 +2483,36 @@ static esp_err_t ml307r_mqtt_publish(modem_t *me,
     ESP_RETURN_ON_FALSE(session_connected, ESP_ERR_INVALID_STATE,
                         TAG, "MQTT session not connected");
 
-    char *payload_text = copy_payload_text(publish->payload, publish->payload_len);
-    ESP_RETURN_ON_FALSE(payload_text, ESP_ERR_NO_MEM, TAG, "copy payload failed");
+    char *hex_payload = hex_encode_payload(publish->payload, publish->payload_len);
+    ESP_RETURN_ON_FALSE(hex_payload, ESP_ERR_NO_MEM, TAG, "encode payload failed");
 
     char *escaped_topic = escape_at_string(publish->topic);
     if (!escaped_topic) {
-        free(payload_text);
+        free(hex_payload);
         return ESP_ERR_NO_MEM;
     }
 
-    /* AT command shape: AT+MQTTPUB=0,"%s",%u,%u,%u,"%s". */
-    int needed = snprintf(NULL, 0, "AT+MQTTPUB=0,\"%s\",%u,%u,%u,\"%s\"",
-                          escaped_topic, (unsigned int)publish->qos,
-                          publish->retain ? 1U : 0U,
-                          (unsigned int)publish->payload_len, payload_text);
+    /* AT command shape: AT+MQTTPUB=0,"%s",%u,%u,0,%u,"%s". */
+    int needed = snprintf(NULL, 0, "AT+MQTTPUB=0,\"%s\",%u,%u,0,%u,\"%s\"",
+                           escaped_topic, (unsigned int)publish->qos,
+                           publish->retain ? 1U : 0U,
+                           (unsigned int)publish->payload_len, hex_payload);
     if (needed < 0) {
         free(escaped_topic);
-        free(payload_text);
+        free(hex_payload);
         return ESP_ERR_INVALID_ARG;
     }
     char *cmd = malloc((size_t)needed + 1U);
     if (!cmd) {
         free(escaped_topic);
-        free(payload_text);
+        free(hex_payload);
         return ESP_ERR_NO_MEM;
     }
     snprintf(cmd, (size_t)needed + 1U,
-             "AT+MQTTPUB=0,\"%s\",%u,%u,%u,\"%s\"",
+             "AT+MQTTPUB=0,\"%s\",%u,%u,0,%u,\"%s\"",
              escaped_topic, (unsigned int)publish->qos,
              publish->retain ? 1U : 0U,
-             (unsigned int)publish->payload_len, payload_text);
+             (unsigned int)publish->payload_len, hex_payload);
 
     ml307r_cmd_ctx_t ctx;
     esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
@@ -2538,7 +2522,7 @@ static esp_err_t ml307r_mqtt_publish(modem_t *me,
 
     free(cmd);
     free(escaped_topic);
-    free(payload_text);
+    free(hex_payload);
     return ret;
 }
 

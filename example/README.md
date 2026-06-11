@@ -12,7 +12,8 @@ Available selections:
 |-------|-------------|
 | `EXAMPLE_AIR780EP_BASIC_CONNECT` | Air780EP LTE basic connect and ping example |
 | `EXAMPLE_AIR780EP_MQTT_CLIENT` | Air780EP ThingsBoard MQTT publish/subscribe example |
-| `EXAMPLE_ML307R_PROBE` | ML307R raw UART probe example |
+| `EXAMPLE_ML307R_BASIC_CONNECT` | ML307R LTE basic connect and ping example |
+| `EXAMPLE_ML307R_MQTT_CLIENT` | ML307R ThingsBoard MQTT publish/subscribe example |
 
 ## Build
 
@@ -93,24 +94,50 @@ Topics used by the example:
 
 The MQTT example intentionally keeps downlink handling simple: received MQTT data is printed in the event callback. It does not implement RPC response logic.
 
-## ML307R UART Probe
+## ML307R Wiring
 
-`EXAMPLE_ML307R_PROBE` probes an ML307R module over UART without using esp-lwlte library initialization.
-
-Default wiring:
+Default wiring targets the ESP32-C3 Pro DevKit setup used during development.
 
 | ESP32-C3 | ML307R | Notes |
 |----------|--------|-------|
 | GPIO0 | RX | ESP32-C3 UART1 TX |
 | GPIO1 | TX | ESP32-C3 UART1 RX |
-| GPIO2 | EN or power enable | Held high by this example |
+| GPIO2 | EN or power enable | Controlled by modem adapter |
 | GND | GND | Common ground required |
 
-Probe flow:
+The ML307R modem adapter toggles EN low then high during start/reset, probes `AT` until `OK`, and then sends basic AT initialization commands. It does not use the old standalone UART diagnostic path.
 
-1. Configure `UART_NUM_1` at `115200` baud.
-2. Drive GPIO2 high.
-3. Listen for startup UART data for 3 seconds.
-4. Send `ATE0` and print raw response bytes.
-5. Send `AT` up to 3 times and print raw response bytes.
-6. Stay in an idle loop and keep printing unsolicited UART data.
+## ML307R Basic Connect
+
+`EXAMPLE_ML307R_BASIC_CONNECT` demonstrates the minimum useful esp-lwlte ML307R flow:
+
+1. Create an ML307R LWLTE facade over UART.
+2. Register LTE facade events.
+3. Start LTE network activation asynchronously.
+4. Wait for `LWLTE_EVENT_NET_ONLINE`.
+5. Run one ping after the network is online.
+
+Expected logs include:
+
+```text
+ML307R basic connect example
+LTE event=2 net=1 err=0
+LTE event=3 net=2 err=0
+ML307R network is online
+ping summary: sent=4 recv=4 lost=0 min=... max=... avg=...
+```
+
+## ML307R MQTT Client
+
+`EXAMPLE_ML307R_MQTT_CLIENT` demonstrates a ThingsBoard MQTT client over ML307R LTE.
+
+Configure MQTT settings with `idf.py menuconfig` under **Example MQTT Settings**. The Kconfig defaults are shared with the Air780EP example; set the ThingsBoard device access token to the ML307R device token before running against a real device.
+
+Topics used by the example:
+
+| Direction | Topic | Purpose |
+|-----------|-------|---------|
+| Publish | `v1/devices/me/telemetry` | Periodic telemetry data |
+| Subscribe | `v1/devices/me/attributes` | Downlink/shared attribute updates from ThingsBoard |
+
+The ML307R MQTT example intentionally keeps downlink handling simple: received MQTT data is printed in the event callback. It does not implement RPC response logic.

@@ -194,16 +194,19 @@ class Ml307rContractTest(unittest.TestCase):
     def test_mqtt_command_mapping_exists(self):
         for token in [
             "ML307R_URC_MQTTURC",
+            "#define ML307R_MQTT_MAX_PAYLOAD_LEN      1024U",
             "AT+MQTTCFG=\"version\",0,4",
             "AT+MQTTCFG=\"cid\",0,1",
             "AT+MQTTCFG=\"keepalive\",0,%u",
             "AT+MQTTCFG=\"clean\",0,%u",
+            "AT+MQTTCFG=\"encoding\",0,1,0",
             "AT+MQTTCFG=\"cached\",0,0",
             "AT+MQTTCONN=0,\"%s\",%u,\"%s\",\"%s\",\"%s\"",
             "AT+MQTTDISC=0",
             "AT+MQTTSUB=0,\"%s\",%u",
             "AT+MQTTUNSUB=0,\"%s\"",
-            "AT+MQTTPUB=0,\"%s\",%u,%u,%u,\"%s\"",
+            "AT+MQTTPUB=0,\"%s\",%u,%u,0,%u,\"%s\"",
+            "hex_encode_payload",
             "parse_mqtt_conn_urc",
             "parse_mqtt_publish_urc",
             "handle_mqtturc",
@@ -216,6 +219,26 @@ class Ml307rContractTest(unittest.TestCase):
         )
         self.assertNotIn("escape_at_string", configure_body)
         self.assertNotIn("char *host", configure_body)
+
+        publish_body = function_body(
+            self.ml307r_c,
+            "static esp_err_t ml307r_mqtt_publish(modem_t *me,",
+        )
+        self.assertIn("hex_payload = hex_encode_payload", publish_body)
+        self.assertIn("(unsigned int)publish->payload_len, hex_payload", publish_body)
+        self.assertNotIn("at_text_payload_safe", publish_body)
+        self.assertNotIn("copy_payload_text", publish_body)
+
+        hex_body = function_body(
+            self.ml307r_c,
+            "static char *hex_encode_payload(const uint8_t *payload, size_t payload_len)",
+        )
+        self.assertIn('static const char hex[] = "0123456789ABCDEF";', hex_body)
+        self.assertIn("payload_len > ML307R_MQTT_MAX_PAYLOAD_LEN", hex_body)
+        self.assertIn("payload_len > (SIZE_MAX - 1U) / 2U", hex_body)
+        self.assertIn("text[i * 2U] = hex[payload[i] >> 4];", hex_body)
+        self.assertIn("text[(i * 2U) + 1U] = hex[payload[i] & 0x0FU];", hex_body)
+        self.assertIn("text[payload_len * 2U] = '\\0';", hex_body)
 
         handle_body = function_body(
             self.ml307r_c,
