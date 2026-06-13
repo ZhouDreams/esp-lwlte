@@ -99,130 +99,1030 @@ typedef struct {
 /**********************
  *  STATIC PROTOTYPES
  **********************/
+/**
+ * @brief 销毁 ML307R 子类资源
+ * @details Clear MQTT state, unregister URCs and mark the modem uninitialized;
+ *          no AT command is sent
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: URC 注销错误
+ */
 static esp_err_t ml307r_destroy(modem_handle_t *me);
+/**
+ * @brief 启动 ML307R 调制解调器
+ * @details Hardware-reset the module, wait for AT-ready, run the basic init
+ *          commands, register URCs and transition to the ready state
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: 启动失败（状态切换、复位、初始化或 URC 注册错误）
+ */
 static esp_err_t ml307r_start(modem_handle_t *me);
+/**
+ * @brief 复位 ML307R 调制解调器
+ * @details Hardware-reset the module, wait for AT-ready, run the basic init
+ *          commands, register URCs and transition to the ready state
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: 复位失败（状态切换、复位、初始化或 URC 注册错误）
+ */
 static esp_err_t ml307r_reset(modem_handle_t *me);
+/**
+ * @brief 获取 ML307R 调制解调器信息
+ * @details Query IMEI/IMSI/ICCID/model/firmware via AT+CGSN, AT+CIMI, AT+MCCID,
+ *          AT+CGMM and AT+CGMR; cache and return the result
+ * @param[in] me 调制解调器句柄
+ * @param[out] info 调制解调器信息
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 必需字段缺失或无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_get_info(modem_handle_t *me, modem_info_t *info);
+/**
+ * @brief 获取 ML307R SIM 卡状态
+ * @details Query SIM status via AT+CPIN? and parse the +CPIN line
+ * @param[in] me 调制解调器句柄
+ * @param[out] status SIM 卡状态
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
+/**
+ * @brief 获取 ML307R 信号质量
+ * @details Query signal quality via AT+CSQ; convert RSSI to dBm and validate BER
+ * @param[in] me 调制解调器句柄
+ * @param[out] signal 信号质量
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal);
+/**
+ * @brief 获取 ML307R 网络注册状态
+ * @details Query EPS/GSM/CS registration via AT+CEREG?, AT+CGREG? and AT+CREG?;
+ *          the first non-UNKNOWN result wins and updates the modem state
+ * @param[in] me 调制解调器句柄
+ * @param[out] status 网络注册状态
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t *status);
+/**
+ * @brief 获取 ML307R 分组域附着状态
+ * @details Query packet-domain attach status via AT+CGATT (delegated to
+ *          query_cgatt)
+ * @param[in] me 调制解调器句柄
+ * @param[out] attached 是否已附着
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_get_packet_attach_status(modem_handle_t *me, bool *attached);
+/**
+ * @brief 设置 ML307R APN
+ * @details Set APN via AT+CGDCONT=<cid>,"IPV4V6","<apn>"; only cid 1 is supported
+ * @param[in] me 调制解调器句柄
+ * @param[in] cid PDP 上下文 ID（仅支持 1）
+ * @param[in] apn APN 字符串
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NOT_SUPPORTED: cid 不受支持
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
+/**
+ * @brief 激活 ML307R PDP 上下文
+ * @details Activate PDP via AT+MIPCALL=1,<cid>; wait for the +MIPCALL URC or
+ *          poll AT+MIPCALL? until active; only cid 1 is supported
+ * @param[in] me 调制解调器句柄
+ * @param[in] cid PDP 上下文 ID（仅支持 1）
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NOT_SUPPORTED: cid 不受支持
+ *         - ESP_ERR_TIMEOUT: 激活超时
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_activate_pdp(modem_handle_t *me, uint8_t cid);
+/**
+ * @brief 去激活 ML307R PDP 上下文
+ * @details Deactivate PDP via AT+MIPCALL=0,<cid> and post a PDP_DEACTIVATED
+ *          event; only cid 1 is supported
+ * @param[in] me 调制解调器句柄
+ * @param[in] cid PDP 上下文 ID（仅支持 1）
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NOT_SUPPORTED: cid 不受支持
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid);
+/**
+ * @brief 获取 ML307R PDP 上下文
+ * @details Refresh the cached PDP context via AT+MIPCALL? for the given cid;
+ *          only cid 1 is supported
+ * @param[in] me 调制解调器句柄
+ * @param[in] cid PDP 上下文 ID（仅支持 1）
+ * @param[out] pdp PDP 上下文
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NOT_SUPPORTED: cid 不受支持
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
                                          modem_pdp_context_t *pdp);
+/**
+ * @brief 配置 ML307R MQTT
+ * @details Configure MQTT via AT+MQTTCFG for version/cid/encoding/keepalive/
+ *          clean/cached; refuses if the MQTT session is already connected
+ * @param[in] me 调制解调器句柄
+ * @param[in] config MQTT 配置
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 已连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
                                         const modem_mqtt_config_t *config);
+/**
+ * @brief 建立 ML307R MQTT TCP 通道
+ * @details ML307R couples TCP and session into a single AT+MQTTCONN, so this op
+ *          only verifies that MQTT has been configured
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 未配置
+ */
 static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me);
+/**
+ * @brief 连接 ML307R MQTT 会话
+ * @details Connect the MQTT session via AT+MQTTCONN and wait for the
+ *          +MQTTURC: "conn" indication
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 未配置或会话已连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_mqtt_connect(modem_handle_t *me);
+/**
+ * @brief 断开 ML307R MQTT 会话
+ * @details Disconnect the MQTT session via AT+MQTTDISC=0
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 会话未连接
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_mqtt_disconnect(modem_handle_t *me);
+/**
+ * @brief 断开 ML307R MQTT TCP 通道
+ * @details ML307R couples TCP and session, so this op just clears the local
+ *          MQTT flags without sending any AT command
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ */
 static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t *me);
+/**
+ * @brief 订阅 ML307R MQTT 主题
+ * @details Subscribe to an MQTT topic via AT+MQTTSUB=0,"<topic>",<qos>
+ * @param[in] me 调制解调器句柄
+ * @param[in] topic MQTT 主题
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 会话未连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_mqtt_subscribe(modem_handle_t *me,
                                         const modem_mqtt_topic_t *topic);
+/**
+ * @brief 取消订阅 ML307R MQTT 主题
+ * @details Unsubscribe from an MQTT topic via AT+MQTTUNSUB=0,"<topic>"
+ * @param[in] me 调制解调器句柄
+ * @param[in] topic MQTT 主题
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 会话未连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t *me,
                                           const modem_mqtt_topic_t *topic);
+/**
+ * @brief 发布 ML307R MQTT 消息
+ * @details Publish an MQTT message via AT+MQTTPUB=0,"<topic>",<qos>,<retain>,0,
+ *          <len>,"<hex>" with a hex-encoded binary payload; the dup flag is
+ *          hard-wired to 0 because lwlte only sends new messages
+ * @param[in] me 调制解调器句柄
+ * @param[in] publish MQTT 发布参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 会话未连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
                                       const modem_mqtt_publish_t *publish);
+/**
+ * @brief 查询 MQTT 连接状态
+ * @details Query MQTT connection state via AT+MQTTSTATE
+ * @param[in] me 调制解调器句柄
+ * @param[out] status MQTT 状态枚举
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_FAIL: AT 命令失败
+ *         - ESP_ERR_INVALID_RESPONSE: 响应解析失败
+ */
+static esp_err_t ml307r_mqtt_get_status(modem_handle_t *me,
+                                         modem_mqtt_status_t *status);
+/**
+ * @brief 映射 MQTT 状态值
+ * @details Map integer MQTT state (1/2/3) to enum; others map to OFFLINE
+ * @param[in] state AT 状态值
+ * @return MQTT 状态枚举
+ */
+static modem_mqtt_status_t map_mqtt_status(int state);
+/**
+ * @brief ML307R Ping 探测
+ * @details Send AT+MPING="<host>",<timeout_s>,<count>,<pktlen>,1; parse each
+ *          +MPING reply line and the +MPING "statistics" line, then validate
+ *          the summary against the parsed replies
+ * @param[in] me 调制解调器句柄
+ * @param[in] request Ping 请求参数
+ * @param[out] replies Ping 响应数组
+ * @param[in] max_replies replies 容量，须不小于 request->count
+ * @param[out] summary Ping 汇总统计
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t ml307r_ping(modem_handle_t *me,
                              const modem_ping_request_t *request,
                              modem_ping_reply_t *replies,
                              size_t max_replies,
                              modem_ping_summary_t *summary);
+/**
+ * @brief 转换为 ML307R 实例
+ * @details Convert to ML307R instance
+ * @param[in] me 调制解调器句柄
+ * @return ML307R 调制解调器实例
+ */
 static modem_ml307r_t *to_ml307r(modem_handle_t *me);
+
+/**
+ * @brief 初始化命令上下文
+ * @details Initialize command context
+ * @param[out] ctx 命令上下文
+ */
 static void init_cmd_ctx(ml307r_cmd_ctx_t *ctx);
+
+/**
+ * @brief 发送 AT 命令
+ * @details Send AT command
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] cmd AT 命令
+ * @param[out] ctx 命令上下文
+ * @param[in] timeout_ms 超时时间，0 使用默认值
+ * @return
+ *         - ESP_OK: 命令流程完成
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 引擎错误
+ */
 static esp_err_t send_cmd(modem_ml307r_t *self, const char *cmd,
                           ml307r_cmd_ctx_t *ctx, uint32_t timeout_ms);
+
+/**
+ * @brief 使用选项发送 AT 命令
+ * @details Send AT command with options
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] cmd AT 命令
+ * @param[out] ctx 命令上下文
+ * @param[in] options AT 命令选项
+ * @return
+ *         - ESP_OK: 命令流程完成
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 引擎错误
+ */
 static esp_err_t send_cmd_with_options(modem_ml307r_t *self, const char *cmd,
                                        ml307r_cmd_ctx_t *ctx,
                                        const at_cmd_options_t *options);
+
+/**
+ * @brief 确认 AT 响应成功
+ * @details Ensure AT response is OK
+ * @param[in] response AT 响应
+ * @param[in] cmd AT 命令
+ * @return
+ *         - ESP_OK: 响应成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_FAIL: 响应失败
+ */
 static esp_err_t ensure_at_ok(const at_response_t *response, const char *cmd);
+/**
+ * @brief 查找指定前缀的响应行
+ * @details Find response line with prefix
+ * @param[in] response AT 响应
+ * @param[in] prefix 响应行前缀
+ * @return 匹配的响应行或 NULL
+ */
 static const char *find_line_with_prefix(const at_response_t *response,
                                          const char *prefix);
+
+/**
+ * @brief 获取首个数据行
+ * @details Get first data line
+ * @param[in] response AT 响应
+ * @return 首个数据行或 NULL
+ */
 static const char *first_data_line(const at_response_t *response);
+
+/**
+ * @brief 复制字符串字段
+ * @details Copy string field
+ * @param[out] dst 目标缓冲区
+ * @param[in] dst_size 目标缓冲区大小
+ * @param[in] src 源字符串
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 字符串被截断
+ */
 static esp_err_t copy_str_field(char *dst, size_t dst_size, const char *src);
+
+/**
+ * @brief 复制字符串字段并剥离外层引号
+ * @details Copy string field and strip surrounding quotes
+ * @param[out] dst 目标缓冲区
+ * @param[in] dst_size 目标缓冲区大小
+ * @param[in] src 源字符串
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 字符串被截断
+ */
 static esp_err_t copy_str_field_strip_quotes(char *dst, size_t dst_size,
                                              const char *src);
+
+/**
+ * @brief 检查字符串是否仅包含十进制数字
+ * @details Check whether string contains only decimal digits
+ * @param[in] value 待检查字符串
+ * @return true: 仅包含数字； false: NULL、空串或包含非数字字符
+ */
 static bool decimal_digits_only(const char *value);
+
+/**
+ * @brief 校验身份标识值是否合法
+ * @details Validate IMEI/IMSI/ICCID against length and digit rules;
+ *          returns false when value starts with '+' (likely an error echo)
+ * @param[in] cmd 身份查询 AT 命令 (AT+CGSN/AT+CIMI/AT+MCCID)
+ * @param[in] value 响应值
+ * @return true: 合法； false: 非法
+ */
 static bool identity_value_valid(const char *cmd, const char *value);
+/**
+ * @brief 检查 PDP 上下文 ID 是否有效
+ * @details Check whether PDP context ID is valid
+ * @param[in] cid PDP 上下文 ID
+ * @return true: 有效； false: 无效
+ */
 static bool cid_valid(uint8_t cid);
+
+/**
+ * @brief 获取指定 PDP 上下文缓存
+ * @details Get cached PDP context by CID
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] cid PDP 上下文 ID
+ * @return PDP 上下文缓存或 NULL
+ */
 static modem_pdp_context_t *pdp_by_cid(modem_ml307r_t *self, uint8_t cid);
+
+/**
+ * @brief 非阻塞设置调制解调器状态
+ * @details Set modem state without blocking
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] state 调制解调器状态
+ */
 static void set_state_nonblocking(modem_ml307r_t *self, modem_state_t state);
+
+/**
+ * @brief 非阻塞投递调制解调器事件
+ * @details Post event to event queue with zero-wait lock and queue send;
+ *          drops the event when lock busy, queue full, or task unavailable
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] event 待投递事件
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_TIMEOUT: 锁忙或队列已满
+ *         - ESP_ERR_INVALID_STATE: 事件任务不可用
+ */
 static esp_err_t post_event_nonblocking(modem_ml307r_t *self,
                                         const modem_event_t *event);
+
+/**
+ * @brief 跳过响应前缀并返回值起始位置
+ * @details Skip response prefix and return value start
+ * @param[in] line 响应行
+ * @param[in] prefix 响应前缀
+ * @return 值起始位置或 NULL
+ */
 static const char *skip_prefix_value(const char *line, const char *prefix);
+
+/**
+ * @brief 解析前缀后的整数
+ * @details Parse integer after prefix
+ * @param[in] line 响应行
+ * @param[in] prefix 响应前缀
+ * @param[out] out 解析结果
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ */
 static esp_err_t parse_int_after_prefix(const char *line, const char *prefix,
                                         int *out);
+
+/**
+ * @brief 解析前缀后的两个整数
+ * @details Parse two integers after prefix
+ * @param[in] line 响应行
+ * @param[in] prefix 响应前缀
+ * @param[out] first 第一个整数
+ * @param[out] second 第二个整数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ */
 static esp_err_t parse_two_ints_after_prefix(const char *line, const char *prefix,
                                              int *first, int *second);
+
+/**
+ * @brief 映射网络注册状态
+ * @details Map network registration status
+ * @param[in] stat AT 注册状态值
+ * @return 调制解调器注册状态
+ */
 static modem_reg_status_t map_reg_status(int stat);
+
+/**
+ * @brief 解析网络注册响应行
+ * @details Parse network registration response line
+ * @param[in] line 响应行
+ * @param[in] prefix 响应前缀
+ * @param[out] status 网络注册状态
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ */
 static esp_err_t parse_registration_line(const char *line, const char *prefix,
                                          modem_reg_status_t *status);
+
+/**
+ * @brief 解析网络注册 URC 行
+ * @details Parse network registration URC line
+ * @param[in] line URC 行
+ * @param[in] prefix URC 前缀
+ * @param[out] status 网络注册状态
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ */
 static esp_err_t parse_registration_urc_line(const char *line, const char *prefix,
                                              modem_reg_status_t *status);
+
+/**
+ * @brief 消费注册响应附加字段
+ * @details Consume registration response extra fields
+ * @param[in] cursor 附加字段起始位置
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ */
 static esp_err_t consume_registration_extra_fields(const char *cursor);
+
+/**
+ * @brief 解析 SIM 状态响应行
+ * @details Parse SIM status response line
+ * @param[in] line 响应行
+ * @return SIM 状态
+ */
 static modem_sim_status_t parse_sim_status_line(const char *line);
+
+/**
+ * @brief 缓存 SIM 状态
+ * @details Cache SIM status
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] status SIM 状态
+ */
 static void cache_sim_status(modem_ml307r_t *self, modem_sim_status_t status);
+
+/**
+ * @brief 查询分组域附着状态
+ * @details Query packet domain attach status
+ * @param[in] self ML307R 调制解调器实例
+ * @param[out] attached 是否已附着
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t query_cgatt(modem_ml307r_t *self, bool *attached);
+/**
+ * @brief 检查 AT 参数是否安全
+ * @details Check whether AT argument is safe
+ * @param[in] value AT 参数字符串
+ * @return true: 安全； false: 不安全
+ */
 static bool at_arg_safe(const char *value);
+
+/**
+ * @brief 检查字符串是否像 IP 地址
+ * @details Check whether string looks like an IP address
+ * @param[in] line 响应行
+ * @return true: 像 IP 地址； false: 不像 IP 地址
+ */
 static bool looks_like_ip_addr(const char *line);
+
+/**
+ * @brief 转换毫秒超时为 FreeRTOS ticks
+ * @details Convert millisecond timeout to FreeRTOS ticks
+ * @param[in] timeout_ms 超时时间
+ * @return FreeRTOS ticks
+ */
 static TickType_t timeout_ticks(uint32_t timeout_ms);
+
+/**
+ * @brief 设置 initialized 标志
+ * @details Set initialized flag
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] initialized 初始化状态
+ */
 static void set_initialized(modem_ml307r_t *self, bool initialized);
+
+/**
+ * @brief 设置 MQTT 数据使能标志
+ * @details Set MQTT data-enabled flag (lock-protected)
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] enabled 使能状态
+ */
 static void set_mqtt_data_enabled(modem_ml307r_t *self, bool enabled);
+
+/**
+ * @brief 查询 MQTT 数据使能标志
+ * @details Get MQTT data-enabled flag (lock-protected)
+ * @param[in] self ML307R 调制解调器实例
+ * @return true: 已使能； false: 未使能
+ */
 static bool mqtt_data_is_enabled(modem_ml307r_t *self);
+
+/**
+ * @brief 克隆 MQTT 字符串
+ * @details Malloc'd copy of a string; NULL input yields NULL output
+ * @param[in] value 源字符串，可为 NULL
+ * @return 克隆字符串或 NULL
+ */
 static char *clone_mqtt_string(const char *value);
+
+/**
+ * @brief 深拷贝 MQTT 配置
+ * @details Deep-copy MQTT config; frees any existing dst fields
+ * @param[out] dst 目标 MQTT 配置
+ * @param[in] src 源 MQTT 配置
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ */
 static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
                                   const modem_mqtt_config_t *src);
+
+/**
+ * @brief 释放 MQTT 配置
+ * @details Free all strings inside config and zero the struct
+ * @param[in,out] config MQTT 配置
+ */
 static void free_mqtt_config(modem_mqtt_config_t *config);
+
+/**
+ * @brief 清空 MQTT 状态
+ * @details Reset MQTT flags to false and free stored config
+ * @param[in] self ML307R 调制解调器实例
+ */
 static void clear_mqtt_state(modem_ml307r_t *self);
+/**
+ * @brief 转义 AT 字符串
+ * @details Escape \", \\, \\r, \\n for AT command string arguments;
+ *          returns a malloc'd string
+ * @param[in] value 待转义字符串
+ * @return 转义后的字符串或 NULL
+ */
 static char *escape_at_string(const char *value);
+
+/**
+ * @brief 十六进制编码负载
+ * @details Hex-encode binary payload as uppercase ASCII string for AT commands;
+ *          returns a malloc'd string
+ * @param[in] payload 二进制负载，可为 NULL（当 payload_len 为 0）
+ * @param[in] payload_len 负载长度
+ * @return 十六进制字符串或 NULL
+ */
 static char *hex_encode_payload(const uint8_t *payload, size_t payload_len);
+
+/**
+ * @brief 投递 MQTT 数据事件
+ * @details Post MODEM_EVENT_PROTOCOL_DATA with MQTT topic/payload;
+ *          ownership of topic/payload transfers to the event queue on success
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] topic 主题缓冲区
+ * @param[in] topic_len 主题长度
+ * @param[in] payload 负载缓冲区
+ * @param[in] payload_len 负载长度
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: 事件投递错误
+ */
 static esp_err_t post_mqtt_data_event(modem_ml307r_t *self, char *topic,
                                        size_t topic_len, uint8_t *payload,
                                        size_t payload_len);
+
+/**
+ * @brief 匹配 MQTT URC 事件名
+ * @details Check +MQTTURC:"<event_name>" prefix and match the quoted event name
+ * @param[in] line URC 完整行
+ * @param[in] event_name 期望的事件名
+ * @param[out] event_end 闭合引号后的位置，可为 NULL
+ * @return true: 匹配成功； false: 不匹配或参数无效
+ */
 static bool mqtt_event_matches(const char *line, const char *event_name,
                                const char **event_end);
+
+/**
+ * @brief 解析 MQTT 无符号整数字段
+ * @details Parse unsigned integer at cursor, advance cursor past digits,
+ *          enforce max_value upper bound
+ * @param[in,out] cursor 解析游标
+ * @param[in] max_value 允许的最大值
+ * @param[out] out_value 解析结果
+ * @return true: 成功； false: 失败
+ */
 static bool parse_mqtt_uint_field(const char **cursor, unsigned long max_value,
                                   unsigned long *out_value);
+
+/**
+ * @brief 解析 MQTT 逗号分隔符
+ * @details Skip whitespace, consume a comma separator, advance cursor
+ * @param[in,out] cursor 解析游标
+ * @return true: 成功； false: 失败
+ */
 static bool parse_mqtt_comma(const char **cursor);
+/**
+ * @brief 获取当前毫秒时间
+ * @details Get current time in milliseconds
+ * @return 当前毫秒时间
+ */
 static uint32_t now_ms(void);
+
+/**
+ * @brief 判断是否已达到超时时间
+ * @details Check whether timeout has elapsed
+ * @param[in] start_ms 起始毫秒时间
+ * @param[in] timeout_ms 超时时间
+ * @return true: 已超时； false: 未超时
+ */
 static bool elapsed_at_least(uint32_t start_ms, uint32_t timeout_ms);
+
+/**
+ * @brief 延迟初始化重试
+ * @details Delay before initialization retry
+ */
 static void delay_init_retry(void);
+
+/**
+ * @brief 等待 AT 命令通道就绪
+ * @details Wait until AT command channel is ready
+ * @param[in] self ML307R 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_TIMEOUT: 超时
+ */
 static esp_err_t wait_at_ready(modem_ml307r_t *self);
+
+/**
+ * @brief 执行基础初始化命令
+ * @details Run basic initialization commands
+ * @param[in] self ML307R 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t run_basic_init_cmds(modem_ml307r_t *self);
+
+/**
+ * @brief 完成调制解调器 ready 流程
+ * @details Finish modem ready flow
+ * @param[in] me 调制解调器句柄
+ * @param[in] self ML307R 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: 状态设置错误
+ */
 static esp_err_t finish_modem_ready(modem_handle_t *me, modem_ml307r_t *self);
+
+/**
+ * @brief 硬件复位模块(通过 EN 引脚)
+ * @details Hardware reset module via EN pin
+ * @details 拉低 EN 引脚，等待 reset_pulse_ms，拉高 EN 引脚
+ * @details Pull EN low, wait reset_pulse_ms, pull EN high
+ * @param[in] self ML307R 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: GPIO 错误
+ */
 static esp_err_t hardware_reset(modem_ml307r_t *self);
+
+/**
+ * @brief 注册 ML307R URC 处理器
+ * @details Register ML307R URC handlers
+ * @param[in] self ML307R 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 引擎注册错误
+ */
 static esp_err_t register_urcs(modem_ml307r_t *self);
+
+/**
+ * @brief 注销 ML307R URC 处理器
+ * @details Unregister ML307R URC handlers (wrapper around ml307r_unregister_urcs)
+ * @param[in] self ML307R 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 引擎注销错误
+ */
 static esp_err_t unregister_urcs(modem_ml307r_t *self);
+
+/**
+ * @brief 注销 ML307R URC 处理器
+ * @details Unregister ML307R URC handlers
+ * @param[in] self ML307R 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 引擎注销错误
+ */
 static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self);
+
+/**
+ * @brief 处理 CPIN URC
+ * @details Handle CPIN URC
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
 static void cpin_urc_handler(const char *prefix, const char *line, void *user_ctx);
+
+/**
+ * @brief 处理注册状态 URC
+ * @details Handle registration status URC
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
 static void reg_urc_handler(const char *prefix, const char *line, void *user_ctx);
+
+/**
+ * @brief 处理 MIPCALL URC
+ * @details Handle MIPCALL URC: parse PDP context, update cache,
+ *          post PDP activated/deactivated event
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
 static void mipcall_urc_handler(const char *prefix, const char *line, void *user_ctx);
+
+/**
+ * @brief 处理 MQTTURC URC
+ * @details Handle MQTTURC URC: forward to MQTT URC dispatcher
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
 static void mqtturc_urc_handler(const char *prefix, const char *line, void *user_ctx);
 
-/* Network, MQTT, and Ping helper prototypes used by Tasks 5-7. */
+/**
+ * @brief 查询 ML307R PDP 上下文
+ * @details Send AT+MIPCALL? and parse the +MIPCALL line matching the given cid,
+ *          then refresh the cached PDP context. Only ML307R_PRIMARY_CID is
+ *          supported.
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] cid PDP 上下文 ID（仅支持主 CID）
+ * @param[out] out_pdp 解析得到的 PDP 上下文，可为 NULL
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: self 为 NULL 或 cid 无效
+ *         - ESP_ERR_NOT_SUPPORTED: cid 不是主 CID
+ *         - ESP_ERR_NOT_FOUND: 未找到匹配的 +MIPCALL 行
+ *         - ESP_ERR_INVALID_RESPONSE: 响应解析失败
+ *         - 其他: 底层 AT 命令失败
+ */
 static esp_err_t query_mipcall(modem_ml307r_t *self, uint8_t cid,
                                modem_pdp_context_t *out_pdp);
+
+/**
+ * @brief 从 +MIPCALL 行解析 PDP 上下文 ID
+ * @details Parse the leading cid field of a +MIPCALL URC/response line.
+ * @param[in] line +MIPCALL 响应行
+ * @param[out] cid 解析得到的 PDP 上下文 ID
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: cid 为 NULL
+ *         - ESP_ERR_INVALID_RESPONSE: 行格式无效
+ */
 static esp_err_t parse_mipcall_cid(const char *line, uint8_t *cid);
+
+/**
+ * @brief 解析 +MIPCALL 行为 PDP 上下文
+ * @details Parse a +MIPCALL line into a PDP context, including cid, active
+ *          state, PDP type (defaulted to IPV4V6) and IP address. Active state
+ *          0 carries no address field; state 1 requires a valid IP suffix.
+ * @param[in] line +MIPCALL 响应行
+ * @param[out] pdp 解析结果
+ * @return true: 成功； false: 行格式无效或参数为空
+ */
 static bool parse_mipcall_line(const char *line, modem_pdp_context_t *pdp);
+
+/**
+ * @brief 解析 MQTT 连接 URC（可配置阻塞模式）
+ * @details Parse +MQTTURC: "conn",<connect_id>,<state> URC, update the cached
+ *          MQTT session state and post a MODEM_EVENT_PROTOCOL_CLOSED event when
+ *          the session transitions from connected to disconnected. When
+ *          nonblocking is true the instance lock is taken with zero timeout.
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] line +MQTTURC 行
+ * @param[in] nonblocking true 时以非阻塞方式获取实例锁
+ * @return
+ *         - ESP_OK: 收到连接成功 URC
+ *         - ESP_FAIL: 收到断连/重连 URC（事件已投递）
+ *         - ESP_ERR_INVALID_ARG: 参数为 NULL
+ *         - ESP_ERR_INVALID_RESPONSE: 行格式不匹配
+ *         - ESP_ERR_TIMEOUT: 非阻塞模式下实例锁繁忙
+ */
 static esp_err_t parse_mqtt_conn_urc_ex(modem_ml307r_t *self, const char *line,
                                         bool nonblocking);
+
+/**
+ * @brief 解析 MQTT 连接 URC（非阻塞）
+ * @details Thin wrapper around parse_mqtt_conn_urc_ex with nonblocking=true,
+ *          suitable for use inside URC dispatcher callbacks.
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] line +MQTTURC 行
+ * @return 同 parse_mqtt_conn_urc_ex
+ */
 static esp_err_t parse_mqtt_conn_urc(modem_ml307r_t *self, const char *line);
+
+/**
+ * @brief 解析 MQTT 推送 URC
+ * @details Parse +MQTTURC: "publish",<connect_id>,<mid>,<topic>,<total_len>,
+ *          <payload_len>,<payload> URC. Allocates new buffers for topic and
+ *          payload via malloc; the caller MUST free() them on success.
+ * @param[in] line +MQTTURC 行
+ * @param[out] topic 动态分配的 topic 缓冲（需调用方 free）
+ * @param[out] topic_len topic 长度
+ * @param[out] payload 动态分配的 payload 缓冲（需调用方 free）
+ * @param[out] payload_len payload 长度
+ * @return true: 成功； false: 行格式无效、参数为空或内存分配失败
+ */
 static bool parse_mqtt_publish_urc(const char *line, char **topic,
                                    size_t *topic_len, uint8_t **payload,
                                    size_t *payload_len);
+
+/**
+ * @brief 处理 MQTT URC
+ * @details Dispatch +MQTTURC lines: "conn" updates session state, "publish"
+ *          posts a data event when MQTT data is enabled, "pubnmi" is ignored,
+ *          and acknowledgement/diagnostic events (suback/unsuback/puback/
+ *          pubrec/pubcomp/timeout/drop/pingresp) are logged at debug level.
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] line +MQTTURC 行
+ */
 static void handle_mqtturc(modem_ml307r_t *self, const char *line);
+
+/**
+ * @brief 从游标解析无符号整数
+ * @details Skip leading whitespace at *cursor, parse a base-10 unsigned integer
+ *          capped by max_value, then advance *cursor past the digits.
+ * @param[in,out] cursor 当前解析位置，成功时向后移动
+ * @param[in] max_value 允许的最大值
+ * @param[out] out_value 解析结果
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数为 NULL
+ *         - ESP_ERR_INVALID_RESPONSE: 行格式无效或超出范围
+ */
 static esp_err_t parse_mping_uint(const char **cursor,
                                   uint32_t max_value,
                                   uint32_t *out_value);
+
+/**
+ * @brief 汇总 Ping 统计信息
+ * @details Iterate over received ping replies (capped by request->count) and
+ *          compute sent, received, lost counts and min/max/avg RTT in ms.
+ * @param[in] request Ping 请求参数
+ * @param[in] replies 单次应答数组
+ * @param[in] reply_count replies 数组中的元素数量
+ * @param[out] summary 计算得到的统计信息
+ */
 static void calculate_ping_summary(const modem_ping_request_t *request,
                                    modem_ping_reply_t *replies,
                                    size_t reply_count,
                                    modem_ping_summary_t *summary);
+
+/**
+ * @brief 解析单条 +MPING 应答行
+ * @details Parse +MPING: <result>,"<ip>",<packet_len>,<time_ms>,<ttl> reply
+ *          lines (skipping the "statistics" aggregate line). On result != 0
+ *          the reply is marked unsuccessful.
+ * @param[in] line +MPING 应答行
+ * @param[out] reply 解析得到的应答
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数为 NULL
+ *         - ESP_ERR_INVALID_RESPONSE: 行格式无效
+ */
 static esp_err_t parse_mping_reply_line(const char *line,
                                         modem_ping_reply_t *reply);
+
+/**
+ * @brief 解析 +MPING 统计行
+ * @details Parse +MPING: "statistics",<sent>,<lost>,<min>,<max>,<avg> aggregate
+ *          line, with cross-field sanity checks (lost <= sent, min <= avg <=
+ *          max when received > 0).
+ * @param[in] line +MPING 统计行
+ * @param[out] summary 解析得到的统计信息
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数为 NULL
+ *         - ESP_ERR_INVALID_RESPONSE: 行格式无效或字段不一致
+ */
 static esp_err_t parse_mping_statistics_line(const char *line,
                                              modem_ping_summary_t *summary);
+
+/**
+ * @brief 计算 MPING 命令的超时时间
+ * @details Derive the AT+MPING command timeout in milliseconds from the request
+ *          parameters (count, per-packet timeout, total_timeout_ms). Falls back
+ *          to ML307R_DEFAULT_CMD_TIMEOUT_MS when request is NULL, and prefers
+ *          total_timeout_ms when it is larger than the derived value.
+ * @param[in] request Ping 请求参数，可为 NULL
+ * @return 命令超时时间（毫秒）
+ */
 static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request);
 
 /**********************
@@ -249,6 +1149,7 @@ static const modem_ops_t s_ml307r_ops = {
     .mqtt_subscribe = ml307r_mqtt_subscribe,
     .mqtt_unsubscribe = ml307r_mqtt_unsubscribe,
     .mqtt_publish = ml307r_mqtt_publish,
+    .mqtt_get_status = ml307r_mqtt_get_status,
     .ping = ml307r_ping,
 };
 
@@ -2492,10 +3393,15 @@ static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
         return ESP_ERR_NO_MEM;
     }
 
-    /* AT command shape: AT+MQTTPUB=0,"%s",%u,%u,0,%u,"%s". */
-    int needed = snprintf(NULL, 0, "AT+MQTTPUB=0,\"%s\",%u,%u,0,%u,\"%s\"",
+    /* AT+MQTTPUB=<connect_id>,"<topic>",<qos>,<retain>,<dup>,<msg_len>,"<message>"
+     * lwlte 只发新消息，<dup> 恒为 0；模组自动重传由 MQTTCFG="retrans" 控制。
+     * lwlte only publishes new messages; <dup> is always 0. Module auto-retransmit
+     * is controlled by MQTTCFG="retrans" and does not use this parameter. */
+    const unsigned int dup_flag = 0U;
+    int needed = snprintf(NULL, 0, "AT+MQTTPUB=0,\"%s\",%u,%u,%u,%u,\"%s\"",
                            escaped_topic, (unsigned int)publish->qos,
                            publish->retain ? 1U : 0U,
+                           dup_flag,
                            (unsigned int)publish->payload_len, hex_payload);
     if (needed < 0) {
         free(escaped_topic);
@@ -2509,9 +3415,10 @@ static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
         return ESP_ERR_NO_MEM;
     }
     snprintf(cmd, (size_t)needed + 1U,
-             "AT+MQTTPUB=0,\"%s\",%u,%u,0,%u,\"%s\"",
+             "AT+MQTTPUB=0,\"%s\",%u,%u,%u,%u,\"%s\"",
              escaped_topic, (unsigned int)publish->qos,
              publish->retain ? 1U : 0U,
+             dup_flag,
              (unsigned int)publish->payload_len, hex_payload);
 
     ml307r_cmd_ctx_t ctx;
@@ -2524,6 +3431,45 @@ static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
     free(escaped_topic);
     free(hex_payload);
     return ret;
+}
+
+static modem_mqtt_status_t map_mqtt_status(int state)
+{
+    switch (state) {
+    case 2:  return MODEM_MQTT_STATUS_AUTHENTICATED;
+    case 1:  return MODEM_MQTT_STATUS_TCP_CONNECTED;
+    case 3:  return MODEM_MQTT_STATUS_OFFLINE;
+    default: return MODEM_MQTT_STATUS_OFFLINE;
+    }
+}
+
+static esp_err_t ml307r_mqtt_get_status(modem_handle_t *me,
+                                        modem_mqtt_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_ml307r_t *self = to_ml307r(me);
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+MQTTSTATE=0", &ctx,
+                             ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTSTATE=0");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+MQTTSTATE=0 failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, "+MQTTSTATE");
+    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG,
+                        "+MQTTSTATE line missing");
+
+    int state = 0;
+    ret = parse_int_after_prefix(line, "+MQTTSTATE", &state);
+    ESP_RETURN_ON_ERROR(ret, TAG, "parse +MQTTSTATE failed");
+    ESP_RETURN_ON_FALSE(state >= 1 && state <= 3, ESP_ERR_INVALID_RESPONSE,
+                        TAG, "invalid MQTT state %d", state);
+
+    *status = map_mqtt_status(state);
+    return ESP_OK;
 }
 
 static esp_err_t ml307r_ping(modem_handle_t *me,
