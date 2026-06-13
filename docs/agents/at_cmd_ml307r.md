@@ -193,24 +193,25 @@ MQTT 使用 ML307R `MQTT*` 命令族。`connect_id` 范围 `0..5`；MQTT 协议�
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
 | MQTT 协议版本 | `AT+MQTTCFG="version",<connect_id>[,<version>]` | `+MQTTCFG: "version",<version>` + `OK` 或 `OK` | `version=4`，默认 4 | 9s | `mqtt_client_configure()` | 仅连接未创建时可配置 |
-| MQTT PDP 绑定 | `AT+MQTTCFG="cid",<connect_id>[,<cid>]` | `+MQTTCFG: "cid"[,<cid>]` + `OK` 或 `OK` | 使用的 PDP cid | 9s | MQTT transport 绑定数据面 | 需先完成 `MIPCALL` |
+| MQTT PDP 绑定 | `AT+MQTTCFG="cid",<connect_id>[,<cid>]` | `+MQTTCFG: "cid"[,<cid>]` + `OK` 或 `OK` | ML307R `cid=1..15`，默认 1 | 9s | MQTT transport 绑定数据面 | 需先完成 `MIPCALL`；仅连接未创建时可配置 |
 | MQTT SSL 配置 | `AT+MQTTCFG="ssl",<connect_id>[,<ssl_enable>[,<ssl_id>]]` | `+MQTTCFG: "ssl",<ssl_enable>[,<ssl_id>]` + `OK` 或 `OK` | `ssl_enable=0/1`，默认 0；`ssl_id` 指 SSL context | 9s | MQTTS 配置 | 证书和认证先用 `MSSLCFG` 配置 |
-| Keepalive | `AT+MQTTCFG="keepalive",<connect_id>[,<keepalive_time>]` | `+MQTTCFG: "keepalive",<keepalive_time>` + `OK` 或 `OK` | 范围 `1..65535s`，默认 120s | 9s | MQTT keepalive | 与 TCP keepalive 不同 |
+| Keepalive | `AT+MQTTCFG="keepalive",<connect_id>[,<keepalive_time>]` | `+MQTTCFG: "keepalive",<keepalive_time>` + `OK` 或 `OK` | `0` 永不断开；`60..65535s`，默认 120s | 9s | MQTT keepalive | 与 TCP keepalive 不同；1.5 倍超时后服务器断开 |
 | Clean session | `AT+MQTTCFG="clean",<connect_id>[,<clean_session>]` | `+MQTTCFG: "clean",<clean_session>` + `OK` 或 `OK` | `0` 保留会话；`1` 清除会话，默认 0 | 9s | MQTT connect options | 连接前配置 |
-| 重传参数 | `AT+MQTTCFG="retrans",<connect_id>[,<retrans_interval>[,<retry_times>]]` | `+MQTTCFG: "retrans",...` + `OK` 或 `OK` | 重传间隔会随次数加倍 | 9s | QoS 重传策略 | 重传失败上报 `timeout` |
+| 重传参数 | `AT+MQTTCFG="retrans",<connect_id>[,<retrans_interval>[,<retry_times>]]` | `+MQTTCFG: "retrans",...` + `OK` 或 `OK` | `retrans_interval=20..60s`，默认 20；`retry_times=0..3`，默认 0；间隔随次数加倍 | 9s | QoS 重传策略 | 重传失败上报 `timeout`；仅连接未创建时可配置 |
 | Will 参数 | `AT+MQTTCFG="willoption",<connect_id>[,<will_flag>[,<will_qos>[,<will_retain>]]]` | `+MQTTCFG: "willoption",...` + `OK` 或 `OK` | `will_qos=0..2`；retain `0/1` | 9s | 遗嘱配置 | 连接前配置 |
-| Will payload | `AT+MQTTCFG="willpayload",<connect_id>[,"<will_topic>","<will_msg>"]` | `+MQTTCFG: "willpayload",...` + `OK` 或 `OK` | topic、message；输入格式受 encoding 影响 | 9s | 遗嘱 topic/payload | 连接前配置 |
-| Ping 请求间隔 | `AT+MQTTCFG="pingreq",<connect_id>[,<ping_interval>]` | `+MQTTCFG: "pingreq",<ping_interval>` + `OK` 或 `OK` | MQTT 心跳请求间隔 | 9s | 心跳诊断/调优 | 通常保留默认 |
+| Will payload | `AT+MQTTCFG="willpayload",<connect_id>[,"<will_topic>","<will_msg>"]` | `+MQTTCFG: "willpayload",...` + `OK` 或 `OK` | `will_topic`、`will_msg` 最长各 256 字节；输入格式受 encoding 影响 | 9s | 遗嘱 topic/payload | 连接前配置 |
+| Ping 请求间隔 | `AT+MQTTCFG="pingreq",<connect_id>[,<ping_interval>]` | `+MQTTCFG: "pingreq",<ping_interval>` + `OK` 或 `OK` | `60..86400s`，默认 120 | 9s | 心跳诊断/调优 | 通常保留默认 |
 | Ping 回显 | `AT+MQTTCFG="pingresp",<connect_id>[,<pingack>]` | `+MQTTCFG: "pingresp",<pingack>` + `OK` 或 `OK` | 是否上报 ping 响应 | 9s | MQTT ping URC 调试 | 按业务需要开启 |
-| Payload 编码 | `AT+MQTTCFG="encoding",<connect_id>[,<input_format>[,<output_format>]]` | `+MQTTCFG: "encoding",<input_format>,<output_format>` + `OK` 或 `OK` | `0` 原始/字符串；`1` HEX；`2` 转义字符串 | 9s | MQTT payload 编码 | 影响 publish、will、接收 payload 输出 |
+| Payload 编码 | `AT+MQTTCFG="encoding",<connect_id>[,<input_format>[,<output_format>]]` | `+MQTTCFG: "encoding",<input_format>,<output_format>` + `OK` 或 `OK` | `<input_format>`：`0` ASCII / `1` HEX / `2` 转义；`<output_format>`：`0` 原始 / `1` HEX（不支持 `2`） | 9s | MQTT payload 编码 | 设置后**立即生效**；input 影响 `MQTTPUB` 的 `<message>` 和 `MQTTCFG` 的 `<will_msg>` |
 | 缓存模式 | `AT+MQTTCFG="cached",<connect_id>[,<cached_mode>]` | `+MQTTCFG: "cached",<cached_mode>` + `OK` 或 `OK` | `0` 直接上报；`1` 缓存后读取 | 9s | MQTT RX 模式配置 | 二进制/长消息建议缓存模式 |
-| 自动重连 | `AT+MQTTCFG="reconn",<connect_id>[,<reconn_times>[,<reconn_interval>[,<mode>]]]` | `+MQTTCFG: "reconn",...` + `OK` 或 `OK` | `reconn_times=0..3`，默认 3 | 9s | 断线恢复策略 | 仍需 Core 侧状态机兜底 |
-| 建立 MQTT 连接 | `AT+MQTTCONN=<connect_id>,"<host>",<port>,"<clientID>","<user>","<passwd>"` | `OK`，随后 `+MQTTURC: "conn",<connect_id>,<conn_state>` | host、port、clientID、用户名、密码；`conn_state=0` 才表示连接成功 | 命令 9s；连接按业务预算 | `mqtt_client_connect()` | 只等待并接受 `conn_state=0`；其他状态按失败/断开处理 |
-| 订阅主题 | `AT+MQTTSUB=<connect_id>,"<topic>",<qos>` | `+MQTTSUB: <connect_id>,<mid>` + `OK`，随后 `+MQTTURC: "suback",...` | `qos=0..2` | 9s 或按 ACK 预算 | `mqtt_client_subscribe()` | 订阅完成看 `suback` 或 `timeout` |
-| 取消订阅 | `AT+MQTTUNSUB=<connect_id>,"<topic>"` | `+MQTTUNSUB: <connect_id>,<mid>` + `OK`，随后 `+MQTTURC: "unsuback",...` | topic | 9s 或按 ACK 预算 | `mqtt_client_unsubscribe()` | 失败/超时由 URC 表示 |
-| 发布消息 | `AT+MQTTPUB=<connect_id>,"<topic>",<qos>,<retain>[,<payload_len>[,"<payload>"]]` | `+MQTTPUB: <connect_id>,<mid>,<length>` + `OK`，随后 QoS URC | `qos=0..2`；retain `0/1`；payload 编码受配置影响 | 9s 或按 QoS 预算 | `mqtt_client_publish()` | QoS1/2 需等待 `puback/pubrec/pubcomp` |
-| 读取缓存消息 | `AT+MQTTREAD=<connect_id>` 或 `AT+MQTTREAD=<connect_id>,<mid>` | `+MQTTREAD: <connect_id>,...` + `OK` | store 消息数、topic、payload_len、payload | 9s 或按长度预算 | MQTT RX 读取 | `cached=1` 时收到 `pubnmi` 后读取 |
-| 查询状态 | `AT+MQTTSTATE=<connect_id>` | `+MQTTSTATE: <connect_id>,<state>` + `OK` | MQTT 连接状态 | 9s | `mqtt_client_get_state()` | 恢复流程中用于判断重连路径 |
+| 自动重连 | `AT+MQTTCFG="reconn",<connect_id>[,<reconn_times>[,<reconn_interval>[,<mode>]]]` | `+MQTTCFG: "reconn",...` + `OK` 或 `OK` | `reconn_times=0..3`，默认 3；`reconn_interval=20..60s`，默认 20；`mode=0` 固定间隔 / `1` 递增间隔 | 9s | 断线恢复策略 | 仍需 Core 侧状态机兜底 |
+| 查询全部配置 | `AT+MQTTCFG="query",<connect_id>` | 13 行 `+MQTTCFG: "<key>",...` + `OK` | 返回该连接的全部配置项 | 9s | 配置诊断/调试 | ML307R 支持；MN316/MN316A/MN318/MN319/MN326 不支持 |
+| 建立 MQTT 连接 | `AT+MQTTCONN=<connect_id>,"<host>"[,<port>[,"<clientID>"[,"<user>","<passwd>"]]]` | `OK`，随后 `+MQTTURC: "conn",<connect_id>,<conn_state>` | `host`/`clientID`/`user` 最长 128；`passwd` 最长 256；`port=0..65535`，默认 1883；`conn_state=0` 才表示连接成功 | 命令 9s；连接按业务预算 | `mqtt_client_connect()` | `host` 之后参数均可省略；只等待并接受 `conn_state=0`；重复连接同一 `connect_id` 返回错误 |
+| 订阅主题 | `AT+MQTTSUB=<connect_id>,"<topic>",<qos>[,"<topic1>",<qos1>...]` | `+MQTTSUB: <connect_id>,<mid>` + `OK`，随后 `+MQTTURC: "suback",...` | `qos=0..2`；`topic` 最长 256 字节；最多同时 3 个主题 | 9s 或按 ACK 预算 | `mqtt_client_subscribe()` | 查询订阅用 `AT+MQTTSUB=<connect_id>`；多主题 suback code 顺序对应 |
+| 取消订阅 | `AT+MQTTUNSUB=<connect_id>,"<topic>"[,"<topic1>"...]` | `+MQTTUNSUB: <connect_id>,<mid>` + `OK`，随后 `+MQTTURC: "unsuback",...` | `topic` 最长 256 字节；最多同时 3 个主题 | 9s 或按 ACK 预算 | `mqtt_client_unsubscribe()` | 失败/超时由 URC 表示 |
+| 发布消息 | `AT+MQTTPUB=<connect_id>,"<topic>",<qos>,<retain>,<dup>,<msg_len>[,"<message>"]` | `+MQTTPUB: <connect_id>,<mid>,<length>` + `OK`，随后 QoS URC | `qos=0..2`；retain `0/1`；`dup=0/1` 重发标志；`msg_len=0..1024`（ML307R）；省略 `<message>` 进入数据模式 `>` | 9s 或按 QoS 预算 | `mqtt_client_publish()` | QoS1/2 需等待 `puback/pubrec/pubcomp` |
+| 读取缓存消息 | `AT+MQTTREAD=<connect_id>` 或 `AT+MQTTREAD=<connect_id>,<count>` | `+MQTTREAD: <connect_id>,...` + `OK` | 形式一返回 `<store_msgs>,<total_len>`；形式二按 `<count>` 条返回 `<mid>,"<topic>",<payload_len>,<payload>` | 9s 或按长度预算 | MQTT RX 读取 | `cached=1` 时收到 `pubnmi` 后读取；4G/5G 缓存上限 8KB |
+| 查询状态 | `AT+MQTTSTATE=<connect_id>` | `+MQTTSTATE: <state>` + `OK` | `state`：`1` 连接/重连中；`2` 连接成功；`3` 断开；`4..255` 保留 | 9s | `mqtt_client_get_state()` | 响应**不含** connect_id；状态值与 URC `conn_state` 不同 |
 | 主动断开 | `AT+MQTTDISC=<connect_id>` | `OK`，随后 `+MQTTURC: "conn",<connect_id>,2` | `conn_state=2` 表示客户端主动断开 | 9s | `mqtt_client_disconnect()` | `2` 不是 connected，收到后清理本地 MQTT 状态 |
 
 ### MQTT URC
@@ -219,7 +220,7 @@ MQTT 使用 ML307R `MQTT*` 命令族。`connect_id` 范围 `0..5`；MQTT 协议�
 |---------|------|----------|----------|
 | `+MQTTURC: "conn",<connect_id>,<conn_state>` | MQTT 连接状态变化 | `0` -> MQTT connected；`1` -> reconnecting；`2` -> user disconnected；`3` -> auth/protocol rejected；`4` -> server disconnected；`5` -> keepalive timeout；`6` -> network error；`255` -> unknown error | `MQTTCONN` 后只接受 `conn_state=0` 为成功；`MQTTDISC` 后期望 `conn_state=2` |
 | `+MQTTURC: "pubnmi",<connect_id>,<mid>,<data_len>` | 缓存模式收到消息提示 | 触发 `AT+MQTTREAD` | 避免 payload 混入 AT 流 |
-| `+MQTTURC: "publish",<connect_id>,<mid>,<topic>,<total_len>,<payload_len>,<payload>` | 直接模式收到发布消息 | MQTT RX event | 按长度解析 payload |
+| `+MQTTURC: "publish",<connect_id>,<mid>,<topic>,<total_len>,<payload_len>,<payload>` | 直接模式收到发布消息 | MQTT RX event | 按长度解析 payload；ML307R 的 topic+msg 总长超 512 字节会分包 |
 | `+MQTTURC: "drop",<connect_id>,<dropped_length>` | 接收数据被丢弃 | RX overflow/drop event | 记录日志并考虑增大读取频率 |
 | `+MQTTURC: "pingresp",<connect_id>,<ping_ret>` | MQTT ping 响应 | keepalive event | 需配置上报 |
 | `+MQTTURC: "timeout",<connect_id>,<mid>` | 订阅、取消订阅或发布最终超时 | 对应 pending operation 返回 `ESP_ERR_TIMEOUT`；必要时查询 `MQTTSTATE` | 重传包中间超时不上报，只有最终超时上报 |
@@ -228,6 +229,23 @@ MQTT 使用 ML307R `MQTT*` 命令族。`connect_id` 范围 `0..5`；MQTT 协议�
 | `+MQTTURC: "puback",<connect_id>,<mid>,<dup>` | QoS1 发布确认 | QoS1 publish complete | `dup=1` 表示重发数据的 ACK |
 | `+MQTTURC: "pubrec",<connect_id>,<mid>,<dup>` | QoS2 第一阶段确认 | QoS2 publish progress | 继续等待同一 `mid` 的 `pubcomp` |
 | `+MQTTURC: "pubcomp",<connect_id>,<mid>,<dup>` | QoS2 发布完成 | QoS2 publish complete | QoS2 最终完成 |
+
+### MQTT 错误码
+
+MQTT 命令错误以 `+CME ERROR:<err>` 上报（需 `AT+CMEE=1`），手册定义的 MQTT 专用错误码如下。
+
+| 错误码 | 含义 | 映射建议 |
+|--------|------|----------|
+| `600` | 未知错误 | `ESP_FAIL` 并记录原始码 |
+| `601` | 无效参数 | `ESP_ERR_INVALID_ARG` |
+| `602` | 未连接或连接失败 | `ESP_ERR_INVALID_STATE` |
+| `603` | 正在连接 | `ESP_ERR_INVALID_STATE`，稍后重试 |
+| `604` | 已经连接 | `ESP_ERR_INVALID_STATE` |
+| `605` | 网络错误 | 网络错误，触发恢复流程 |
+| `606` | 存储错误 | `ESP_ERR_NO_MEM` |
+| `607` | 状态错误 | `ESP_ERR_INVALID_STATE` |
+| `608` | DNS 错误 | DNS 错误 |
+| `609..649` | 保留 | 记录原始码 |
 
 ## 休眠与低功耗
 
@@ -337,9 +355,9 @@ MQTT 推荐流程：
 6. `AT+MQTTCFG="clean",0,<clean_session>`。
 7. 二进制或长下行建议 `AT+MQTTCFG="cached",0,1`。
 8. `AT+MQTTCONN=0,"<host>",<port>,"<client_id>","<user>","<password>"`，等待 `+MQTTURC: "conn",0,0` 表示连接成功；`conn_state` 为其他值时按连接失败或断链处理。
-9. 发布使用 `AT+MQTTPUB=0,"<topic>",<qos>,<retain>,<len>,"<payload>"`，按 QoS 等待对应 `+MQTTURC`。
+9. 发布使用 `AT+MQTTPUB=0,"<topic>",<qos>,<retain>,<dup>,<msg_len>,"<message>"`，按 QoS 等待对应 `+MQTTURC`。
 10. 订阅使用 `AT+MQTTSUB=0,"<topic>",<qos>`，等待 `+MQTTURC: "suback",0,...`。
-11. 缓存模式收到 `+MQTTURC: "pubnmi",0,...` 后执行 `AT+MQTTREAD=0` 或 `AT+MQTTREAD=0,<mid>`。
+11. 缓存模式收到 `+MQTTURC: "pubnmi",0,...` 后执行 `AT+MQTTREAD=0` 或 `AT+MQTTREAD=0,<count>`。
 12. 断开时执行 `AT+MQTTDISC=0`，等待 `+MQTTURC: "conn",0,2` 表示客户端主动断开完成。
 
 错误恢复建议：
