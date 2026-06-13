@@ -121,6 +121,13 @@ typedef esp_err_t (*modem_mqtt_publish_fn)(modem_handle_t *me,
                                            const modem_mqtt_publish_t *publish);
 
 /**
+ * @brief 查询 MQTT 状态操作函数
+ * @details Query MQTT status operation function
+ */
+typedef esp_err_t (*modem_mqtt_get_status_fn)(modem_handle_t *me,
+                                              modem_mqtt_status_t *status);
+
+/**
  * @brief Ping 诊断操作函数
  * @details Ping diagnostic operation function
  */
@@ -162,6 +169,7 @@ typedef struct modem_ops {
     modem_mqtt_topic_fn mqtt_subscribe;              /**< 订阅 MQTT 主题； Subscribe MQTT topic */
     modem_mqtt_topic_fn mqtt_unsubscribe;            /**< 取消订阅 MQTT 主题； Unsubscribe MQTT topic */
     modem_mqtt_publish_fn mqtt_publish;              /**< 发布 MQTT 消息； Publish MQTT message */
+    modem_mqtt_get_status_fn mqtt_get_status;        /**< 查询 MQTT 状态； Query MQTT status */
 
     /* ── 诊断； Diagnostics ──────────────────────────────── */
     modem_ping_fn ping;                              /**< 执行 Ping 诊断； Execute ping diagnostic */

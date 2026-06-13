@@ -75,7 +75,18 @@ static esp_err_t check_ready(modem_handle_t *me, bool allow_created);
  */
 static esp_err_t call_no_arg(modem_handle_t *me, modem_no_arg_fn fn);
 
+/**
+ * @brief 释放协议数据事件负载
+ * @details Release PROTOCOL_DATA event payload (topic/payload buffers)
+ * @param[in,out] event 调制解调器事件
+ */
 static void release_event_payload(modem_event_t *event);
+
+/**
+ * @brief 排空事件队列中的负载
+ * @details Drain event queue and release all PROTOCOL_DATA payloads
+ * @param[in] me 调制解调器句柄
+ */
 static void drain_event_queue_payloads(modem_handle_t *me);
 
 /**********************
@@ -606,6 +617,16 @@ esp_err_t modem_mqtt_publish(modem_handle_t *me,
                         ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_publish not supported");
 
     return me->ops->mqtt_publish(me, publish);
+}
+
+esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_get_status,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "mqtt_get_status not supported");
+    return me->ops->mqtt_get_status(me, status);
 }
 
 esp_err_t modem_ping(modem_handle_t *me,

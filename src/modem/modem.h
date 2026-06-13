@@ -159,6 +159,17 @@ typedef struct {
 } modem_mqtt_publish_t;
 
 /**
+ * @brief MQTT 模块硬件状态
+ * @details MQTT module hardware status
+ * @note 对应 Air780EP AT+MQTTSTATU 查询结果。
+ */
+typedef enum {
+    MODEM_MQTT_STATUS_OFFLINE = 0,       /**< 离线； Offline */
+    MODEM_MQTT_STATUS_AUTHENTICATED,     /**< 已认证，可发布； Authenticated, can publish */
+    MODEM_MQTT_STATUS_TCP_CONNECTED,     /**< TCP 已连接，未认证； TCP connected, not authenticated */
+} modem_mqtt_status_t;
+
+/**
  * @brief Ping 请求参数
  * @details Ping request parameters
  */
@@ -564,6 +575,21 @@ esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
  */
 esp_err_t modem_mqtt_publish(modem_handle_t *me,
                              const modem_mqtt_publish_t *publish);
+
+/**
+ * @brief 查询 MQTT 模块硬件状态
+ * @details Query MQTT module hardware status
+ * @param[in] me 调制解调器句柄
+ * @param[out] status MQTT 状态输出指针
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - ESP_FAIL: 查询失败
+ */
+esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status);
 
 /**
  * @brief 执行 Ping 诊断

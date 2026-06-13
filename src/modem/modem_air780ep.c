@@ -260,38 +260,232 @@ static esp_err_t air780ep_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  */
 static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
                                             modem_pdp_context_t *pdp);
+/**
+ * @brief 深拷贝 MQTT 配置
+ * @details Deep-copy MQTT config; frees any existing dst fields
+ * @param[out] dst 目标 MQTT 配置
+ * @param[in] src 源 MQTT 配置
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ */
 static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
                                   const modem_mqtt_config_t *src);
+/**
+ * @brief 克隆 MQTT 字符串
+ * @details Malloc'd copy of a string; NULL input yields NULL output
+ * @param[in] value 源字符串，可为 NULL
+ * @return 克隆字符串或 NULL
+ */
 static char *clone_mqtt_string(const char *value);
+/**
+ * @brief 释放 MQTT 配置
+ * @details Free all strings inside config and zero the struct
+ * @param[in,out] config MQTT 配置
+ */
 static void free_mqtt_config(modem_mqtt_config_t *config);
+/**
+ * @brief 清空 MQTT 状态
+ * @details Reset MQTT flags to false and free stored config
+ * @param[in] self Air780EP 调制解调器实例
+ */
 static void clear_mqtt_state(modem_air780ep_t *self);
+/**
+ * @brief 配置 Air780EP MQTT
+ * @details Configure Air780EP MQTT via AT+MCONFIG; refuses if already connected
+ * @param[in] me 调制解调器句柄
+ * @param[in] config MQTT 配置
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: MQTT 已连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
                                           const modem_mqtt_config_t *config);
+/**
+ * @brief 建立 Air780EP MQTT TCP 通道
+ * @details Connect MQTT TCP channel via AT+MIPSTART
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 未配置或 TCP 已连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me);
+/**
+ * @brief 连接 Air780EP MQTT 会话
+ * @details Connect MQTT session via AT+MCONNECT
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 未配置、TCP 未连接或会话已连接
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_connect(modem_handle_t *me);
+/**
+ * @brief 断开 Air780EP MQTT 会话
+ * @details Disconnect MQTT session via AT+MDISCONNECT
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 会话未连接
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_disconnect(modem_handle_t *me);
+/**
+ * @brief 断开 Air780EP MQTT TCP 通道
+ * @details Disconnect MQTT TCP channel via AT+MIPCLOSE
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: TCP 未连接或会话仍连接
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t *me);
+/**
+ * @brief 订阅 Air780EP MQTT 主题
+ * @details Subscribe MQTT topic via AT+MSUB
+ * @param[in] me 调制解调器句柄
+ * @param[in] topic MQTT 主题
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_subscribe(modem_handle_t *me,
                                            const modem_mqtt_topic_t *topic);
+/**
+ * @brief 取消订阅 Air780EP MQTT 主题
+ * @details Unsubscribe MQTT topic via AT+MUNSUB
+ * @param[in] me 调制解调器句柄
+ * @param[in] topic MQTT 主题
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_unsubscribe(modem_handle_t *me,
                                             const modem_mqtt_topic_t *topic);
+/**
+ * @brief 发布 Air780EP MQTT 消息
+ * @details Publish MQTT message via AT+MPUBEX with binary payload
+ * @param[in] me 调制解调器句柄
+ * @param[in] publish MQTT 发布参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NOT_SUPPORTED: QoS 不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_mqtt_publish(modem_handle_t *me,
                                         const modem_mqtt_publish_t *publish);
+/**
+ * @brief 查询 Air780EP MQTT 状态
+ * @details Query MQTT status via AT+MQTTSTATU; state must be 0-2
+ * @param[in] me 调制解调器句柄
+ * @param[out] status MQTT 状态
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
+static esp_err_t air780ep_mqtt_get_status(modem_handle_t *me,
+                                           modem_mqtt_status_t *status);
+/**
+ * @brief 复位 MQTT 模式为直连 ASCII
+ * @details Reset MQTT mode via AT+MQTTMSGSET=0 then AT+MQTTMODE=0
+ * @param[in] self Air780EP 调制解调器实例
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: AT 命令错误
+ */
+static esp_err_t reset_mqtt_modes(modem_air780ep_t *self);
+/**
+ * @brief 映射 MQTT 状态值
+ * @details Map integer MQTT status (0/1/2) to enum; others map to OFFLINE
+ * @param[in] state AT 状态值
+ * @return MQTT 状态枚举
+ */
+static modem_mqtt_status_t map_mqtt_status(int state);
+/**
+ * @brief Air780EP Ping 探测
+ * @details Send AT+CIPPING, parse each reply line and compute summary
+ * @param[in] me 调制解调器句柄
+ * @param[in] request Ping 请求参数
+ * @param[out] replies Ping 响应数组
+ * @param[in] max_replies replies 容量，须不小于 request->count
+ * @param[out] summary Ping 汇总统计
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他: AT 命令错误
+ */
 static esp_err_t air780ep_ping(modem_handle_t *me,
                                const modem_ping_request_t *request,
                                modem_ping_reply_t *replies,
                                size_t max_replies,
                                modem_ping_summary_t *summary);
+/**
+ * @brief 解析单行 +CIPPING 响应
+ * @details Parse a single +CIPPING reply line into the reply struct
+ * @param[in] line +CIPPING 响应行
+ * @param[in] request Ping 请求参数
+ * @param[out] reply Ping 响应
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ */
 static esp_err_t parse_cipping_line(const char *line,
                                     const modem_ping_request_t *request,
                                     modem_ping_reply_t *reply);
+/**
+ * @brief 解析 +CIPPING 字段中的无符号整数
+ * @details Parse unsigned integer at cursor and advance cursor past it
+ * @param[in,out] cursor 解析游标
+ * @param[in] max_value 允许的最大值
+ * @param[out] out_value 解析结果
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ */
 static esp_err_t parse_cipping_uint(const char **cursor,
                                     uint32_t max_value,
                                     uint32_t *out_value);
+/**
+ * @brief 计算 Ping 汇总统计
+ * @details Compute sent/received/lost and min/max/avg over received replies
+ * @param[in] request Ping 请求参数
+ * @param[in] replies Ping 响应数组
+ * @param[in] reply_count 响应数量
+ * @param[out] summary Ping 汇总统计
+ */
 static void calculate_ping_summary(const modem_ping_request_t *request,
                                    modem_ping_reply_t *replies,
                                    size_t reply_count,
                                    modem_ping_summary_t *summary);
+/**
+ * @brief 计算 Ping 命令超时
+ * @details Compute AT+CIPPING command timeout in milliseconds
+ * @param[in] request Ping 请求参数，可为 NULL
+ * @return 超时时间，request 为 NULL 时返回默认值
+ */
 static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request);
 
 /**
@@ -640,8 +834,20 @@ static TickType_t timeout_ticks(uint32_t timeout_ms);
  */
 static void set_initialized(modem_air780ep_t *self, bool initialized);
 
+/**
+ * @brief 设置 MQTT 数据使能标志
+ * @details Set MQTT data-enabled flag (lock-protected)
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] enabled 使能状态
+ */
 static void set_mqtt_data_enabled(modem_air780ep_t *self, bool enabled);
 
+/**
+ * @brief 查询 MQTT 数据使能标志
+ * @details Get MQTT data-enabled flag (lock-protected)
+ * @param[in] self Air780EP 调制解调器实例
+ * @return true: 已使能； false: 未使能
+ */
 static bool mqtt_data_is_enabled(modem_air780ep_t *self);
 
 /**
@@ -782,11 +988,49 @@ static void cgev_urc_handler(const char *prefix, const char *line, void *user_ct
  */
 static void pdp_deact_urc_handler(const char *prefix, const char *line,
                                   void *user_ctx);
+/**
+ * @brief 处理 +MSUB URC
+ * @details Handle +MSUB URC: parse direct-mode MQTT message and post data event
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
 static void handle_msub_urc(const char *prefix, const char *line, void *user_ctx);
+/**
+ * @brief 投递 MQTT 数据事件
+ * @details Post MODEM_EVENT_PROTOCOL_DATA with MQTT topic/payload;
+ *          ownership of topic/payload transfers to the event queue on success
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] topic 主题缓冲区
+ * @param[in] topic_len 主题长度
+ * @param[in] payload 负载缓冲区
+ * @param[in] payload_len 负载长度
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: 事件投递错误
+ */
 static esp_err_t post_mqtt_data_event(modem_air780ep_t *self, char *topic,
                                        size_t topic_len, uint8_t *payload,
                                        size_t payload_len);
+/**
+ * @brief 转义 AT 字符串
+ * @details Escape \", \\, \\r, \\n for AT command string arguments;
+ *          returns a malloc'd string
+ * @param[in] value 待转义字符串
+ * @return 转义后的字符串或 NULL
+ */
 static char *escape_at_string(const char *value);
+/**
+ * @brief 解析 +MSUB 直连模式 URC
+ * @details Parse +MSUB:<topic>,<len>,<message> into heap-allocated buffers
+ * @param[in] line URC 完整行
+ * @param[out] topic 主题缓冲区
+ * @param[out] topic_len 主题长度
+ * @param[out] payload 负载缓冲区
+ * @param[out] payload_len 负载长度
+ * @return true: 成功； false: 失败
+ */
 static bool parse_msub_direct(const char *line, char **topic, size_t *topic_len,
                               uint8_t **payload, size_t *payload_len);
 
@@ -815,6 +1059,7 @@ static const modem_ops_t s_air780ep_ops = {
     .mqtt_subscribe = air780ep_mqtt_subscribe,
     .mqtt_unsubscribe = air780ep_mqtt_unsubscribe,
     .mqtt_publish = air780ep_mqtt_publish,
+    .mqtt_get_status = air780ep_mqtt_get_status,
     .ping = air780ep_ping,
 };
 
@@ -2841,6 +3086,67 @@ static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
     return ESP_OK;
 }
 
+static esp_err_t reset_mqtt_modes(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+MQTTMSGSET=0", &ctx,
+                             AIR780EP_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTMSGSET=0");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "reset MQTTMSGSET to direct mode failed");
+
+    ret = send_cmd(self, "AT+MQTTMODE=0", &ctx,
+                   AIR780EP_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTMODE=0");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "reset MQTTMODE to ASCII failed");
+
+    return ESP_OK;
+}
+
+static modem_mqtt_status_t map_mqtt_status(int state)
+{
+    switch (state) {
+    case 0:  return MODEM_MQTT_STATUS_OFFLINE;
+    case 1:  return MODEM_MQTT_STATUS_AUTHENTICATED;
+    case 2:  return MODEM_MQTT_STATUS_TCP_CONNECTED;
+    default: return MODEM_MQTT_STATUS_OFFLINE;
+    }
+}
+
+static esp_err_t air780ep_mqtt_get_status(modem_handle_t *me,
+                                           modem_mqtt_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    modem_air780ep_t *self = to_air780ep(me);
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+MQTTSTATU", &ctx,
+                             AIR780EP_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTSTATU");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+MQTTSTATU failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, "+MQTTSTATU");
+    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG,
+                        "+MQTTSTATU line missing");
+
+    int state = 0;
+    ret = parse_int_after_prefix(line, "+MQTTSTATU", &state);
+    ESP_RETURN_ON_ERROR(ret, TAG, "parse +MQTTSTATU failed");
+    ESP_RETURN_ON_FALSE(state >= 0 && state <= 2, ESP_ERR_INVALID_RESPONSE,
+                        TAG, "invalid MQTT status %d", state);
+
+    *status = map_mqtt_status(state);
+    return ESP_OK;
+}
+
 static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
                                           const modem_mqtt_config_t *config)
 {
@@ -2859,8 +3165,11 @@ static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
     ESP_RETURN_ON_FALSE(!connected,
                         ESP_ERR_INVALID_STATE, TAG, "MQTT is connected");
 
+    esp_err_t ret = reset_mqtt_modes(self);
+    ESP_RETURN_ON_ERROR(ret, TAG, "reset MQTT modes failed");
+
     modem_mqtt_config_t new_config = {0};
-    esp_err_t ret = copy_mqtt_config(&new_config, config);
+    ret = copy_mqtt_config(&new_config, config);
     ESP_RETURN_ON_ERROR(ret, TAG, "copy MQTT config failed");
 
     char *client_id = escape_at_string(new_config.client_id);
