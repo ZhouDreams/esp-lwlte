@@ -135,18 +135,25 @@ typedef esp_err_t (*modem_ping_fn)(modem_handle_t *me,
  * @details Modem virtual function table
  */
 typedef struct modem_ops {
+    /* ── 生命周期管理； Lifecycle ─────────────────────────── */
     modem_no_arg_fn destroy;                         /**< 销毁子类资源； Destroy subclass resources */
     modem_no_arg_fn start;                           /**< 启动模块； Start modem */
     modem_no_arg_fn reset;                           /**< 复位模块； Reset modem */
+
+    /* ── 状态与信息查询； Status & information query ──────── */
     modem_get_info_fn get_info;                      /**< 获取模块信息； Get modem information */
     modem_get_sim_status_fn get_sim_status;          /**< 获取 SIM 状态； Get SIM status */
     modem_get_signal_fn get_signal;                  /**< 获取信号质量； Get signal quality */
     modem_get_registration_fn get_registration;      /**< 获取注册状态； Get registration status */
     modem_get_packet_attach_status_fn get_packet_attach_status; /**< 获取分组域附着状态； Get packet attach status */
+
+    /* ── 网络与 PDP 上下文； Network & PDP context ────────── */
     modem_set_apn_fn set_apn;                        /**< 设置 APN； Set APN */
     modem_pdp_cid_fn activate_pdp;                   /**< 激活 PDP； Activate PDP */
     modem_pdp_cid_fn deactivate_pdp;                 /**< 去激活 PDP； Deactivate PDP */
     modem_get_pdp_context_fn get_pdp_context;        /**< 获取 PDP 上下文； Get PDP context */
+
+    /* ── MQTT 客户端； MQTT client ───────────────────────── */
     modem_mqtt_configure_fn mqtt_configure;          /**< 配置 MQTT； Configure MQTT */
     modem_no_arg_fn mqtt_tcp_connect;                /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
     modem_no_arg_fn mqtt_connect;                    /**< 连接 MQTT； Connect MQTT */
@@ -155,6 +162,8 @@ typedef struct modem_ops {
     modem_mqtt_topic_fn mqtt_subscribe;              /**< 订阅 MQTT 主题； Subscribe MQTT topic */
     modem_mqtt_topic_fn mqtt_unsubscribe;            /**< 取消订阅 MQTT 主题； Unsubscribe MQTT topic */
     modem_mqtt_publish_fn mqtt_publish;              /**< 发布 MQTT 消息； Publish MQTT message */
+
+    /* ── 诊断； Diagnostics ──────────────────────────────── */
     modem_ping_fn ping;                              /**< 执行 Ping 诊断； Execute ping diagnostic */
 } modem_ops_t;
 

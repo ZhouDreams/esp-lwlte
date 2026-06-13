@@ -287,9 +287,15 @@ MQTT Client Service 通过 Core event handler 接收网络和协议数据事件�
 
 ### 6.1 初始化链
 
-板级初始化或 App 自有配置代码只调用用户门面 factory，不直接创建 AT Engine、Modem 或 Core。这里填写的是公共 `lwlte_air780ep_config_t`，不是访问内部层：
+板级初始化或 App 自有配置代码只调用用户门面 factory，不直接创建 AT Engine、Modem 或 Core。这里填写的是公共 `lwlte_air780ep_config_t`（只含 Core/Modem/AT 字段），MQTT 配置通过独立的 `lwlte_mqtt_config_t` 传入：
 
 ```c
+lwlte_mqtt_config_t mqtt_config = {
+    .host      = CONFIG_LWLTE_MQTT_HOST,
+    .port      = CONFIG_LWLTE_MQTT_PORT,
+    .client_id = CONFIG_LWLTE_MQTT_CLIENT_ID,
+};
+
 lwlte_air780ep_config_t config = {
     .uart_num       = UART_NUM_1,
     .uart_tx_pin    = GPIO_NUM_17,
@@ -297,17 +303,12 @@ lwlte_air780ep_config_t config = {
     .uart_baud_rate = 115200,
     .apn            = CONFIG_LWLTE_APN,
     .primary_cid    = 1,
-    .mqtt_client = {
-        .enabled   = true,
-        .host      = CONFIG_LWLTE_MQTT_HOST,
-        .port      = CONFIG_LWLTE_MQTT_PORT,
-        .client_id = CONFIG_LWLTE_MQTT_CLIENT_ID,
-    },
 };
 
 lwlte_handle_t *lte = NULL;
 ESP_ERROR_CHECK(lwlte_air780ep_init(&config, &lte));
 ESP_ERROR_CHECK(lwlte_register_event_callback(lte, app_event_handler, NULL));
+ESP_ERROR_CHECK(lwlte_mqtt_init(lte, &mqtt_config));
 ESP_ERROR_CHECK(lwlte_start(lte));
 ```
 
@@ -317,7 +318,7 @@ Facade 模块 factory 是 composition root，是唯一认识所有装配 API 和
 
 生命周期职责边界：
 
-- `lwlte_air780ep_init()` 只负责创建和装配 `lwlte_handle_t`、AT Engine、Modem、Core、Ping/MQTT service，不启动模块、不等待 AT 通道 ready、不激活 PDP。
+- `lwlte_air780ep_init()` 只负责创建和装配 `lwlte_handle_t`、AT Engine、Modem、Core、Ping service，不启动模块、不等待 AT 通道 ready、不激活 PDP。MQTT 客户端由独立的 `lwlte_mqtt_init()` 创建。
 - `lwlte_start()` 是用户显式启动入口，异步提交启动请求；最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
 - Core 在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程。
 - `modem_start()` 表示模块动态开机到基础 AT ready：硬复位/等待 `AT OK`/基础 AT 初始化，并注册运行期 URC；不负责 APN/PDP/IP。
@@ -394,33 +395,12 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     lte->core = core;
     core_register_event_callback(core, facade_core_event_handler, lte);
 
-#if CONFIG_LWLTE_MQTT_SERVICE
-    if (config->mqtt_client.enabled) {
-        mqtt_client_config_t mqtt_cfg = {
-            .host = config->mqtt_client.host,
-            .port = config->mqtt_client.port,
-            .client_id = config->mqtt_client.client_id,
-            .username = config->mqtt_client.username,
-            .password = config->mqtt_client.password,
-            .keepalive_s = config->mqtt_client.keepalive_s,
-            .clean_session = config->mqtt_client.clean_session,
-            .fsm_queue_size = config->mqtt_client.fsm_queue_size,
-            .fsm_task_stack = config->mqtt_client.fsm_task_stack,
-            .fsm_task_priority = config->mqtt_client.fsm_task_priority,
-        };
-        lte->mqtt = mqtt_client_create(&mqtt_cfg, core);
-        if (!lte->mqtt) goto err_core;
-        mqtt_client_register_event_callback(lte->mqtt, facade_mqtt_event_handler, lte);
-    }
-#endif
+    /* MQTT 客户端不在 factory 中创建；由 lwlte_mqtt_init() 独立创建。 */
 
     *out_lte = lte;
     return ESP_OK;
 
 err_core:
-#if CONFIG_LWLTE_MQTT_SERVICE
-    mqtt_client_destroy(lte ? lte->mqtt : NULL);
-#endif
     core_destroy(core);
 
 err_modem:

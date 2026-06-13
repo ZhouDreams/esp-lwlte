@@ -187,36 +187,6 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         return cleanup_after_failure(me, ESP_OK);
     }
 
-    /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     * 步骤 6：按需创建 MQTT Client 并注册事件桥接
-     *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    if (config->mqtt_client.enabled) {
-        const mqtt_client_config_t mqtt_config = {
-            .transport = MQTT_CLIENT_TRANSPORT_PLAIN_TCP,
-            .host = config->mqtt_client.host,
-            .port = config->mqtt_client.port,
-            .client_id = config->mqtt_client.client_id,
-            .username = config->mqtt_client.username,
-            .password = config->mqtt_client.password,
-            .keepalive_s = config->mqtt_client.keepalive_s,
-            .clean_session = config->mqtt_client.clean_session,
-            .fsm_queue_size = config->mqtt_client.fsm_queue_size,
-            .fsm_task_stack = config->mqtt_client.fsm_task_stack,
-            .fsm_task_priority = config->mqtt_client.fsm_task_priority,
-        };
-        me->mqtt = mqtt_client_create(&mqtt_config, me->core);
-        if (!me->mqtt) {
-            ESP_LOGE(TAG, "create MQTT client failed");
-            return cleanup_after_failure(me, ESP_OK);
-        }
-        /* MQTT 事件桥接：MQTT event → Facade → lwlte 用户回调 */
-        ret = mqtt_client_register_event_callback(me->mqtt, lwlte_handle_mqtt_event, me);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "register MQTT event bridge failed: %s", esp_err_to_name(ret));
-            return cleanup_after_failure(me, ret);
-        }
-    }
-
     *out_lte = me;
     return ESP_OK;
 }
@@ -255,22 +225,6 @@ static esp_err_t validate_config(const lwlte_air780ep_config_t *config)
                         non_negative_int(config->core_fsm_task_priority),
                         ESP_ERR_INVALID_ARG, TAG,
                         "defaultable integer fields must be non-negative");
-    if (config->mqtt_client.enabled) {
-        ESP_RETURN_ON_FALSE(config->mqtt_client.host && config->mqtt_client.host[0],
-                            ESP_ERR_INVALID_ARG, TAG,
-                            "MQTT host is required");
-        ESP_RETURN_ON_FALSE(config->mqtt_client.port > 0,
-                            ESP_ERR_INVALID_ARG, TAG,
-                            "MQTT port is required");
-        ESP_RETURN_ON_FALSE(config->mqtt_client.client_id && config->mqtt_client.client_id[0],
-                            ESP_ERR_INVALID_ARG, TAG,
-                            "MQTT client_id is required");
-        ESP_RETURN_ON_FALSE(non_negative_int(config->mqtt_client.fsm_queue_size) &&
-                            non_negative_int(config->mqtt_client.fsm_task_stack) &&
-                            non_negative_int(config->mqtt_client.fsm_task_priority),
-                            ESP_ERR_INVALID_ARG, TAG,
-                            "MQTT task fields must be non-negative");
-    }
 
     return ESP_OK;
 }

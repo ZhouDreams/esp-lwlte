@@ -111,6 +111,16 @@ static esp_err_t begin_mqtt_api_call(lwlte_handle_t *me, mqtt_client_handle_t **
 static void end_api_call(lwlte_handle_t *me);
 
 /**
+ * @brief 检查整数是否非负
+ * @details Check whether integer is non-negative
+ * @param[in] value 整数值
+ * @return
+ *         - true: 非负
+ *         - false: 负数
+ */
+static bool non_negative_int(int value);
+
+/**
  * @brief 等待 API 调用空闲
  * @details Wait until API calls are idle
  * @param[in] me LTE 用户门面句柄
@@ -490,6 +500,104 @@ esp_err_t lwlte_ping(lwlte_handle_t *me,
     }
 
     free(core_replies);
+    end_api_call(me);
+    return ret;
+}
+
+esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config)
+{
+    ESP_RETURN_ON_FALSE(me && config, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(config->host && config->host[0],
+                        ESP_ERR_INVALID_ARG, TAG, "MQTT host is required");
+    ESP_RETURN_ON_FALSE(config->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "MQTT port is required");
+    ESP_RETURN_ON_FALSE(config->client_id && config->client_id[0],
+                        ESP_ERR_INVALID_ARG, TAG, "MQTT client_id is required");
+    ESP_RETURN_ON_FALSE(non_negative_int(config->fsm_queue_size) &&
+                        non_negative_int(config->fsm_task_stack) &&
+                        non_negative_int(config->fsm_task_priority),
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "MQTT task fields must be non-negative");
+
+    core_handle_t *core = NULL;
+    esp_err_t ret = begin_api_call(me, true, &core);
+    ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    bool already_initialized = (me->mqtt != NULL);
+    xSemaphoreGive(me->lock);
+    if (already_initialized) {
+        end_api_call(me);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const mqtt_client_config_t mqtt_config = {
+        .transport         = MQTT_CLIENT_TRANSPORT_PLAIN_TCP,
+        .host              = config->host,
+        .port              = config->port,
+        .client_id         = config->client_id,
+        .username          = config->username,
+        .password          = config->password,
+        .keepalive_s       = config->keepalive_s,
+        .clean_session     = config->clean_session,
+        .fsm_queue_size    = config->fsm_queue_size,
+        .fsm_task_stack    = config->fsm_task_stack,
+        .fsm_task_priority = config->fsm_task_priority,
+    };
+    mqtt_client_handle_t *mqtt = mqtt_client_create(&mqtt_config, core);
+    if (!mqtt) {
+        end_api_call(me);
+        ESP_LOGE(TAG, "create MQTT client failed");
+        return ESP_FAIL;
+    }
+
+    ret = mqtt_client_register_event_callback(mqtt, lwlte_handle_mqtt_event, me);
+    if (ret != ESP_OK) {
+        mqtt_client_destroy(mqtt);
+        end_api_call(me);
+        ESP_LOGE(TAG, "register MQTT event bridge failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    bool lost_race = (me->mqtt != NULL);
+    if (!lost_race) {
+        me->mqtt = mqtt;
+    }
+    xSemaphoreGive(me->lock);
+
+    if (lost_race) {
+        mqtt_client_destroy(mqtt);
+        end_api_call(me);
+        ESP_LOGW(TAG, "MQTT client already initialized by a concurrent call");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    end_api_call(me);
+    return ESP_OK;
+}
+
+esp_err_t lwlte_mqtt_destroy(lwlte_handle_t *me)
+{
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    esp_err_t ret = begin_api_call(me, false, NULL);
+    ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    mqtt_client_handle_t *mqtt = me->mqtt;
+    me->mqtt = NULL;
+    xSemaphoreGive(me->lock);
+
+    if (!mqtt) {
+        end_api_call(me);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ret = mqtt_client_destroy(mqtt);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "destroy MQTT client failed: %s", esp_err_to_name(ret));
+    }
     end_api_call(me);
     return ret;
 }
@@ -949,6 +1057,11 @@ static void end_api_call(lwlte_handle_t *me)
     if (api_idle && done_sema) {
         xSemaphoreGive(done_sema);
     }
+}
+
+static bool non_negative_int(int value)
+{
+    return value >= 0;
 }
 
 static esp_err_t wait_api_calls_idle(lwlte_handle_t *me)

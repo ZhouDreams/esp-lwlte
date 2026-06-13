@@ -1469,25 +1469,24 @@ typedef struct {
 
 `mqtt_client_create()` 会复制需要长期保存的字符串。`MQTT_CLIENT_TRANSPORT_TLS` 作为类型预留，第一版返回 `ESP_ERR_NOT_SUPPORTED`。
 
-Facade factory 从用户公共 `lwlte_air780ep_config_t.mqtt_client` 子配置生成本结构。用户公共配置使用嵌套类型，避免 Air780EP 顶层配置继续平铺膨胀：
+Facade 暴露独立的 `lwlte_mqtt_config_t` 与 `lwlte_mqtt_init()` / `lwlte_mqtt_destroy()`，把 MQTT 客户端对象的生命周期从 LTE 门面配置中解耦。`lwlte_*_config_t` 只承载 Core/Modem/AT 相关字段：
 
 ```c
 typedef struct {
-    bool enabled;                  // 是否启用 MQTT service
-    const char *host;              // Broker 主机名
-    uint16_t port;                 // Broker 端口
-    const char *client_id;         // MQTT client id
-    const char *username;          // 用户名，可为 NULL
-    const char *password;          // 密码，可为 NULL
+    const char *host;              // 必填 Broker 主机名
+    uint16_t port;                 // 必填 Broker 端口
+    const char *client_id;         // 必填 MQTT client id
+    const char *username;          // 可选用户名，可为 NULL
+    const char *password;          // 可选密码，可为 NULL
     uint16_t keepalive_s;          // keepalive 秒数，0 使用默认值
     bool clean_session;            // clean session 标志
     int fsm_queue_size;            // MQTT FSM 队列长度，0 使用默认值
     int fsm_task_stack;            // MQTT FSM task 栈大小，0 使用默认值
     int fsm_task_priority;         // MQTT FSM task 优先级，0 使用默认值
-} lwlte_air780ep_config_mqtt_client_t;
+} lwlte_mqtt_config_t;
 ```
 
-`config->mqtt_client.enabled == false` 时 Facade 不创建 MQTT service，用户调用 `lwlte_mqtt_*` 返回 `ESP_ERR_INVALID_STATE`。`enabled == true` 时，`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t` 时按空字符串处理。
+MQTT 生命周期分为两层：`lwlte_mqtt_init()` / `lwlte_mqtt_destroy()` 管理对象创建与销毁（init↔destroy），`lwlte_mqtt_start()` / `lwlte_mqtt_stop()` 管理连接 FSM（start↔stop）。`lwlte_mqtt_init()` 在 `lwlte_*_init()` 返回句柄之后、`lwlte_destroy()` 之前任意时刻都可调用，与 `lwlte_start()` 无先后要求；内部自动注册事件桥。`lwlte_mqtt_destroy()` 从任何 FSM 状态安全调用（下层自动 stop）。若应用层未手动调用，`lwlte_destroy()` 兜底清理。`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t` 时按空字符串处理。
 
 ### 4.3 `mqtt_client_handle_t` — MQTT 客户端句柄
 
@@ -1945,11 +1944,12 @@ esp_err_t lwlte_start(lwlte_handle_t *me);
 esp_err_t lwlte_destroy(lwlte_handle_t *me);
 ```
 
-`lwlte_air780ep_init()` 只创建和装配 Facade、AT Engine、Modem、Core、Ping/MQTT service；`lwlte_start()` 才是用户显式启动入口，异步提交启动请求，最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
+`lwlte_air780ep_init()` 只创建和装配 Facade、AT Engine、Modem、Core、Ping service；`lwlte_start()` 才是用户显式启动入口，异步提交启动请求，最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
 
 MQTT 第一版会增加这些用户可见类型和函数：
 
-- `lwlte_air780ep_config_mqtt_client_t`：嵌套在 `lwlte_air780ep_config_t.mqtt_client` 中，控制是否创建 MQTT service 以及 Broker/client_id/认证/keepalive/FSM 参数。
+- `lwlte_mqtt_config_t`：独立 MQTT 客户端配置（Broker/client_id/认证/keepalive/FSM 参数），不再嵌套在 `lwlte_*_config_t` 中。
+- `lwlte_mqtt_init()` / `lwlte_mqtt_destroy()`：MQTT 客户端对象生命周期（init↔destroy）；`lwlte_destroy()` 兜底清理未手动 destroy 的 MQTT 客户端。
 - `lwlte_mqtt_state_t`：用户可查询的 MQTT 状态，由 Facade 从内部 `mqtt_client_state_t` 映射而来。
 - `lwlte_mqtt_msg_t`：用户 MQTT 数据事件的值对象，`topic/payload` 指针只在用户事件回调期间有效。
 - `lwlte_mqtt_start()`、`lwlte_mqtt_stop()`、`lwlte_mqtt_get_state()`、`lwlte_mqtt_subscribe()`、`lwlte_mqtt_unsubscribe()`、`lwlte_mqtt_publish()`：Facade 用户 API，内部只调用 `mqtt_client_*`，不直接操作 Core command 或 Modem。

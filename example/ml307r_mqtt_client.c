@@ -113,6 +113,16 @@ void example_ml307r_mqtt_client_run(void)
         mqtt_username = NULL;
     }
 
+    const lwlte_mqtt_config_t mqtt_config = {
+        .host = CONFIG_EXAMPLE_MQTT_HOST,
+        .port = CONFIG_EXAMPLE_MQTT_PORT,
+        .client_id = CONFIG_EXAMPLE_MQTT_CLIENT_ID,
+        .username = mqtt_username,
+        .password = NULL,
+        .keepalive_s = CONFIG_EXAMPLE_MQTT_KEEPALIVE_S,
+        .clean_session = true,
+    };
+
     const lwlte_ml307r_config_t config = {
         .uart_num = EXAMPLE_LTE_UART_NUM,
         .uart_tx_pin = EXAMPLE_LTE_UART_TX_PIN,
@@ -123,16 +133,6 @@ void example_ml307r_mqtt_client_run(void)
         .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
         .init_ready_timeout_ms = EXAMPLE_INIT_READY_TIMEOUT_MS,
         .modem_reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
-        .mqtt_client = {
-            .enabled = true,
-            .host = CONFIG_EXAMPLE_MQTT_HOST,
-            .port = CONFIG_EXAMPLE_MQTT_PORT,
-            .client_id = CONFIG_EXAMPLE_MQTT_CLIENT_ID,
-            .username = mqtt_username,
-            .password = NULL,
-            .keepalive_s = CONFIG_EXAMPLE_MQTT_KEEPALIVE_S,
-            .clean_session = true,
-        },
     };
 
     ESP_LOGI(TAG, "ML307R MQTT client example");
@@ -140,7 +140,7 @@ void example_ml307r_mqtt_client_run(void)
              CONFIG_EXAMPLE_MQTT_HOST, CONFIG_EXAMPLE_MQTT_PORT,
              CONFIG_EXAMPLE_MQTT_CLIENT_ID);
 
-    /* 创建启用 MQTT 的 ML307R 门面。 */
+    /* 创建 ML307R 门面（不含 MQTT；MQTT 由后续 lwlte_mqtt_init 创建）。 */
     esp_err_t ret = lwlte_ml307r_init(&config, &lte);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "init ML307R failed: %s", esp_err_to_name(ret));
@@ -151,6 +151,14 @@ void example_ml307r_mqtt_client_run(void)
     ret = lwlte_register_event_callback(lte, lte_event_cb, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "register callback failed: %s", esp_err_to_name(ret));
+        (void)lwlte_destroy(lte);
+        idle_forever();
+    }
+
+    /* 创建 MQTT 客户端对象（不启动连接；连接在网络 online 后由 lwlte_mqtt_start 触发）。 */
+    ret = lwlte_mqtt_init(lte, &mqtt_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "MQTT init failed: %s", esp_err_to_name(ret));
         (void)lwlte_destroy(lte);
         idle_forever();
     }

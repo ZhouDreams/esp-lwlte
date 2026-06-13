@@ -176,13 +176,12 @@ typedef void (*lwlte_event_callback_t)(lwlte_handle_t *lte,
                                        void *user_ctx);
 
 /**
- * @brief Air780EP MQTT 客户端配置
- * @details Air780EP MQTT client configuration
- * @note enabled 为 false 时 MQTT 服务禁用，其余字段被忽略。
- * @note enabled 为 true 时 host、port 和 client_id 为必填字段；任务字段为 0 时使用下层默认值，非 0 值必须大于 0。
+ * @brief MQTT 客户端配置
+ * @details MQTT client configuration
+ * @note host、port 和 client_id 为必填字段；任务字段为 0 时使用下层默认值，非 0 值必须大于 0。
+ * @note config 及其字符串指针由调用方拥有，在 lwlte_mqtt_init() 返回前必须保持有效。
  */
 typedef struct {
-    bool enabled;                         /**< 是否启用 MQTT 服务； Whether to enable MQTT service */
     const char *host;                     /**< 必填 MQTT 服务器地址； Required MQTT broker host */
     uint16_t port;                        /**< 必填 MQTT 服务器端口； Required MQTT broker port */
     const char *client_id;                /**< 必填 MQTT 客户端 ID； Required MQTT client ID */
@@ -193,7 +192,7 @@ typedef struct {
     int fsm_queue_size;                   /**< MQTT FSM 队列长度，0 使用默认值； MQTT FSM queue size, 0 uses default */
     int fsm_task_stack;                   /**< MQTT FSM 任务栈大小，0 使用默认值； MQTT FSM task stack, 0 uses default */
     int fsm_task_priority;                /**< MQTT FSM 任务优先级，0 使用默认值； MQTT FSM task priority, 0 uses default */
-} lwlte_air780ep_config_mqtt_client_t;
+} lwlte_mqtt_config_t;
 
 /**
  * @brief Air780EP LTE 初始化配置
@@ -203,10 +202,10 @@ typedef struct {
  * @note 超时、任务和缓冲区字段为 0 时使用下层默认值。
  * @note init_ready_timeout_ms 为 0 时使用下层默认值；lwlte_start() 仅提交启动请求，Core FSM 处理启动信号并调用阻塞式 modem_start() 时，该值作为 Air780EP 硬复位后等待 AT OK 的总超时。
  * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
- * @note mqtt_client.enabled 为 false 时 MQTT 服务禁用；为 true 时 host、port 和 client_id 为必填字段。
  * @note UART 端口必须满足 UART_NUM_0 <= uart_num < UART_NUM_MAX；UART TX/RX 必须是有效 GPIO 且不能为 GPIO_NUM_NC。
  * @note uart_baud_rate 必须大于 0；Air780EP 门面当前仅支持 primary_cid 为 1。
  * @note 有符号的队列、任务和缓冲区字段允许 0 表示默认值，非 0 值必须大于 0。
+ * @note MQTT 客户端不再在此配置中初始化；请在 lwlte_air780ep_init() 之后调用 lwlte_mqtt_init()。
  */
 typedef struct {
     uart_port_t uart_num;                 /**< 必填 UART 端口号； Required UART port number */
@@ -233,28 +232,7 @@ typedef struct {
     int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
     int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
     int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
-    lwlte_air780ep_config_mqtt_client_t mqtt_client; /**< MQTT 客户端配置； MQTT client configuration */
 } lwlte_air780ep_config_t;
-
-/**
- * @brief ML307R MQTT 客户端配置
- * @details ML307R MQTT client configuration
- * @note enabled 为 false 时 MQTT 服务禁用，其余字段被忽略。
- * @note enabled 为 true 时 host、port 和 client_id 为必填字段；任务字段为 0 时使用下层默认值，非 0 值必须大于 0。
- */
-typedef struct {
-    bool enabled;                         /**< 是否启用 MQTT 服务； Whether to enable MQTT service */
-    const char *host;                     /**< 必填 MQTT 服务器地址； Required MQTT broker host */
-    uint16_t port;                        /**< 必填 MQTT 服务器端口； Required MQTT broker port */
-    const char *client_id;                /**< 必填 MQTT 客户端 ID； Required MQTT client ID */
-    const char *username;                 /**< 可选用户名； Optional username */
-    const char *password;                 /**< 可选密码； Optional password */
-    uint16_t keepalive_s;                 /**< keepalive 秒数，0 使用下层默认值； Keepalive seconds, 0 uses default */
-    bool clean_session;                   /**< clean session 标志； Clean session flag */
-    int fsm_queue_size;                   /**< MQTT FSM 队列长度，0 使用默认值； MQTT FSM queue size, 0 uses default */
-    int fsm_task_stack;                   /**< MQTT FSM 任务栈大小，0 使用默认值； MQTT FSM task stack, 0 uses default */
-    int fsm_task_priority;                /**< MQTT FSM 任务优先级，0 使用默认值； MQTT FSM task priority, 0 uses default */
-} lwlte_ml307r_config_mqtt_client_t;
 
 /**
  * @brief ML307R LTE 初始化配置
@@ -264,6 +242,7 @@ typedef struct {
  * @note ML307R 启动不等待 +MATREADY；init_ready_timeout_ms 表示硬复位后重复发送 AT 并等待 OK 的总超时。
  * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
  * @note ML307R 门面当前仅支持 primary_cid 为 1。
+ * @note MQTT 客户端不再在此配置中初始化；请在 lwlte_ml307r_init() 之后调用 lwlte_mqtt_init()。
  */
 typedef struct {
     uart_port_t uart_num;                 /**< 必填 UART 端口号； Required UART port number */
@@ -290,7 +269,6 @@ typedef struct {
     int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
     int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
     int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
-    lwlte_ml307r_config_mqtt_client_t mqtt_client; /**< MQTT 客户端配置； MQTT client configuration */
 } lwlte_ml307r_config_t;
 
 /**********************
@@ -304,7 +282,7 @@ typedef struct {
  * @note ESP_OK 返回时 *out_lte 为可用句柄，所有权转移给调用方，必须通过 lwlte_destroy() 释放。
  * @note 调用方应注册事件回调后调用 lwlte_start()；最终 online 结果通过 LWLTE_EVENT_NET_ONLINE 上报。
  * @note 非 ESP_OK 返回时不会转移句柄所有权，门面会尽力释放已创建的内部资源。
- * @note config 及其 apn、mqtt_client 字符串指针由调用方拥有，在函数返回前必须保持有效。
+ * @note config 及其 apn 字符串指针由调用方拥有，在函数返回前必须保持有效。
  * @param[in] config Air780EP LTE 初始化配置
  * @param[out] out_lte LTE 用户门面句柄输出指针
  * @return
@@ -443,6 +421,41 @@ esp_err_t lwlte_ping(lwlte_handle_t *me,
                      lwlte_ping_reply_t *replies,
                      size_t max_replies,
                      lwlte_ping_summary_t *summary);
+
+/**
+ * @brief 初始化 MQTT 客户端
+ * @details Initialize MQTT client
+ * @note 该函数只创建 MQTT 客户端对象及内部事件桥，不启动连接；连接由 lwlte_mqtt_start() 触发。
+ * @note 须在 lwlte_air780ep_init()/lwlte_ml307r_init() 返回句柄之后、lwlte_destroy() 之前调用；与 lwlte_start() 的先后顺序无要求。
+ * @note 同一句柄只能初始化一次，重复调用返回 ESP_ERR_INVALID_STATE；要更换配置须先 lwlte_mqtt_destroy()。
+ * @note 内部自动注册事件桥，应用层无需手动调用事件注册 API。
+ * @note config 及其字符串字段由调用方拥有，仅在该函数执行期间被借用；函数返回后调用方可释放或复用。
+ * @note ESP_OK 返回时 MQTT 客户端可用，最终须通过 lwlte_mqtt_destroy() 或 lwlte_destroy() 释放。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] config MQTT 客户端配置
+ * @return
+ *         - ESP_OK: 初始化成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效或必填字段缺失
+ *         - ESP_ERR_INVALID_STATE: 已初始化或门面正在销毁
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: 下层创建失败
+ */
+esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config);
+
+/**
+ * @brief 销毁 MQTT 客户端
+ * @details Destroy MQTT client
+ * @note 该函数从任何 FSM 状态安全调用：若 MQTT 仍在运行（CONNECTED/CONNECTING/...），下层会先自动停止。
+ * @note 重复调用或未初始化时返回 ESP_ERR_INVALID_STATE。
+ * @note 若应用层未手动调用本函数，lwlte_destroy() 会作为兜底清理 MQTT 客户端。
+ * @param[in] me LTE 用户门面句柄
+ * @return
+ *         - ESP_OK: 销毁成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 未初始化或门面正在销毁
+ *         - 其他 esp_err_t: 下层销毁错误（已记录日志）
+ */
+esp_err_t lwlte_mqtt_destroy(lwlte_handle_t *me);
 
 /**
  * @brief 启动 MQTT 客户端
