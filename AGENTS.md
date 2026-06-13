@@ -2,6 +2,8 @@
 
 This file serves as an index for AI coding agents working with this repository.
 
+> **Keep in sync:** `AGENTS.md` (English) and `AGENTS_ZH.md` (Chinese) must always be kept synchronized. Whenever you change one, apply the equivalent change to the other in the same commit.
+
 ## Project Overview
 
 esp-lwlte is a self-developed ESP-IDF component library that encapsulates AT command communication logic with LTE modules, currently targeting ESP32-C3 as the host MCU and Shanghai Hezhou Air780EP as the LTE module for development and testing, with plans to support multiple LTE module variants while remaining exclusive to the ESP-IDF platform.
@@ -11,6 +13,7 @@ esp-lwlte is a self-developed ESP-IDF component library that encapsulates AT com
 | Topic | Document |
 |-------|----------|
 | Directory Structure | [docs/agents/directory-structure.md](docs/agents/directory-structure.md) |
+| Feature Roadmap | [docs/agents/feature-roadmap.md](docs/agents/feature-roadmap.md) |
 | Architecture | [docs/agents/architecture.md](docs/agents/architecture.md) |
 | Class Design | [docs/agents/classes.md](docs/agents/classes.md) |
 | Build & Debug | [docs/agents/build-and-debug.md](docs/agents/build-and-debug.md) |

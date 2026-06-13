@@ -2,6 +2,8 @@
 
 本文件为 AI 编码助手在此仓库中工作时的索引。
 
+> **保持同步：** `AGENTS.md`（英文）与 `AGENTS_ZH.md`（中文）必须时刻保持同步。修改其中一个时，必须在同一次提交中对另一个做出等价修改。
+
 ## 项目概述
 
 esp-lwlte 是一个专为 ESP-IDF 平台自主研发的组件库，封装与 LTE 模块的 AT 指令通信逻辑，当前以 ESP32-C3 为主控、上海合宙 Air780EP 为 LTE 模块进行开发测试，未来计划适配多种 LTE 模块但保持 ESP-IDF 平台专属性。
@@ -11,6 +13,7 @@ esp-lwlte 是一个专为 ESP-IDF 平台自主研发的组件库，封装与 LTE
 | 主题 | 文档 |
 |------|------|
 | 目录说明 | [docs/agents/directory-structure.md](docs/agents/directory-structure.md) |
+| 功能 Roadmap | [docs/agents/feature-roadmap.md](docs/agents/feature-roadmap.md) |
 | 架构概览 | [docs/agents/architecture.md](docs/agents/architecture.md) |
 | 类设计 | [docs/agents/classes.md](docs/agents/classes.md) |
 | 构建与调试 | [docs/agents/build-and-debug.md](docs/agents/build-and-debug.md) |
