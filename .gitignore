@@ -31,3 +31,4 @@ reference/
 
 # Personal notes
 docs/interview-preparation/
+__pycache__/
