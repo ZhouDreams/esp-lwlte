@@ -30,8 +30,8 @@ class PingClassesDocContractTest(unittest.TestCase):
             "modem_ping_reply_t",
             "modem_ping_summary_t",
             "uint32_t total_timeout_ms;",
-            "esp_err_t modem_ping(modem_t *me,",
-            "esp_err_t (*ping)(modem_t *me,",
+            "esp_err_t modem_ping(modem_handle_t *me,",
+            "esp_err_t (*ping)(modem_handle_t *me,",
             "| `ping` | 执行网络连通性诊断，不参与 Core online 条件 | `AT+CIPPING` |",
             "AT+CIPPING` 现在作为 `modem_ping()` 的 Air780EP 映射",
         ]:
@@ -70,8 +70,8 @@ class PingClassesDocContractTest(unittest.TestCase):
     def test_ping_service_is_lightweight_and_boundary_safe(self):
         for token in [
             "Ping Service 不创建自己的 FSM task、FSM queue 或 esp_event loop",
-            "ping_client_create(core_t *core);",
-            "ping_client_ping(ping_client_t *me,",
+            "ping_client_create(core_handle_t *core);",
+            "ping_client_ping(ping_client_handle_t *me,",
             "core_submit_cmd(CORE_CMD_PING)",
             "Ping Service 不 include `modem.h`、`modem_air780ep.h`、`at_engine.h`",
             "不能把 `lwlte_ping_reply_t *` 强转成 `core_ping_reply_t *`",
@@ -83,7 +83,7 @@ class PingClassesDocContractTest(unittest.TestCase):
             "lwlte_ping_request_t",
             "lwlte_ping_reply_t",
             "lwlte_ping_summary_t",
-            "esp_err_t lwlte_ping(lwlte_t *me,",
+            "esp_err_t lwlte_ping(lwlte_handle_t *me,",
             "调用方负责传入 `lwlte_ping_reply_t` 数组",
             "第一版只实现同步阻塞 `lwlte_ping()`",
             "`lwlte_ping_async()`",

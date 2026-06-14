@@ -22,6 +22,17 @@
  *********************/
 #define TAG "core"
 
+/* Ensure core_net_state_t and lwlte_net_state_t have identical value
+ * layouts — core_post_event casts between them directly. */
+_Static_assert((int)CORE_NET_STATE_OFFLINE    == (int)LWLTE_NET_STATE_OFFLINE,
+               "net state enum mismatch: OFFLINE");
+_Static_assert((int)CORE_NET_STATE_ACTIVATING == (int)LWLTE_NET_STATE_ACTIVATING,
+               "net state enum mismatch: ACTIVATING");
+_Static_assert((int)CORE_NET_STATE_ONLINE     == (int)LWLTE_NET_STATE_ONLINE,
+               "net state enum mismatch: ONLINE");
+_Static_assert((int)CORE_NET_STATE_ERROR      == (int)LWLTE_NET_STATE_ERROR,
+               "net state enum mismatch: ERROR");
+
 /**********************
  *      TYPEDEFS
  **********************/
@@ -53,28 +64,6 @@ static bool config_valid(const core_config_t *config, modem_handle_t *modem);
  */
 static esp_err_t normalize_config(const core_config_t *config,
                                   core_config_t *normalized);
-
-/**
- * @brief 创建 Core 自有事件循环
- * @details Create Core-owned event loop
- * @param[in] me LTE 核心服务句柄
- * @return
- *         - ESP_OK: 成功
- *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - other: ESP Event 错误码
- */
-static esp_err_t create_event_loop(core_handle_t *me);
-
-/**
- * @brief 销毁 Core 自有事件循环
- * @details Destroy Core-owned event loop
- * @param[in] me LTE 核心服务句柄
- * @return
- *         - ESP_OK: 成功
- *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - other: ESP Event 错误码
- */
-static esp_err_t destroy_event_loop(core_handle_t *me);
 
 /**
  * @brief 发送简单 FSM 信号
@@ -109,28 +98,6 @@ static bool api_state_allows(core_handle_t *me, core_fsm_sig_type_t sig_type);
  */
 static void core_modem_event_cb(modem_handle_t *modem, const modem_event_t *event,
                                 void *user_ctx);
-
-/**
- * @brief Core 事件适配器
- * @details Core event adapter
- * @param[in] handler_arg LTE 核心服务句柄
- * @param[in] event_base 事件基
- * @param[in] event_id 事件 ID
- * @param[in] event_data 事件数据
- */
-static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data);
-
-/**
- * @brief 等待 Core 事件回调空闲
- * @details Wait until Core event callbacks are idle
- * @param[in] me LTE 核心服务句柄
- * @return
- *         - ESP_OK: 回调已空闲
- *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - ESP_ERR_INVALID_STATE: 当前任务正在执行回调或内部状态无效
- */
-static esp_err_t wait_event_callbacks_idle(core_handle_t *me);
 
 /**
  * @brief 初始化 Core 内部资源
@@ -184,16 +151,13 @@ static char *clone_optional_string(const char *value);
 static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len);
 static bool core_cmd_type_valid(core_cmd_type_t type);
 static bool core_cmd_valid(const core_cmd_t *cmd);
-static esp_err_t clone_protocol_data(core_event_data_t *event_data,
-                                     const core_protocol_data_t *protocol_data);
-static void release_core_event_payload(core_event_data_t *event_data);
 static esp_err_t clone_modem_protocol_payload(modem_event_t *event);
 static void release_modem_protocol_payload(modem_event_t *event);
 
 /**********************
  *  STATIC VARIABLES
  **********************/
-ESP_EVENT_DEFINE_BASE(CORE_EVENT);
+ESP_EVENT_DEFINE_BASE(LWLTE_EVENT);
 
 /**********************
  *      MACROS
@@ -236,14 +200,6 @@ esp_err_t core_destroy(core_handle_t *me)
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
     previous_state = me->state;
-    if (me->event_loop_task == xTaskGetCurrentTaskHandle()) {
-        xSemaphoreGive(me->lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (me->event_callback_task == xTaskGetCurrentTaskHandle()) {
-        xSemaphoreGive(me->lock);
-        return ESP_ERR_INVALID_STATE;
-    }
     if (me->destroy_in_progress) {
         xSemaphoreGive(me->lock);
         return ESP_ERR_INVALID_STATE;
@@ -271,16 +227,6 @@ esp_err_t core_destroy(core_handle_t *me)
             me->destroying = false;
             me->state = previous_state;
         }
-        me->destroy_in_progress = false;
-        xSemaphoreGive(me->lock);
-        return ret;
-    }
-
-    ret = wait_event_callbacks_idle(me);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "wait event callbacks idle failed: %s",
-                 esp_err_to_name(ret));
-        xSemaphoreTake(me->lock, portMAX_DELAY);
         me->destroy_in_progress = false;
         xSemaphoreGive(me->lock);
         return ret;
@@ -323,55 +269,38 @@ esp_err_t core_stop(core_handle_t *me)
     return ESP_OK;
 }
 
-esp_err_t core_register_event_callback(core_handle_t *me,
-                                       core_event_callback_t callback,
-                                       void *user_ctx)
+esp_err_t core_register_protocol_callback(core_handle_t *me,
+                                          core_protocol_callback_t callback,
+                                          void *user_ctx)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
-
-    void *next_user_ctx = callback ? user_ctx : NULL;
-
-    while (true) {
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        if (me->destroying || me->state == CORE_STATE_DESTROYING) {
-            xSemaphoreGive(me->lock);
-            return ESP_ERR_INVALID_STATE;
-        }
-        bool changed = me->event_callback != callback ||
-                       me->event_user_ctx != next_user_ctx;
-        if (!changed) {
-            xSemaphoreGive(me->lock);
-            return ESP_OK;
-        }
-        if (me->event_callback_active == 0) {
-            me->event_callback = callback;
-            me->event_user_ctx = next_user_ctx;
-            xSemaphoreGive(me->lock);
-            return ESP_OK;
-        }
-        if (me->event_callback_task == xTaskGetCurrentTaskHandle()) {
-            xSemaphoreGive(me->lock);
-            return ESP_ERR_INVALID_STATE;
-        }
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->state == CORE_STATE_DESTROYING) {
         xSemaphoreGive(me->lock);
-
-        ESP_RETURN_ON_ERROR(wait_event_callbacks_idle(me), TAG,
-                            "wait event callbacks idle failed");
+        return ESP_ERR_INVALID_STATE;
     }
+    me->protocol_callback = callback;
+    me->protocol_user_ctx = callback ? user_ctx : NULL;
+    xSemaphoreGive(me->lock);
+    return ESP_OK;
 }
 
-esp_event_loop_handle_t core_get_event_loop(core_handle_t *me)
+esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
+                                                 core_protocol_closed_callback_t callback,
+                                                 void *user_ctx)
 {
-    if (!me || !me->lock) {
-        return NULL;
-    }
-
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
+                        "NULL argument");
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    esp_event_loop_handle_t event_loop = me->event_loop;
+    if (me->destroying || me->state == CORE_STATE_DESTROYING) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    me->protocol_closed_callback = callback;
+    me->protocol_closed_user_ctx = callback ? user_ctx : NULL;
     xSemaphoreGive(me->lock);
-
-    return event_loop;
+    return ESP_OK;
 }
 
 esp_err_t core_get_state(core_handle_t *me, core_state_t *state)
@@ -487,18 +416,15 @@ bool core_is_destroying(core_handle_t *me)
     return destroying;
 }
 
-esp_err_t core_post_event(core_handle_t *me, core_event_id_t event_id,
-                          const core_event_data_t *event_data)
+esp_err_t core_post_event(core_handle_t *me, lwlte_event_id_t event_id,
+                          const lwlte_event_data_t *data)
 {
-    ESP_RETURN_ON_FALSE(me && me->lock && me->event_loop, ESP_ERR_INVALID_ARG, TAG,
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
-    ESP_RETURN_ON_FALSE(event_id >= CORE_EVENT_STARTED &&
-                        event_id <= CORE_EVENT_PROTOCOL_CLOSED,
-                        ESP_ERR_INVALID_ARG, TAG, "invalid event id");
 
-    core_event_data_t empty_data = {0};
-    if (!event_data) {
-        event_data = &empty_data;
+    lwlte_event_data_t empty_data = {0};
+    if (!data) {
+        data = &empty_data;
     }
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
@@ -507,8 +433,17 @@ esp_err_t core_post_event(core_handle_t *me, core_event_id_t event_id,
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t ret = esp_event_post_to(me->event_loop, CORE_EVENT, event_id,
-                                      event_data, sizeof(*event_data), 0);
+    esp_err_t ret;
+    if (me->config.event_loop) {
+        ret = esp_event_post_to(me->config.event_loop, LWLTE_EVENT,
+                                event_id, data, sizeof(*data), 0);
+    } else {
+        ret = esp_event_post(LWLTE_EVENT, event_id, data, sizeof(*data), 0);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post event %d failed: %s", (int)event_id,
+                 esp_err_to_name(ret));
+    }
     xSemaphoreGive(me->lock);
 
     return ret;
@@ -517,32 +452,6 @@ esp_err_t core_post_event(core_handle_t *me, core_event_id_t event_id,
 void core_free_cmd(core_cmd_t *cmd)
 {
     free_core_cmd(cmd);
-}
-
-void core_release_event_payload(core_event_data_t *event_data)
-{
-    release_core_event_payload(event_data);
-}
-
-esp_err_t core_post_protocol_data(core_handle_t *me,
-                                  const core_protocol_data_t *protocol_data)
-{
-    ESP_RETURN_ON_FALSE(me && protocol_data, ESP_ERR_INVALID_ARG, TAG,
-                        "NULL argument");
-
-    core_event_data_t event_data = {0};
-    esp_err_t ret = clone_protocol_data(&event_data, protocol_data);
-    ESP_RETURN_ON_ERROR(ret, TAG, "clone protocol data failed");
-
-    /* MQTT service must copy topic/payload during the event callback and call
-     * core_release_event_payload() before returning. Core cannot free this in
-     * core_event_adapter() because ESP event data is shared across handlers. */
-    ret = core_post_event(me, CORE_EVENT_PROTOCOL_DATA, &event_data);
-    if (ret != ESP_OK) {
-        release_core_event_payload(&event_data);
-    }
-
-    return ret;
 }
 
 /**********************
@@ -586,66 +495,6 @@ static esp_err_t normalize_config(const core_config_t *config,
     if (normalized->fsm_task_priority <= 0) {
         normalized->fsm_task_priority = CORE_DEFAULT_FSM_TASK_PRIORITY;
     }
-
-    return ESP_OK;
-}
-
-static esp_err_t create_event_loop(core_handle_t *me)
-{
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
-    ESP_RETURN_ON_FALSE(!me->event_loop, ESP_ERR_INVALID_STATE, TAG,
-                        "event loop already exists");
-
-    esp_event_loop_args_t args = {
-        .queue_size = CORE_EVENT_QUEUE_SIZE,
-        .task_name = "lwlte_evt",
-        .task_priority = CORE_EVENT_TASK_PRIORITY,
-        .task_stack_size = CORE_EVENT_TASK_STACK,
-        .task_core_id = tskNO_AFFINITY,
-    };
-
-    esp_err_t ret = esp_event_loop_create(&args, &me->event_loop);
-    ESP_RETURN_ON_ERROR(ret, TAG, "create event loop failed");
-
-    ret = esp_event_handler_register_with(me->event_loop, ESP_EVENT_ANY_BASE,
-                                          ESP_EVENT_ANY_ID, core_event_adapter,
-                                          me);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "register event adapter failed: %s", esp_err_to_name(ret));
-        esp_err_t delete_ret = esp_event_loop_delete(me->event_loop);
-        if (delete_ret != ESP_OK) {
-            ESP_LOGW(TAG, "delete event loop after register failure failed: %s",
-                     esp_err_to_name(delete_ret));
-        }
-        me->event_loop = NULL;
-        return ret;
-    }
-
-    return ESP_OK;
-}
-
-static esp_err_t destroy_event_loop(core_handle_t *me)
-{
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
-    if (!me->event_loop) {
-        return ESP_OK;
-    }
-
-    esp_err_t unregister_ret = esp_event_handler_unregister_with(me->event_loop,
-                                                                 ESP_EVENT_ANY_BASE,
-                                                                 ESP_EVENT_ANY_ID,
-                                                                 core_event_adapter);
-    if (unregister_ret != ESP_OK) {
-        ESP_LOGW(TAG, "unregister event adapter failed: %s",
-                 esp_err_to_name(unregister_ret));
-    }
-
-    esp_err_t ret = esp_event_loop_delete(me->event_loop);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "delete event loop failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    me->event_loop = NULL;
 
     return ESP_OK;
 }
@@ -733,116 +582,6 @@ static void core_modem_event_cb(modem_handle_t *modem, const modem_event_t *even
     }
 }
 
-static void core_event_adapter(void *handler_arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
-    core_handle_t *me = (core_handle_t *)handler_arg;
-    if (!me) {
-        return;
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    me->event_loop_task = xTaskGetCurrentTaskHandle();
-    xSemaphoreGive(me->lock);
-
-    if (event_base != CORE_EVENT) {
-        return;
-    }
-    if (event_id < CORE_EVENT_STARTED || event_id > CORE_EVENT_PROTOCOL_CLOSED) {
-        return;
-    }
-    if (event_id == CORE_EVENT_PROTOCOL_DATA ||
-        event_id == CORE_EVENT_PROTOCOL_CLOSED) {
-        return;
-    }
-
-    core_event_callback_t callback = NULL;
-    void *user_ctx = NULL;
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying || me->state == CORE_STATE_DESTROYING) {
-        xSemaphoreGive(me->lock);
-        return;
-    }
-    callback = me->event_callback;
-    user_ctx = me->event_user_ctx;
-    if (callback) {
-        me->event_callback_active++;
-        me->event_callback_task = xTaskGetCurrentTaskHandle();
-    }
-    xSemaphoreGive(me->lock);
-
-    if (callback) {
-        callback(me, (core_event_id_t)event_id,
-                 (const core_event_data_t *)event_data, user_ctx);
-
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        if (me->event_callback_active > 0) {
-            me->event_callback_active--;
-        }
-        bool callbacks_idle = me->event_callback_active == 0;
-        SemaphoreHandle_t done_sema = me->event_callback_done_sema;
-        if (callbacks_idle) {
-            me->event_callback_task = NULL;
-        }
-        xSemaphoreGive(me->lock);
-
-        if (callbacks_idle && done_sema) {
-            xSemaphoreGive(done_sema);
-        }
-    }
-
-}
-
-static esp_err_t wait_event_callbacks_idle(core_handle_t *me)
-{
-    if (!me || !me->lock) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    int active = me->event_callback_active;
-    SemaphoreHandle_t done_sema = me->event_callback_done_sema;
-    if (me->event_callback_waiting) {
-        xSemaphoreGive(me->lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (active == 0) {
-        xSemaphoreGive(me->lock);
-        return ESP_OK;
-    }
-    if (active > 0 && me->event_callback_task == xTaskGetCurrentTaskHandle()) {
-        xSemaphoreGive(me->lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (!done_sema) {
-        xSemaphoreGive(me->lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    me->event_callback_waiting = true;
-    xSemaphoreGive(me->lock);
-
-    while (active > 0) {
-        xSemaphoreTake(done_sema, portMAX_DELAY);
-
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        active = me->event_callback_active;
-        done_sema = me->event_callback_done_sema;
-        if (active > 0 && !done_sema) {
-            me->event_callback_waiting = false;
-            xSemaphoreGive(me->lock);
-            return ESP_ERR_INVALID_STATE;
-        }
-        xSemaphoreGive(me->lock);
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    me->event_callback_waiting = false;
-    xSemaphoreGive(me->lock);
-
-    return ESP_OK;
-}
-
 static esp_err_t core_init(core_handle_t *me, const core_config_t *config,
                            modem_handle_t *modem)
 {
@@ -863,29 +602,15 @@ static esp_err_t core_init(core_handle_t *me, const core_config_t *config,
     me->state = CORE_STATE_STOPPED;
     me->destroying = false;
     me->destroy_in_progress = false;
-    me->event_loop_task = NULL;
-    me->event_callback_done_sema = NULL;
-    me->event_callback_task = NULL;
-    me->event_callback_active = 0;
-    me->event_callback_waiting = false;
+    me->protocol_callback = NULL;
+    me->protocol_user_ctx = NULL;
+    me->protocol_closed_callback = NULL;
+    me->protocol_closed_user_ctx = NULL;
 
     me->lock = xSemaphoreCreateMutex();
     if (!me->lock) {
         ESP_LOGE(TAG, "create lock failed");
         ret = ESP_ERR_NO_MEM;
-        goto err;
-    }
-
-    me->event_callback_done_sema = xSemaphoreCreateBinary();
-    if (!me->event_callback_done_sema) {
-        ESP_LOGE(TAG, "create event_callback_done_sema failed");
-        ret = ESP_ERR_NO_MEM;
-        goto err;
-    }
-
-    ret = create_event_loop(me);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "create event loop failed: %s", esp_err_to_name(ret));
         goto err;
     }
 
@@ -934,13 +659,6 @@ static esp_err_t core_deinit(core_handle_t *me)
         ESP_LOGW(TAG, "unregister modem callback failed: %s", esp_err_to_name(ret));
         return ret;
     }
-    if (me->lock && me->event_callback_done_sema) {
-        ret = wait_event_callbacks_idle(me);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "wait event callbacks idle failed: %s", esp_err_to_name(ret));
-            return ret;
-        }
-    }
 
     core_fsm_stop(me);
     ret = net_mgr_deinit(me);
@@ -953,18 +671,10 @@ static esp_err_t core_deinit(core_handle_t *me)
         ESP_LOGW(TAG, "core FSM deinit failed: %s", esp_err_to_name(ret));
         return ret;
     }
-    ret = destroy_event_loop(me);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    if (me->event_callback_done_sema) {
-        vSemaphoreDelete(me->event_callback_done_sema);
-        me->event_callback_done_sema = NULL;
-    }
-    me->event_callback_task = NULL;
-    me->event_callback_active = 0;
-    me->event_callback_waiting = false;
-    me->event_loop_task = NULL;
+    me->protocol_callback = NULL;
+    me->protocol_user_ctx = NULL;
+    me->protocol_closed_callback = NULL;
+    me->protocol_closed_user_ctx = NULL;
     free((void *)me->config.apn);
     me->config.apn = NULL;
     if (me->lock) {
@@ -981,11 +691,11 @@ static bool core_deinit_complete(const core_handle_t *me)
         return true;
     }
 
-    return !me->modem && !me->event_loop && !me->fsm.task &&
+    return !me->modem && !me->fsm.task &&
            !me->fsm.queue && !me->fsm.task_done_sema &&
            !me->net_mgr.reconnect_timer &&
            !me->net_mgr.reconnect_cb_done_sema &&
-           !me->event_callback_done_sema && !me->lock && !me->config.apn;
+           !me->lock && !me->config.apn;
 }
 
 static esp_err_t core_unregister_modem_callback(core_handle_t *me)
@@ -1184,40 +894,6 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
     default:
         return false;
     }
-}
-
-static esp_err_t clone_protocol_data(core_event_data_t *event_data,
-                                     const core_protocol_data_t *protocol_data)
-{
-    ESP_RETURN_ON_FALSE(event_data && protocol_data, ESP_ERR_INVALID_ARG, TAG,
-                        "NULL argument");
-
-    event_data->protocol_data = *protocol_data;
-    event_data->protocol_data.topic = clone_optional_string(protocol_data->topic);
-    event_data->protocol_data.payload = clone_payload(protocol_data->payload,
-                                                      protocol_data->payload_len);
-    if ((protocol_data->topic && !event_data->protocol_data.topic) ||
-        (protocol_data->payload && protocol_data->payload_len > 0 &&
-         !event_data->protocol_data.payload)) {
-        release_core_event_payload(event_data);
-        return ESP_ERR_NO_MEM;
-    }
-
-    return ESP_OK;
-}
-
-static void release_core_event_payload(core_event_data_t *event_data)
-{
-    if (!event_data) {
-        return;
-    }
-
-    free((void *)event_data->protocol_data.topic);
-    free((void *)event_data->protocol_data.payload);
-    event_data->protocol_data.topic = NULL;
-    event_data->protocol_data.payload = NULL;
-    event_data->protocol_data.topic_len = 0;
-    event_data->protocol_data.payload_len = 0;
 }
 
 static esp_err_t clone_modem_protocol_payload(modem_event_t *event)

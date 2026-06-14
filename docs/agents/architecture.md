@@ -124,10 +124,10 @@ Modem:  "翻译"：原始 URC 字符串 → 模块级语义事件
 Modem:  event_task 从 event_queue 取出事件后调用 Core 回调
          ▼
 Core:   处理事件 → 更新网络状态机 → 通知 Facade
-          │  MODEM_EVENT_PDP_DEACTIVATED → CORE_EVENT_NET_OFFLINE
+          │  MODEM_EVENT_PDP_DEACTIVATED → LWLTE_EVENT_NET_OFFLINE
           ▼
 Facade: 翻译为 LWLTE 用户事件并调用用户回调
-          │  CORE_EVENT_NET_OFFLINE → LWLTE_EVENT_NET_OFFLINE
+          │  LWLTE_EVENT_NET_OFFLINE → LWLTE_EVENT_NET_OFFLINE
           ▼
 App:    业务响应（重连、告警、降级等）
 ```
@@ -255,7 +255,7 @@ static esp_err_t sim800_get_signal(modem_handle_t *me, modem_signal_t *signal)
 | **职责** | 网络状态机、PDP 激活/去激活管理、连接建立/重连/保活，并通过 `core_submit_cmd()` 串行化上层 service 协议命令 |
 | **知道什么** | 网络状态迁移规则、重试策略、保活机制、Modem 语义 API |
 | **不知道什么** | 用户门面配置、具体 AT 指令格式、模块型号、底层硬件 |
-| **层间接口** | `core_create()`、`core_start()`、`core_connect()`、`core_register_event_callback()`、`core_submit_cmd()`、`CORE_EVENT` |
+| **层间接口** | `core_create()`、`core_start()`、`core_connect()`、`core_register_protocol_callback()`、`core_submit_cmd()`、`LWLTE_EVENT` |
 | **OOP 角色** | 内部 service — 调用 modem 接口，不关心实现 |
 
 Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保活定时器，直接调 `xTaskCreate` 等 API。Core API 是给 Facade 和上层内部 service 使用的层间 API，不是 App 用户 API；App 只通过 `lwlte_*` 门面函数操作 LTE。
@@ -267,7 +267,7 @@ Core 层可以使用 FreeRTOS 任务/队列/定时器来实现 FSM 线程和保�
 | **职责** | MQTT 连接、订阅、取消订阅、发布和下行数据事件适配 |
 | **知道什么** | Core 层间 API、Core 网络事件、Core protocol event、MQTT 自身状态机 |
 | **不知道什么** | Modem Adapter、AT Engine、具体 AT 指令格式、模块型号 |
-| **层间接口** | `mqtt_client_create()`、`mqtt_client_start()`、`mqtt_client_register_event_callback()`、`mqtt_client_destroy()` |
+| **层间接口** | `mqtt_client_create()`、`mqtt_client_start()`、`mqtt_client_destroy()`、`LWLTE_MQTT_EVENT` |
 | **OOP 角色** | 依赖 Core 的上层 service — 拥有 MQTT FSM，不直接调用 Modem/AT Engine |
 
 MQTT Client Service 通过 Core event handler 接收网络和协议数据事件，通过 `core_submit_cmd()` 提交 MQTT 模块命令。它不 include Modem/AT Engine 头文件，也不直接调用 `modem_*`。
@@ -290,6 +290,8 @@ MQTT Client Service 通过 Core event handler 接收网络和协议数据事件�
 板级初始化或 App 自有配置代码只调用用户门面 factory，不直接创建 AT Engine、Modem 或 Core。这里填写的是公共 `lwlte_air780ep_config_t`（只含 Core/Modem/AT 字段），MQTT 配置通过独立的 `lwlte_mqtt_config_t` 传入：
 
 ```c
+ESP_ERROR_CHECK(esp_event_loop_create_default());
+
 lwlte_mqtt_config_t mqtt_config = {
     .host      = CONFIG_LWLTE_MQTT_HOST,
     .port      = CONFIG_LWLTE_MQTT_PORT,
@@ -303,11 +305,13 @@ lwlte_air780ep_config_t config = {
     .uart_baud_rate = 115200,
     .apn            = CONFIG_LWLTE_APN,
     .primary_cid    = 1,
+    .event_loop     = NULL,
 };
 
 lwlte_handle_t *lte = NULL;
 ESP_ERROR_CHECK(lwlte_air780ep_init(&config, &lte));
-ESP_ERROR_CHECK(lwlte_register_event_callback(lte, app_event_handler, NULL));
+ESP_ERROR_CHECK(esp_event_handler_register(LWLTE_EVENT, ESP_EVENT_ANY_ID,
+                                           app_event_handler, NULL));
 ESP_ERROR_CHECK(lwlte_mqtt_init(lte, &mqtt_config));
 ESP_ERROR_CHECK(lwlte_start(lte));
 ```
@@ -338,11 +342,10 @@ Facade factory
     │       ├─ 传入 modem 句柄，Core 通过 modem_* API 操作模块
     │       └─ core 内部注册事件回调到 modem
     │
-    ├─ 4. core_register_event_callback(core, facade_core_event_handler, lte)
-    │       └─ Facade 把 CORE_EVENT 翻译为 LWLTE 用户事件
+    ├─ 4. esp_event_handler_register(LWLTE_EVENT, LWLTE_EVENT_READY, facade_ready_handler, lte)
+    │       └─ Facade 注册内部 handler 驱动 lwlte_wait_ready 同步
     │
-    ├─ 5. 可选：mqtt_client_create(&mqtt_cfg, core)
-    │       └─ MQTT service 启用/编译进 Facade 时创建并注册事件回调
+    ├─ 5. ping_client_create(core)              → 创建 Ping Service
     │
     └─ 6. 返回 lwlte_handle_t，等待用户调用 lwlte_start(lte)
 ```
@@ -354,9 +357,8 @@ struct lwlte_handle {
     at_engine_handle_t *at;
     modem_handle_t     *modem;
     core_handle_t      *core;
-    mqtt_client_handle_t *mqtt; /* MQTT service 启用/编译进 Facade 时存在 */
-    lwlte_event_callback_t event_callback;
-    void        *event_user_ctx;
+    mqtt_client_handle_t *mqtt; /* 由 lwlte_mqtt_init() 独立创建 */
+    esp_event_loop_handle_t event_loop;
 };
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
@@ -393,7 +395,8 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     lte->at = at;
     lte->modem = modem;
     lte->core = core;
-    core_register_event_callback(core, facade_core_event_handler, lte);
+    esp_event_handler_register(LWLTE_EVENT, LWLTE_EVENT_READY,
+                               facade_ready_handler, lte);
 
     /* MQTT 客户端不在 factory 中创建；由 lwlte_mqtt_init() 独立创建。 */
 
@@ -415,7 +418,37 @@ err_at:
 
 ---
 
-## 7. OOP 模式在架构中的落地
+## 7. Event Bus
+
+lwlte uses ESP-IDF's event loop library as its event bus. The bus is shared across
+all layers (core, MQTT client) and exposed to the application.
+
+### Bases
+
+| Base | Producer | Events |
+|------|----------|--------|
+| LWLTE_EVENT | Core FSM | STARTED, READY, NET_CONNECTING, NET_ONLINE, NET_OFFLINE, NET_ERROR, STOPPED, ERROR |
+| LWLTE_MQTT_EVENT | MQTT client FSM | STARTED, STOPPED, CONNECTING, CONNECTED, DISCONNECTED, SUBSCRIBED, UNSUBSCRIBED, PUBLISHED, DATA, ERROR |
+
+### Registration
+
+Application registers handlers via standard ESP-IDF APIs:
+
+```c
+esp_event_handler_register(LWLTE_EVENT, ESP_EVENT_ANY_ID, handler, ctx);
+esp_event_handler_register(LWLTE_MQTT_EVENT, ESP_EVENT_ANY_ID, handler, ctx);
+```
+
+### Protocol data (private)
+
+Protocol data (modem → MQTT client) flows over a private synchronous callback
+(core_register_protocol_callback), NOT over the event bus. This keeps the
+high-volume data stream off the shared queue and hides transport-layer details
+from the application.
+
+---
+
+## 8. OOP 模式在架构中的落地
 
 | OOP 概念 | 架构落点 | 具体表现 |
 |----------|---------|---------|
@@ -453,6 +486,6 @@ err_at:
 - **线程模型**：AT Engine 拥有 UART RX task；Modem 拥有 event task；Core 拥有 FSM task 和 esp_event loop task。各线程通过队列/回调边界通信。
 - **错误传播**：公共和层间 API 使用 ESP-IDF 标准 `esp_err_t`；AT 响应细节先由 Modem 转换为模块语义，再由 Core/Facade 向上传播。
 - **生命周期**：Facade 模块 factory 创建并持有 AT Engine、Modem、Core 依赖树；销毁按反向顺序释放，失败路径使用统一 cleanup/goto 风格。
-- **事件数据**：AT Engine 使用 `at_response_t`；Modem 上报 `modem_event_t`；Core 上报 `core_event_data_t`；Facade 翻译为 `lwlte_event_data_t`。
+- **事件数据**：AT Engine 使用 `at_response_t`；Modem 上报 `modem_event_t`；Core 直接投递 `lwlte_event_data_t` 到 `LWLTE_EVENT`。
 - **重试策略**：AT Engine 只处理单次命令超时；Core `net_mgr_t` 负责网络激活步骤、断线事件和重连策略。
 - **并发边界**：跨层不共享私有结构；每层用自己的锁、队列和任务保护内部状态。Service 层不跨层直接调用 AT Engine。

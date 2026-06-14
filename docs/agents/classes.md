@@ -747,7 +747,7 @@ typedef void (*modem_event_callback_t)(modem_handle_t *modem,
 
 `MODEM_EVENT_PROTOCOL_DATA` 和 `MODEM_EVENT_PROTOCOL_CLOSED` 追加在 `MODEM_EVENT_ERROR` 之后，避免改变既有事件 ID 的数值。
 
-`MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的堆内存中；`modem_post_event()` 成功后由 Modem event task 在 Core 回调返回后释放，`modem_post_event()` 失败时仍由调用者释放。Core 若要通过 `CORE_EVENT_PROTOCOL_DATA` 继续上报给 MQTT service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
+`MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的堆内存中；`modem_post_event()` 成功后由 Modem event task 在 Core 回调返回后释放，`modem_post_event()` 失败时仍由调用者释放。Core 若要通过 `LWLTE_EVENT_PROTOCOL_DATA` 继续上报给 MQTT service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
 
 ### 2.11 `modem_air780ep_config_t` — Air780EP 配置
 
@@ -906,11 +906,11 @@ Core Service
 | `core_handle_t` | 层间 API (opaque) | Facade | 句柄 | Core Service 实例句柄 |
 | `core_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | Core 生命周期状态 |
 | `core_net_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | 网络连接状态 |
-| `core_event_id_t` | 层间 API | Facade + esp_event | 事件枚举 | Core 上行事件类型，同时作为 esp_event event_id |
-| `core_event_data_t` | 层间 API | Facade + esp_event | 值对象 | 事件携带数据 |
+| `lwlte_event_id_t` | 用户 API | App + esp_event | 事件枚举 | LWLTE_EVENT 上行事件类型 |
+| `lwlte_event_data_t` | 用户 API | App + esp_event | 值对象 | 事件携带数据 |
 | `core_protocol_t` | 层间 API | MQTT Client Service + Core 内部 | 枚举 | Core protocol event 所属协议类型 |
 | `core_protocol_data_t` | 层间 API | MQTT Client Service + Core 内部 | 值对象 | Core 上报给上层 protocol service 的数据事件 |
-| `core_event_callback_t` | 层间 API | Facade | 回调接口 | Facade 接收 Core 事件的便捷回调签名 |
+| `core_protocol_callback_t` | 层间 API | MQTT Client Service | 回调接口 | 私有协议数据回调（modem→MQTT，同步） |
 | `core_cmd_type_t` | 层间 API | MQTT Client Service + Ping Service + Core 内部 | 命令枚举 | 上层 service 投递给 Core 的协议命令类型 |
 | `core_cmd_result_t` | 层间 API | MQTT Client Service + Ping Service + Core 内部 | 结果枚举 | Core command 执行结果 |
 | `core_ping_reply_t` | 层间 API | Ping Service + Core 内部 | 值对象 | `CORE_CMD_PING` 的单包结果，Core command callback 前写入 |
@@ -958,10 +958,12 @@ esp_err_t core_destroy(core_handle_t *me);
 esp_err_t core_start(core_handle_t *me);
 esp_err_t core_stop(core_handle_t *me);
 
-esp_err_t core_register_event_callback(core_handle_t *me,
-                                       core_event_callback_t callback,
-                                       void *user_ctx);
-esp_event_loop_handle_t core_get_event_loop(core_handle_t *me);
+esp_err_t core_register_protocol_callback(core_handle_t *me,
+                                          core_protocol_callback_t callback,
+                                          void *user_ctx);
+esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
+                                                  core_protocol_closed_callback_t callback,
+                                                  void *user_ctx);
 
 esp_err_t core_get_state(core_handle_t *me, core_state_t *state);
 esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
@@ -971,7 +973,7 @@ esp_err_t core_disconnect(core_handle_t *me);
 esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 ```
 
-`core_start()` 是 Facade `lwlte_start()` 的内部入口，只投递 `CORE_SIG_START` 后返回。Core FSM 在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程；最终网络 online 通过 `CORE_EVENT_NET_ONLINE` 传给 Facade，再映射为 `LWLTE_EVENT_NET_ONLINE`。
+`core_start()` 是 Facade `lwlte_start()` 的内部入口，只投递 `CORE_SIG_START` 后返回。Core FSM 在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程；最终网络 online 通过 `LWLTE_EVENT_NET_ONLINE` 投递到共享事件总线。
 
 `core_connect()` 保留为 Core 内部 command helper，不是用户 API；App 不直接调用，也不通过 Facade 暴露为用户连接函数。
 
@@ -979,14 +981,14 @@ esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 
 - `config`：Core 层间配置快照，保存 APN、PDP 和 FSM 参数。
 - `modem`：Facade factory 注入的 `modem_handle_t` 句柄，Core 借用但不拥有生命周期。
-- `event_loop`、`event_callback`、`event_user_ctx`：Core 事件分发和 Facade 桥接回调。
+- `protocol_callback`、`protocol_closed_callback`：私有同步协议数据回调槽，由 MQTT service 注册。
 - `fsm`、`net_mgr`、`pdp_mgr`：`core_handle_t` 的组合成员，分别负责信号串行化、网络激活/重连、PDP 缓存。
 - `state`、`destroying`、`lock`：Core 生命周期状态和并发保护。
 
 **关键设计决策**：
 - Core 没有 ops 多态；它不面向多种实现，只有一个实现。
 - `modem` 句柄由 Facade 模块 factory 传入，Core 不拥有 Modem 生命周期。
-- `event_loop` 由 Core 在 `core_create()` 中创建，在 `destroy` 中删除。
+- 事件总线通过 `config.event_loop` 借用（NULL = default loop），Core 不创建自己的 loop；事件直接 post 到共享总线的 `LWLTE_EVENT` base。
 - `lock` 只保护 `state`/`destroying` 等短字段访问，FSM 线程调用 `modem_*` API 时不持锁。
 - Facade 调用的 `start`、`disconnect` 只投递信号到 FSM 队列即返回，不阻塞。
 
@@ -1014,20 +1016,18 @@ typedef enum {
     CORE_NET_STATE_ERROR,
 } core_net_state_t;
 
-ESP_EVENT_DECLARE_BASE(CORE_EVENT);
+ESP_EVENT_DECLARE_BASE(LWLTE_EVENT);
 
 typedef enum {
-    CORE_EVENT_STARTED = 0,
-    CORE_EVENT_READY,
-    CORE_EVENT_NET_CONNECTING,
-    CORE_EVENT_NET_ONLINE,
-    CORE_EVENT_NET_OFFLINE,
-    CORE_EVENT_NET_ERROR,
-    CORE_EVENT_STOPPED,
-    CORE_EVENT_ERROR,
-    CORE_EVENT_PROTOCOL_DATA,
-    CORE_EVENT_PROTOCOL_CLOSED,
-} core_event_id_t;
+    LWLTE_EVENT_STARTED = 0,
+    LWLTE_EVENT_READY,
+    LWLTE_EVENT_NET_CONNECTING,
+    LWLTE_EVENT_NET_ONLINE,
+    LWLTE_EVENT_NET_OFFLINE,
+    LWLTE_EVENT_NET_ERROR,
+    LWLTE_EVENT_STOPPED,
+    LWLTE_EVENT_ERROR,
+} lwlte_event_id_t;
 
 typedef enum {
     CORE_PROTOCOL_MQTT = 0,
@@ -1044,18 +1044,19 @@ typedef struct {
 typedef struct {
     core_net_state_t net_state;
     int              error_code;
-    core_protocol_data_t protocol_data;
-} core_event_data_t;
+} lwlte_event_data_t;
 
-typedef void (*core_event_callback_t)(core_handle_t *core,
-                                      core_event_id_t event_id,
-                                      const core_event_data_t *data,
-                                      void *user_ctx);
+typedef void (*core_protocol_callback_t)(core_handle_t *core,
+                                         const core_protocol_data_t *data,
+                                         void *user_ctx);
+typedef void (*core_protocol_closed_callback_t)(core_handle_t *core,
+                                                 core_protocol_t protocol,
+                                                 void *user_ctx);
 ```
 
-**边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Facade 负责把这些层间状态翻译为 `lwlte_state_t`、`lwlte_net_state_t` 和用户事件。协议事件追加在 `CORE_EVENT_ERROR` 之后以保持既有事件枚举 ABI：`CORE_EVENT_STOPPED == 6`、`CORE_EVENT_ERROR == 7`。
+**边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Core 通过 `core_post_event()` 把状态变化直接投递到共享事件总线 `LWLTE_EVENT`，应用层通过 `esp_event_handler_register()` 订阅。Facade 内部注册 `facade_ready_handler` 驱动 `lwlte_wait_ready()` 同步。
 
-`core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 Core event callback 执行期间有效；MQTT Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据，并在回调返回前调用 `core_release_event_payload()` 释放 Core 为 `CORE_EVENT_PROTOCOL_DATA` 分配的堆内存。Core 自带的 `core_event_adapter` 不消费协议事件，避免在其他 ESP event handler 前释放共享事件数据。
+`core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 `core_protocol_callback_t` 执行期间有效；MQTT Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据。协议数据通过私有同步回调（`core_register_protocol_callback`）传递，不经过事件总线。
 
 ### 3.5 Core command queue 类型
 
@@ -1256,12 +1257,12 @@ typedef struct {
 | `NET_STEP_SET_APN` | APN 非空时配置 APN；APN 为空时跳过 | `modem_set_apn()`（仅非空 APN） |
 | `NET_STEP_ACTIVATE_PDP` | 激活 PDP；若模块返回前置状态错误，重新查询 SIM/注册/附着并回到对应等待阶段 | `modem_activate_pdp()` |
 | `NET_STEP_QUERY_IP` | 查询 PDP context，要求 active 且 IP 非空后才完成上线 | `modem_get_pdp_context()` |
-| `NET_STEP_DONE` | 网络上线 | 发布 `CORE_EVENT_NET_ONLINE` |
+| `NET_STEP_DONE` | 网络上线 | 发布 `LWLTE_EVENT_NET_ONLINE` |
 
-网络激活由 `net_mgr_start_activation()` 在一次 FSM 信号处理中运行 staged polling loop。进入激活时只发布一次 `CORE_EVENT_NET_CONNECTING`，随后按 SIM、信号、注册、分组域附着、APN、PDP 激活、IP 查询顺序同步调用 `modem_*` API；前置条件未满足时返回 `ESP_ERR_NOT_FINISHED`，`run_activation_loop()` 按 `NET_MGR_WAIT_POLL_INTERVAL_MS` 等待后继续轮询。只有 PDP active 且获得有效 IP 后才发布 `CORE_EVENT_NET_ONLINE`；终止错误、注册拒绝、SIM 致命状态或整体 `net_activate_timeout_ms` 超时才进入 `NET_STEP_ERROR` 并发布 `CORE_EVENT_NET_ERROR`。销毁期间激活流程直接中止并返回，不发布网络错误事件。
+网络激活由 `net_mgr_start_activation()` 在一次 FSM 信号处理中运行 staged polling loop。进入激活时只发布一次 `LWLTE_EVENT_NET_CONNECTING`，随后按 SIM、信号、注册、分组域附着、APN、PDP 激活、IP 查询顺序同步调用 `modem_*` API；前置条件未满足时返回 `ESP_ERR_NOT_FINISHED`，`run_activation_loop()` 按 `NET_MGR_WAIT_POLL_INTERVAL_MS` 等待后继续轮询。只有 PDP active 且获得有效 IP 后才发布 `LWLTE_EVENT_NET_ONLINE`；终止错误、注册拒绝、SIM 致命状态或整体 `net_activate_timeout_ms` 超时才进入 `NET_STEP_ERROR` 并发布 `LWLTE_EVENT_NET_ERROR`。销毁期间激活流程直接中止并返回，不发布网络错误事件。
 
 **重连逻辑**：
-- 收到 `MODEM_EVENT_PDP_DEACTIVATED` → `net_state = OFFLINE` → 发布 `CORE_EVENT_NET_OFFLINE` → 启动 `reconnect_timer`（固定 `reconnect_delay_ms`）。
+- 收到 `MODEM_EVENT_PDP_DEACTIVATED` → `net_state = OFFLINE` → 发布 `LWLTE_EVENT_NET_OFFLINE` → 启动 `reconnect_timer`（固定 `reconnect_delay_ms`）。
 - 定时器回调发送 `CORE_SIG_RECONNECT` → FSM 重新触发网络激活流程。
 
 第一版只做固定延迟重连，不做指数退避。保活机制后续版本再加。
@@ -1349,16 +1350,16 @@ Core FSM 处理 `CORE_SIG_SERVICE_CMD` 时执行 Core-owned `core_cmd_t`，按�
 
 | Modem Event | Core 行为 |
 |-------------|----------|
-| `MODEM_EVENT_READY` | 作为事件桥接通知 core_state → READY 并发布 `CORE_EVENT_READY`；Core 启动流程不由该事件推进，而是在阻塞式 `modem_start()` 返回 `ESP_OK` 后继续网络激活 |
+| `MODEM_EVENT_READY` | 作为事件桥接通知 core_state → READY 并发布 `LWLTE_EVENT_READY`；Core 启动流程不由该事件推进，而是在阻塞式 `modem_start()` 返回 `ESP_OK` 后继续网络激活 |
 | `MODEM_EVENT_SIM_CHANGED` | 更新 net_mgr 可用的 SIM 状态 |
 | `MODEM_EVENT_REG_CHANGED` | 更新 net_mgr 可用的注册状态 |
-| `MODEM_EVENT_PDP_ACTIVATED` | 可更新 PDP 状态并通知运行期观察者；Core online 需要命令确认路径中 PDP active 且获得有效 IP 后才发布 `CORE_EVENT_NET_ONLINE` |
-| `MODEM_EVENT_PDP_DEACTIVATED` | net_state → OFFLINE，发布 `CORE_EVENT_NET_OFFLINE`，启动重连定时器 |
-| `MODEM_EVENT_PROTOCOL_DATA` | Core 复制协议数据并发布 `CORE_EVENT_PROTOCOL_DATA`；MQTT service 再从 Core event handler 投递 MQTT FSM 信号 |
-| `MODEM_EVENT_PROTOCOL_CLOSED` | Core 发布 `CORE_EVENT_PROTOCOL_CLOSED`；MQTT service 视为协议连接关闭并回到等待网络或错误处理流程 |
+| `MODEM_EVENT_PDP_ACTIVATED` | 可更新 PDP 状态并通知运行期观察者；Core online 需要命令确认路径中 PDP active 且获得有效 IP 后才发布 `LWLTE_EVENT_NET_ONLINE` |
+| `MODEM_EVENT_PDP_DEACTIVATED` | net_state → OFFLINE，发布 `LWLTE_EVENT_NET_OFFLINE`，启动重连定时器 |
+| `MODEM_EVENT_PROTOCOL_DATA` | Core 复制协议数据并发布 `LWLTE_EVENT_PROTOCOL_DATA`；MQTT service 再从 Core event handler 投递 MQTT FSM 信号 |
+| `MODEM_EVENT_PROTOCOL_CLOSED` | Core 发布 `LWLTE_EVENT_PROTOCOL_CLOSED`；MQTT service 视为协议连接关闭并回到等待网络或错误处理流程 |
 | `MODEM_EVENT_ERROR` | 根据 error_code 决定重试或进入 ERROR 状态 |
 
-`MODEM_EVENT_PROTOCOL_DATA` 中的指针只在 Modem callback 执行期间有效，Core 发布 `CORE_EVENT_PROTOCOL_DATA` 前必须复制数据。
+`MODEM_EVENT_PROTOCOL_DATA` 中的指针只在 Modem callback 执行期间有效，Core 发布 `LWLTE_EVENT_PROTOCOL_DATA` 前必须复制数据。
 
 ### 3.10 初始化与装配
 
@@ -1376,7 +1377,7 @@ core_config_t core_cfg = {
 };
 
 core_handle_t *core = core_create(&core_cfg, modem);
-core_register_event_callback(core, facade_core_event_handler, lte);
+esp_event_handler_register(LWLTE_EVENT, LWLTE_EVENT_READY, facade_ready_handler, lte);
 ```
 
 Facade 模块 factory 到这里结束，只完成装配和事件桥接，不启动模块。用户调用 `lwlte_start()` 后，Facade 通用 API 再把启动请求交给 Core：
@@ -1430,10 +1431,10 @@ MQTT 可以直接使用 ESP-IDF / FreeRTOS API，例如 `xTaskCreate()`、`xQueu
 | `mqtt_client_handle_t` | 层间 API (opaque) | Facade | service 句柄 | MQTT Client Service 实例 |
 | `mqtt_client_transport_t` | 层间 API | Facade + MQTT 内部 | 枚举 | MQTT 传输类型，第一版只支持 Plain TCP |
 | `mqtt_client_state_t` | 层间 API | Facade + MQTT 内部 | 状态枚举 | MQTT 生命周期和连接状态 |
-| `mqtt_client_event_id_t` | 层间 API | Facade + esp_event | 事件枚举 | MQTT 上行事件类型，同时作为 esp_event event_id |
-| `mqtt_client_event_data_t` | 层间 API | Facade | 值对象 | MQTT 事件数据 |
+| `lwlte_mqtt_event_id_t` | 用户 API | App + esp_event | 事件枚举 | LWLTE_MQTT_EVENT 上行事件类型 |
+| `lwlte_mqtt_event_data_t` | 用户 API | App | 值对象 | MQTT 事件数据 |
+| `lwlte_mqtt_msg_t` | 用户 API | App | 值对象 | 收到的 MQTT 消息 |
 | `mqtt_client_publish_t` | 层间 API | Facade | 值对象 | 发布请求 |
-| `mqtt_client_msg_t` | 层间 API | Facade | 值对象 | 收到的 MQTT 消息 |
 | `mqtt_client_operation_t` | 层间 API | Facade + MQTT 内部 | 枚举 | MQTT 操作类型，用于操作完成事件 |
 | `mqtt_fsm_sig_type_t` | 模块私有 API | MQTT FSM | 信号枚举 | MQTT FSM 内部信号类型 |
 | `mqtt_fsm_sig_t` | 模块私有 API | MQTT FSM | 值对象 | MQTT FSM 队列中的信号 |
@@ -1486,7 +1487,7 @@ typedef struct {
 } lwlte_mqtt_config_t;
 ```
 
-MQTT 生命周期分为两层：`lwlte_mqtt_init()` / `lwlte_mqtt_destroy()` 管理对象创建与销毁（init↔destroy），`lwlte_mqtt_start()` / `lwlte_mqtt_stop()` 管理连接 FSM（start↔stop）。`lwlte_mqtt_init()` 在 `lwlte_*_init()` 返回句柄之后、`lwlte_destroy()` 之前任意时刻都可调用，与 `lwlte_start()` 无先后要求；内部自动注册事件桥。`lwlte_mqtt_destroy()` 从任何 FSM 状态安全调用（下层自动 stop）。若应用层未手动调用，`lwlte_destroy()` 兜底清理。`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t` 时按空字符串处理。
+MQTT 生命周期分为两层：`lwlte_mqtt_init()` / `lwlte_mqtt_destroy()` 管理对象创建与销毁（init↔destroy），`lwlte_mqtt_start()` / `lwlte_mqtt_stop()` 管理连接 FSM（start↔stop）。`lwlte_mqtt_init()` 在 `lwlte_*_init()` 返回句柄之后、`lwlte_destroy()` 之前任意时刻都可调用，与 `lwlte_start()` 无先后要求；MQTT 事件通过共享事件总线 `LWLTE_MQTT_EVENT` 投递，应用层通过 `esp_event_handler_register()` 注册处理函数。`lwlte_mqtt_destroy()` 从任何 FSM 状态安全调用（下层自动 stop）。若应用层未手动调用，`lwlte_destroy()` 兜底清理。`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t` 时按空字符串处理。
 
 ### 4.3 `mqtt_client_handle_t` — MQTT 客户端句柄
 
@@ -1503,11 +1504,6 @@ esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me);
 esp_err_t mqtt_client_start(mqtt_client_handle_t *me);
 esp_err_t mqtt_client_stop(mqtt_client_handle_t *me);
 
-esp_err_t mqtt_client_register_event_callback(mqtt_client_handle_t *me,
-                                              mqtt_client_event_callback_t callback,
-                                              void *user_ctx);
-esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_handle_t *me);
-
 esp_err_t mqtt_client_get_state(mqtt_client_handle_t *me,
                                 mqtt_client_state_t *state);
 esp_err_t mqtt_client_subscribe(mqtt_client_handle_t *me,
@@ -1520,9 +1516,8 @@ esp_err_t mqtt_client_publish(mqtt_client_handle_t *me,
 ```
 
 **关键内部字段类别**：
-- `config`：配置快照，包含复制后的 host、client_id、username、password。
+- `config`：配置快照，包含复制后的 host、client_id、username、password，以及借用的 `event_loop`（NULL = default loop）。
 - `core`：Facade factory 注入的 `core_handle_t` 句柄，MQTT 借用但不拥有生命周期。
-- `event_loop`、`event_callback`、`event_user_ctx`：MQTT 事件分发和 Facade 桥接回调。
 - `fsm_task`、`fsm_queue`、`fsm_task_done_sema`：MQTT 独立状态机线程和信号队列。
 - `state`、`connect_step`、`pending_cmd`：MQTT 生命周期、连接子步骤和等待中的 Core command。
 - `lock`、`destroying`、`started`、`net_online`：短状态字段和销毁保护。
@@ -1551,20 +1546,24 @@ typedef enum {
     MQTT_CLIENT_STATE_DESTROYING,
 } mqtt_client_state_t;
 
-ESP_EVENT_DECLARE_BASE(MQTT_CLIENT_EVENT);
+MQTT Client Service 通过共享事件总线 `LWLTE_MQTT_EVENT` 向应用层发布 MQTT 状态变化和数据事件。事件数据为 `lwlte_mqtt_event_data_t`，其中 `LWLTE_MQTT_EVENT_DATA` 事件的 `msg.topic` 和 `msg.payload` 是堆拥有的缓冲区，handler 必须在返回前调用 `lwlte_mqtt_event_data_release()` 释放。
 
+LWLTE_MQTT_EVENT_DATA payloads carry heap-owned topic/payload that must be released via `lwlte_mqtt_event_data_release` before the event handler returns.
+
+```c
+/* Events posted to LWLTE_MQTT_EVENT base */
 typedef enum {
-    MQTT_CLIENT_EVENT_STARTED = 0,
-    MQTT_CLIENT_EVENT_STOPPED,
-    MQTT_CLIENT_EVENT_CONNECTING,
-    MQTT_CLIENT_EVENT_CONNECTED,
-    MQTT_CLIENT_EVENT_DISCONNECTED,
-    MQTT_CLIENT_EVENT_SUBSCRIBED,
-    MQTT_CLIENT_EVENT_UNSUBSCRIBED,
-    MQTT_CLIENT_EVENT_PUBLISHED,
-    MQTT_CLIENT_EVENT_DATA,
-    MQTT_CLIENT_EVENT_ERROR,
-} mqtt_client_event_id_t;
+    LWLTE_MQTT_EVENT_STARTED = 0,
+    LWLTE_MQTT_EVENT_STOPPED,
+    LWLTE_MQTT_EVENT_CONNECTING,
+    LWLTE_MQTT_EVENT_CONNECTED,
+    LWLTE_MQTT_EVENT_DISCONNECTED,
+    LWLTE_MQTT_EVENT_SUBSCRIBED,
+    LWLTE_MQTT_EVENT_UNSUBSCRIBED,
+    LWLTE_MQTT_EVENT_PUBLISHED,
+    LWLTE_MQTT_EVENT_DATA,
+    LWLTE_MQTT_EVENT_ERROR,
+} lwlte_mqtt_event_id_t;
 
 typedef enum {
     MQTT_CLIENT_OPERATION_CONNECT = 0,
@@ -1587,24 +1586,19 @@ typedef struct {
     size_t topic_len;
     const uint8_t *payload;
     size_t payload_len;
-} mqtt_client_msg_t;
+} lwlte_mqtt_msg_t;
 
 typedef struct {
-    mqtt_client_state_t state;
+    lwlte_mqtt_state_t mqtt_state;
     int error_code;
-    union {
-        mqtt_client_operation_t operation;
-        mqtt_client_msg_t msg;
-    } data;
-} mqtt_client_event_data_t;
+    lwlte_mqtt_msg_t msg;
+    bool owns_payload;
+} lwlte_mqtt_event_data_t;
 
-typedef void (*mqtt_client_event_callback_t)(mqtt_client_handle_t *client,
-                                             mqtt_client_event_id_t event_id,
-                                             const mqtt_client_event_data_t *data,
-                                             void *user_ctx);
+void lwlte_mqtt_event_data_release(lwlte_mqtt_event_data_t *data);
 ```
 
-`mqtt_client_msg_t` 中的指针只在 MQTT 事件回调期间有效；Facade 若要把数据继续传给用户异步保存，必须复制 topic 和 payload。MQTT 数据事件采用直接回调策略：MQTT_CLIENT_EVENT_DATA is dispatched only through mqtt_client_event_callback_t; signal-owned topic/payload are freed after the direct callback returns。因此在实现独立异步所有权模型前，DATA 不投递到 MQTT 的异步 `esp_event` loop。
+`lwlte_mqtt_event_data_t` 中的 `msg.topic` 和 `msg.payload` 在 `LWLTE_MQTT_EVENT_DATA` 事件中是堆拥有的缓冲区（`owns_payload == true`），handler 必须在返回前调用 `lwlte_mqtt_event_data_release()` 释放。其他事件的 `owns_payload` 为 false，不包含堆缓冲。所有 MQTT 事件通过共享事件总线 `LWLTE_MQTT_EVENT` 投递，应用层通过 `esp_event_handler_register(LWLTE_MQTT_EVENT, ...)` 注册 handler。
 
 ### 4.5 `mqtt_fsm_sig_t` — MQTT FSM 信号
 
@@ -1694,9 +1688,9 @@ STOPPED
 
 ```text
 CONNECTED
-  └─ CORE_EVENT_NET_OFFLINE
+  └─ LWLTE_EVENT_NET_OFFLINE
       ├─ 清除 connected 状态
-      ├─ 发布 MQTT_CLIENT_EVENT_DISCONNECTED
+      ├─ 发布 LWLTE_MQTT_EVENT_DISCONNECTED
       └─ WAITING_NET
 ```
 
@@ -1708,7 +1702,7 @@ CONNECTED 或 transport 已打开
       ├─ 等待 command 完成或 stop 超时
       ├─ 注销 Core event handler
       ├─ 停止 MQTT FSM task
-      └─ 发布 MQTT_CLIENT_EVENT_STOPPED
+      └─ 发布 LWLTE_MQTT_EVENT_STOPPED
 ```
 
 第一版不隐藏缓存 publish/subscribe/unsubscribe 请求。MQTT 未连接时，这些 API 返回 `ESP_ERR_INVALID_STATE`。
@@ -1721,14 +1715,14 @@ Air780EP 第一版使用 `+MSUB:` 作为 MQTT 下行数据 URC。新的依赖方
 AT Engine RX task
   └─ Modem Air780EP URC handler
        └─ 解析 +MSUB: 为 modem_event_t
-            └─ Modem event_task 调用 Core 回调
-                 └─ Core FSM 发布 CORE_EVENT_PROTOCOL_DATA
-                      └─ MQTT core_event_handler 深拷贝 topic/payload
-                           └─ xQueueSend(mqtt.fsm_queue)
-                                └─ MQTT FSM 发布 MQTT_CLIENT_EVENT_DATA
+             └─ Modem event_task 调用 Core 回调
+                  └─ Core FSM 调用 protocol_callback (同步)
+                       └─ MQTT mqtt_protocol_data_cb 深拷贝 topic/payload
+                            └─ xQueueSend(mqtt.fsm_queue)
+                                 └─ MQTT FSM 发布 LWLTE_MQTT_EVENT_DATA
 ```
 
-Core protocol event 数据使用回调期间有效的指针，MQTT service 入队前必须复制 topic 和 payload。
+Core protocol data 通过私有同步回调（`core_register_protocol_callback`）传递，MQTT service 入队前必须复制 topic 和 payload。MQTT 事件通过共享事件总线 `LWLTE_MQTT_EVENT` 发布。
 
 ### 4.10 MQTT 线程模型
 
@@ -1739,7 +1733,7 @@ Facade/App task
             └─ xQueueSend(mqtt.fsm_queue)
 
 Core event loop task
-  └─ CORE_EVENT_NET_ONLINE / OFFLINE / PROTOCOL_DATA
+  └─ LWLTE_EVENT_NET_ONLINE / OFFLINE / PROTOCOL_DATA
        └─ MQTT core_event_handler
             └─ 深拷贝必要数据
                  └─ xQueueSend(mqtt.fsm_queue)
@@ -1748,7 +1742,7 @@ MQTT FSM task
   └─ 串行处理 MQTT 信号
        ├─ CONNECTING: submit CORE_CMD_MQTT_CONFIGURE/TCP_CONNECT/CONNECT
        ├─ CONNECTED: submit publish/subscribe/unsubscribe
-       └─ 状态变化后 post MQTT_CLIENT_EVENT
+       └─ 状态变化后 post LWLTE_MQTT_EVENT
 
 Core FSM task
   └─ 串行处理 core_cmd_t
@@ -1773,11 +1767,11 @@ Core FSM task
 - Core command 超时映射为 `ESP_ERR_TIMEOUT`。
 - 第一版 TLS 返回 `ESP_ERR_NOT_SUPPORTED`。
 - 协议数据或响应格式异常返回 `ESP_ERR_INVALID_RESPONSE`。
-- MQTT 保存最近一次错误码，并通过 `MQTT_CLIENT_EVENT_ERROR` 上报。
+- MQTT 保存最近一次错误码，并通过 `LWLTE_MQTT_EVENT_ERROR` 上报。
 
 ### 4.12 与 Core / Modem / AT Engine 的边界
 
-- MQTT 可以调用 `core_get_event_loop()`、`core_get_net_state()` 和 `core_submit_cmd()`，因为 Core 是 MQTT 的直接依赖。
+- MQTT 可以调用 `core_register_protocol_callback()`、`core_get_net_state()` 和 `core_submit_cmd()`，因为 Core 是 MQTT 的直接依赖。
 - MQTT 不 include `modem.h`、`modem_air780ep.h`、`at_engine.h` 或其他模块的 `_priv.h`。
 - MQTT 不直接调用 `modem_*`、`at_engine_*` 或具体 Air780EP helper。
 - MQTT 不注册 AT Engine URC handler；MQTT 数据 URC 经 Modem → Core → MQTT 上行。

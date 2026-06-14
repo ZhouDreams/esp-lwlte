@@ -15,6 +15,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_err.h"
+#include "esp_event.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -53,15 +54,15 @@
  **********************/
 
 /**
- * @brief LTE 事件回调
- * @details LTE event callback
- * @param[in] lte LTE 用户门面句柄
+ * @brief LTE 事件回调（共享事件总线）
+ * @details LTE event callback (shared event bus)
+ * @param[in] arg handler 注册时传入的上下文
+ * @param[in] base 事件 base（LWLTE_EVENT）
  * @param[in] event_id 事件 ID
- * @param[in] data 事件数据
- * @param[in] user_ctx 用户上下文
+ * @param[in] event_data 事件数据
  */
-static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
-                         const lwlte_event_data_t *data, void *user_ctx);
+static void lwlte_event_cb(void *arg, esp_event_base_t base,
+                           int32_t event_id, void *event_data);
 
 /**
  * @brief 执行一次 Ping 测试
@@ -96,6 +97,8 @@ void example_ml307r_basic_connect_run(void)
     s_net_error = false;
     s_last_error = 0;
 
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
     lwlte_handle_t *lte = NULL;
     const lwlte_ml307r_config_t config = {
         .uart_num = EXAMPLE_LTE_UART_NUM,
@@ -107,6 +110,7 @@ void example_ml307r_basic_connect_run(void)
         .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
         .init_ready_timeout_ms = EXAMPLE_INIT_READY_TIMEOUT_MS,
         .modem_reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
+        .event_loop = NULL,
     };
 
     ESP_LOGI(TAG, "ML307R basic connect example");
@@ -123,12 +127,8 @@ void example_ml307r_basic_connect_run(void)
     }
 
     /* 注册事件回调：联网结果会异步从回调里返回。 */
-    ret = lwlte_register_event_callback(lte, lte_event_cb, NULL);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "register callback failed: %s", esp_err_to_name(ret));
-        (void)lwlte_destroy(lte);
-        idle_forever();
-    }
+    ESP_ERROR_CHECK(esp_event_handler_register(LWLTE_EVENT, ESP_EVENT_ANY_ID,
+                                               lwlte_event_cb, NULL));
 
     /* 启动异步联网；ESP_OK 只表示请求已经提交。 */
     ret = lwlte_start(lte);
@@ -160,17 +160,19 @@ void example_ml307r_basic_connect_run(void)
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
-                         const lwlte_event_data_t *data, void *user_ctx)
+static void lwlte_event_cb(void *arg, esp_event_base_t base,
+                           int32_t event_id, void *event_data)
 {
-    (void)lte;
-    (void)user_ctx;
+    (void)arg;
+    (void)base;
+
+    const lwlte_event_data_t *data = event_data;
 
     ESP_LOGI(TAG, "LTE event=%d net=%d err=%d", (int)event_id,
              data ? (int)data->net_state : -1,
              data ? data->error_code : 0);
 
-    switch (event_id) {
+    switch ((lwlte_event_id_t)event_id) {
     case LWLTE_EVENT_NET_CONNECTING:
         s_net_online = false;
         s_net_error = false;

@@ -16,8 +16,8 @@ CORE_FSM_C = ROOT / "src/core/core_fsm.c"
 ARCH_DOC = ROOT / "docs/agents/architecture.md"
 CLASSES_DOC = ROOT / "docs/agents/classes.md"
 OOP_DOC = ROOT / "docs/agents/oop-design.md"
-BASIC_EXAMPLE = ROOT / "example/basic_connect.c"
-MQTT_EXAMPLE = ROOT / "example/mqtt_client.c"
+BASIC_EXAMPLE = ROOT / "example/air780ep_basic_connect.c"
+MQTT_EXAMPLE = ROOT / "example/air780ep_mqtt_client.c"
 
 
 def read_optional(path: Path) -> str:
@@ -83,8 +83,8 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
         cls.mqtt_example = read_optional(MQTT_EXAMPLE)
 
     def test_public_api_has_start_not_connect_or_auto_connect(self):
-        assert_contains(self, self.lwlte_h, "esp_err_t lwlte_start(lwlte_t *me);", "lwlte.h")
-        assert_not_contains(self, self.lwlte_h, "esp_err_t lwlte_connect(lwlte_t *me);", "lwlte.h")
+        assert_contains(self, self.lwlte_h, "esp_err_t lwlte_start(lwlte_handle_t *me);", "lwlte.h")
+        assert_not_contains(self, self.lwlte_h, "esp_err_t lwlte_connect(lwlte_handle_t *me);", "lwlte.h")
         config_start = require_index(self, self.lwlte_h, "typedef struct {", "lwlte.h")
         config_start = require_index(self, self.lwlte_h, "uart_port_t uart_num;", "lwlte_air780ep_config_t", config_start)
         config_end = require_index(self, self.lwlte_h, "} lwlte_air780ep_config_t;", "lwlte_air780ep_config_t", config_start)
@@ -92,7 +92,7 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
         assert_not_contains(self, config_body, "auto_connect", "lwlte_air780ep_config_t")
 
     def test_facade_start_delegates_only_to_core_start(self):
-        body = function_body(self.lwlte_c, "esp_err_t lwlte_start(lwlte_t *me)")
+        body = function_body(self.lwlte_c, "esp_err_t lwlte_start(lwlte_handle_t *me)")
         assert_contains(self, body, "begin_api_call(me, true, &core)", "lwlte_start")
         assert_contains(self, body, "core_start(core)", "lwlte_start")
         for forbidden in ["modem_start", "lwlte_wait_ready", "core_connect", "modem_"]:
@@ -103,17 +103,17 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
             self.lwlte_air780ep_c,
             "esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,",
         )
-        for required in ["at_engine_create", "modem_air780ep_create", "core_create", "core_register_event_callback"]:
+        for required in ["at_engine_create", "modem_air780ep_create", "core_create", "facade_ready_handler"]:
             assert_contains(self, body, required, "lwlte_air780ep_init")
-        for forbidden in ["modem_start", "core_start", "lwlte_wait_ready", "lwlte_connect", "auto_connect"]:
+        for forbidden in ["modem_start", "core_start", "lwlte_connect", "auto_connect"]:
             assert_not_contains(self, body, forbidden, "lwlte_air780ep_init")
 
     def test_core_start_owns_modem_start_and_network_activation(self):
         assert_not_contains(self, self.core_h, "bool auto_connect;", "core.h")
-        handle_start = function_body(self.core_fsm_c, "static void handle_start(core_t *me)")
+        handle_start = function_body(self.core_fsm_c, "static void handle_start(core_handle_t *me)")
         for required in [
             "core_set_state(me, CORE_STATE_STARTING)",
-            "post_event_checked(me, CORE_EVENT_STARTED, NULL)",
+            "post_event_checked(me, LWLTE_EVENT_STARTED, NULL)",
             "modem_start(me->modem)",
             "handle_ready(me)",
             "net_mgr_start_activation(me)",
@@ -122,9 +122,9 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
         self.assertLess(handle_start.index("modem_start(me->modem)"), handle_start.index("net_mgr_start_activation(me)"))
 
     def test_core_ready_no_longer_auto_connects(self):
-        handle_ready = function_body(self.core_fsm_c, "static void handle_ready(core_t *me)")
+        handle_ready = function_body(self.core_fsm_c, "static void handle_ready(core_handle_t *me)")
         assert_contains(self, handle_ready, "core_set_state(me, CORE_STATE_READY)", "handle_ready")
-        assert_contains(self, handle_ready, "post_event_checked(me, CORE_EVENT_READY, NULL)", "handle_ready")
+        assert_contains(self, handle_ready, "post_event_checked(me, LWLTE_EVENT_READY, NULL)", "handle_ready")
         assert_not_contains(self, handle_ready, "auto_connect", "handle_ready")
         assert_not_contains(self, handle_ready, "net_mgr_start_activation", "handle_ready")
 

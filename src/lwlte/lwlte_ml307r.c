@@ -19,6 +19,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_check.h"
+#include "esp_event.h"
 #include "esp_log.h"
 
 /*********************
@@ -88,6 +89,8 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
         return cleanup_after_failure(me, ESP_OK);
     }
 
+    me->event_loop = config->event_loop;   /* NULL = use default loop */
+
     const core_config_t core_config = {
         .apn = config->apn ? config->apn : "",
         .primary_cid = config->primary_cid,
@@ -96,6 +99,7 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
         .fsm_queue_size = config->core_fsm_queue_size,
         .fsm_task_stack = config->core_fsm_task_stack,
         .fsm_task_priority = config->core_fsm_task_priority,
+        .event_loop = me->event_loop,
     };
     me->core = core_create(&core_config, me->modem);
     if (!me->core) {
@@ -103,9 +107,31 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
         return cleanup_after_failure(me, ESP_OK);
     }
 
-    ret = core_register_event_callback(me->core, lwlte_handle_core_event, me);
+    /* Register internal handler for lwlte_wait_ready synchronization */
+    if (me->event_loop) {
+        ret = esp_event_handler_register_with(me->event_loop, LWLTE_EVENT,
+                                              LWLTE_EVENT_READY,
+                                              facade_ready_handler, me);
+    } else {
+        ret = esp_event_handler_register(LWLTE_EVENT,
+                                         LWLTE_EVENT_READY,
+                                         facade_ready_handler, me);
+    }
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "register core event bridge failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "register ready handler failed: %s", esp_err_to_name(ret));
+        return cleanup_after_failure(me, ret);
+    }
+    if (me->event_loop) {
+        ret = esp_event_handler_register_with(me->event_loop, LWLTE_EVENT,
+                                              LWLTE_EVENT_ERROR,
+                                              facade_ready_handler, me);
+    } else {
+        ret = esp_event_handler_register(LWLTE_EVENT,
+                                         LWLTE_EVENT_ERROR,
+                                         facade_ready_handler, me);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "register error handler failed: %s", esp_err_to_name(ret));
         return cleanup_after_failure(me, ret);
     }
 

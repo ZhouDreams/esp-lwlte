@@ -110,12 +110,12 @@ static void handle_core_error(core_handle_t *me, int error_code);
  * @brief 发布 Core 事件并记录失败
  * @details Post Core event and log failure
  * @param[in] me LTE 核心服务句柄
- * @param[in] event_id LTE 核心服务事件 ID
- * @param[in] data LTE 核心服务事件数据，可能为 NULL
+ * @param[in] event_id LTE 用户事件 ID
+ * @param[in] data LTE 用户事件数据，可能为 NULL
  */
 static void post_event_checked(core_handle_t *me,
-                               core_event_id_t event_id,
-                               const core_event_data_t *data);
+                               lwlte_event_id_t event_id,
+                               const lwlte_event_data_t *data);
 
 /**********************
  *  STATIC VARIABLES
@@ -397,7 +397,7 @@ static void handle_start(core_handle_t *me)
      * 步骤 2：迁移到 STARTING 并通知上层
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     core_set_state(me, CORE_STATE_STARTING);
-    post_event_checked(me, CORE_EVENT_STARTED, NULL);
+    post_event_checked(me, LWLTE_EVENT_STARTED, NULL);
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 3：启动 Modem 模块
@@ -437,7 +437,7 @@ static void handle_stop(core_handle_t *me)
     net_mgr_cancel_reconnect(me);
     net_mgr_deactivate(me);
     core_set_state(me, CORE_STATE_STOPPED);
-    post_event_checked(me, CORE_EVENT_STOPPED, NULL);
+    post_event_checked(me, LWLTE_EVENT_STOPPED, NULL);
 }
 
 static void handle_modem_event(core_handle_t *me, const modem_event_t *event)
@@ -465,19 +465,36 @@ static void handle_modem_event(core_handle_t *me, const modem_event_t *event)
         handle_core_error(me, event->data.error_code);
         break;
     case MODEM_EVENT_PROTOCOL_DATA: {
-        core_protocol_data_t protocol_data = {
-            .protocol = (core_protocol_t)event->data.protocol_data.protocol,
-            .topic = event->data.protocol_data.topic,
-            .topic_len = event->data.protocol_data.topic_len,
-            .payload = event->data.protocol_data.payload,
+        core_protocol_data_t pd = {
+            .protocol    = (core_protocol_t)event->data.protocol_data.protocol,
+            .topic       = event->data.protocol_data.topic,
+            .topic_len   = event->data.protocol_data.topic_len,
+            .payload     = event->data.protocol_data.payload,
             .payload_len = event->data.protocol_data.payload_len,
         };
-        (void)core_post_protocol_data(me, &protocol_data);
+        core_protocol_callback_t cb = NULL;
+        void *ctx = NULL;
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        cb = me->protocol_callback;
+        ctx = me->protocol_user_ctx;
+        xSemaphoreGive(me->lock);
+        if (cb) {
+            cb(me, &pd, ctx);
+        }
         break;
     }
-    case MODEM_EVENT_PROTOCOL_CLOSED:
-        post_event_checked(me, CORE_EVENT_PROTOCOL_CLOSED, NULL);
+    case MODEM_EVENT_PROTOCOL_CLOSED: {
+        core_protocol_closed_callback_t cb = NULL;
+        void *ctx = NULL;
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        cb = me->protocol_closed_callback;
+        ctx = me->protocol_closed_user_ctx;
+        xSemaphoreGive(me->lock);
+        if (cb) {
+            cb(me, CORE_PROTOCOL_MQTT, ctx);
+        }
         break;
+    }
     case MODEM_EVENT_SIM_CHANGED:
     case MODEM_EVENT_REG_CHANGED:
     case MODEM_EVENT_SIGNAL_CHANGED:
@@ -499,23 +516,23 @@ static void handle_ready(core_handle_t *me)
     }
 
     core_set_state(me, CORE_STATE_READY);
-    post_event_checked(me, CORE_EVENT_READY, NULL);
+    post_event_checked(me, LWLTE_EVENT_READY, NULL);
 }
 
 static void handle_core_error(core_handle_t *me, int error_code)
 {
-    core_event_data_t data = {
-        .net_state = CORE_NET_STATE_ERROR,
+    lwlte_event_data_t data = {
+        .net_state = (lwlte_net_state_t)CORE_NET_STATE_ERROR,
         .error_code = error_code,
     };
 
     core_set_state(me, CORE_STATE_ERROR);
-    post_event_checked(me, CORE_EVENT_ERROR, &data);
+    post_event_checked(me, LWLTE_EVENT_ERROR, &data);
 }
 
 static void post_event_checked(core_handle_t *me,
-                               core_event_id_t event_id,
-                               const core_event_data_t *data)
+                               lwlte_event_id_t event_id,
+                               const lwlte_event_data_t *data)
 {
     esp_err_t ret = core_post_event(me, event_id, data);
     if (ret != ESP_OK) {

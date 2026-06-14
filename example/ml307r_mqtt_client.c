@@ -16,6 +16,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_err.h"
+#include "esp_event.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -58,15 +59,26 @@
  **********************/
 
 /**
- * @brief LTE 与 MQTT 事件回调
- * @details LTE and MQTT event callback
- * @param[in] lte LTE 用户门面句柄
+ * @brief LTE 事件回调（共享事件总线）
+ * @details LTE event callback (shared event bus)
+ * @param[in] arg handler 注册时传入的上下文
+ * @param[in] base 事件 base（LWLTE_EVENT）
  * @param[in] event_id 事件 ID
- * @param[in] data 事件数据
- * @param[in] user_ctx 用户上下文
+ * @param[in] event_data 事件数据
  */
-static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
-                         const lwlte_event_data_t *data, void *user_ctx);
+static void lwlte_event_cb(void *arg, esp_event_base_t base,
+                           int32_t event_id, void *event_data);
+
+/**
+ * @brief MQTT 事件回调（共享事件总线）
+ * @details MQTT event callback (shared event bus)
+ * @param[in] arg handler 注册时传入的上下文
+ * @param[in] base 事件 base（LWLTE_MQTT_EVENT）
+ * @param[in] event_id 事件 ID
+ * @param[in] event_data 事件数据
+ */
+static void mqtt_event_cb(void *arg, esp_event_base_t base,
+                          int32_t event_id, void *event_data);
 
 /**
  * @brief 发布一条 telemetry 数据
@@ -107,6 +119,8 @@ void example_ml307r_mqtt_client_run(void)
     s_last_error = 0;
     s_counter = 0;
 
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
     lwlte_handle_t *lte = NULL;
     const char *mqtt_username = CONFIG_EXAMPLE_MQTT_TOKEN;
     if (mqtt_username[0] == '\0') {
@@ -133,6 +147,7 @@ void example_ml307r_mqtt_client_run(void)
         .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
         .init_ready_timeout_ms = EXAMPLE_INIT_READY_TIMEOUT_MS,
         .modem_reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
+        .event_loop = NULL,
     };
 
     ESP_LOGI(TAG, "ML307R MQTT client example");
@@ -147,13 +162,11 @@ void example_ml307r_mqtt_client_run(void)
         idle_forever();
     }
 
-    /* 注册事件回调：网络、MQTT 连接和下行数据都会从这里返回。 */
-    ret = lwlte_register_event_callback(lte, lte_event_cb, NULL);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "register callback failed: %s", esp_err_to_name(ret));
-        (void)lwlte_destroy(lte);
-        idle_forever();
-    }
+    /* 注册事件回调：网络事件走 LWLTE_EVENT，MQTT 连接与下行数据走 LWLTE_MQTT_EVENT。 */
+    ESP_ERROR_CHECK(esp_event_handler_register(LWLTE_EVENT, ESP_EVENT_ANY_ID,
+                                               lwlte_event_cb, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(LWLTE_MQTT_EVENT, ESP_EVENT_ANY_ID,
+                                               mqtt_event_cb, NULL));
 
     /* 创建 MQTT 客户端对象（不启动连接；连接在网络 online 后由 lwlte_mqtt_start 触发）。 */
     ret = lwlte_mqtt_init(lte, &mqtt_config);
@@ -230,18 +243,17 @@ void example_ml307r_mqtt_client_run(void)
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
-                         const lwlte_event_data_t *data, void *user_ctx)
+static void lwlte_event_cb(void *arg, esp_event_base_t base,
+                           int32_t event_id, void *event_data)
 {
-    (void)lte;
-    (void)user_ctx;
+    (void)arg;
+    (void)base;
 
-    ESP_LOGI(TAG, "LTE event=%d net=%d mqtt=%d err=%d", (int)event_id,
-             data ? (int)data->net_state : -1,
-             data ? (int)data->mqtt_state : -1,
-             data ? data->error_code : 0);
+    const lwlte_event_data_t *data = event_data;
 
-    switch (event_id) {
+    ESP_LOGI(TAG, "LTE event=%d", (int)event_id);
+
+    switch ((lwlte_event_id_t)event_id) {
     case LWLTE_EVENT_NET_CONNECTING:
         s_net_online = false;
         s_net_error = false;
@@ -265,31 +277,47 @@ static void lte_event_cb(lwlte_handle_t *lte, lwlte_event_id_t event_id,
         s_mqtt_connected = false;
         s_mqtt_subscribed = false;
         break;
-    case LWLTE_EVENT_MQTT_CONNECTED:
+    default:
+        break;
+    }
+}
+
+static void mqtt_event_cb(void *arg, esp_event_base_t base,
+                          int32_t event_id, void *event_data)
+{
+    (void)arg;
+    (void)base;
+
+    lwlte_mqtt_event_data_t *data = event_data;
+
+    ESP_LOGI(TAG, "MQTT event=%d", (int)event_id);
+
+    switch ((lwlte_mqtt_event_id_t)event_id) {
+    case LWLTE_MQTT_EVENT_CONNECTED:
         s_mqtt_connected = true;
         break;
-    case LWLTE_EVENT_MQTT_DISCONNECTED:
+    case LWLTE_MQTT_EVENT_DISCONNECTED:
         s_mqtt_connected = false;
         s_mqtt_subscribed = false;
         break;
-    case LWLTE_EVENT_MQTT_ERROR:
+    case LWLTE_MQTT_EVENT_ERROR:
         s_last_error = data ? data->error_code : ESP_FAIL;
         s_mqtt_connected = false;
         s_mqtt_subscribed = false;
         break;
-    case LWLTE_EVENT_MQTT_SUBSCRIBED:
+    case LWLTE_MQTT_EVENT_SUBSCRIBED:
         s_mqtt_subscribed = true;
-        ESP_LOGI(TAG, "MQTT subscribed: %s", TB_TOPIC_ATTRIBUTES);
+        ESP_LOGI(TAG, "MQTT subscribed");
         break;
-    case LWLTE_EVENT_MQTT_DATA:
+    case LWLTE_MQTT_EVENT_DATA:
         if (data) {
-            const lwlte_mqtt_msg_t *msg = &data->data.mqtt_msg;
-            const char *topic = msg->topic ? msg->topic : "";
-            const char *payload = msg->payload ? (const char *)msg->payload : "";
-            size_t topic_len = msg->topic ? msg->topic_len : 0;
-            size_t payload_len = msg->payload ? msg->payload_len : 0;
+            const char *topic = data->msg.topic ? data->msg.topic : "";
+            const char *payload = data->msg.payload ? (const char *)data->msg.payload : "";
+            size_t topic_len = data->msg.topic ? data->msg.topic_len : 0;
+            size_t payload_len = data->msg.payload ? data->msg.payload_len : 0;
             ESP_LOGI(TAG, "MQTT RX topic=%.*s payload=%.*s",
                      (int)topic_len, topic, (int)payload_len, payload);
+            lwlte_mqtt_event_data_release(data);
         }
         break;
     default:

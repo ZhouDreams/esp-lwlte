@@ -90,9 +90,6 @@ typedef struct {
 struct mqtt_client_handle {
     mqtt_client_config_t config;
     core_handle_t *core;
-    esp_event_loop_handle_t event_loop;
-    mqtt_client_event_callback_t event_callback;
-    void *event_user_ctx;
     TaskHandle_t fsm_task;
     QueueHandle_t fsm_queue;
     SemaphoreHandle_t fsm_task_done_sema;
@@ -108,10 +105,6 @@ struct mqtt_client_handle {
     bool stop_requested;
     bool transport_open;
     bool session_connected;
-    SemaphoreHandle_t event_callback_done_sema;
-    TaskHandle_t event_callback_task;
-    int event_callback_active;
-    bool event_callback_waiting;
 };
 
 /**********************

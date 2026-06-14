@@ -59,9 +59,9 @@ class Ml307rContractTest(unittest.TestCase):
         self.assertTrue(ML307R_C.exists(), "missing modem_ml307r.c")
         self.assertTrue(LWLTE_ML307R_C.exists(), "missing lwlte_ml307r.c")
         for token in [
-            "lwlte_ml307r_config_mqtt_client_t",
+            "lwlte_mqtt_config_t",
             "lwlte_ml307r_config_t",
-            "lwlte_ml307r_config_mqtt_client_t mqtt_client;",
+            "esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config);",
             "esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,",
         ]:
             self.assertIn(token, self.lwlte_h)
@@ -78,7 +78,7 @@ class Ml307rContractTest(unittest.TestCase):
             "uint32_t reset_pulse_ms;",
             "uint32_t ready_timeout_ms;",
             "uint32_t default_cmd_timeout_ms;",
-            "modem_t *modem_ml307r_create(at_engine_t *at,",
+            "modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,",
         ]:
             self.assertIn(token, self.ml307r_h)
 
@@ -106,8 +106,8 @@ class Ml307rContractTest(unittest.TestCase):
             self.assertGreater(index, last, token)
             last = index
         for signature in [
-            "static esp_err_t ml307r_start(modem_t *me)",
-            "static esp_err_t ml307r_reset(modem_t *me)",
+            "static esp_err_t ml307r_start(modem_handle_t *me)",
+            "static esp_err_t ml307r_reset(modem_handle_t *me)",
         ]:
             body = function_body(self.ml307r_c, signature)
             for token in [
@@ -129,10 +129,8 @@ class Ml307rContractTest(unittest.TestCase):
             "at_engine_create(&at_config)",
             "modem_ml307r_create(me->at, &modem_config)",
             "core_create(&core_config, me->modem)",
-            "core_register_event_callback(me->core, lwlte_handle_core_event, me)",
+            "facade_ready_handler, me",
             "ping_client_create(me->core)",
-            "mqtt_client_create(&mqtt_config, me->core)",
-            "mqtt_client_register_event_callback(me->mqtt, lwlte_handle_mqtt_event, me)",
         ]:
             self.assertIn(token, self.lwlte_ml307r_c)
         self.assertNotIn("core_start", self.lwlte_ml307r_c)
@@ -205,7 +203,7 @@ class Ml307rContractTest(unittest.TestCase):
             "AT+MQTTDISC=0",
             "AT+MQTTSUB=0,\"%s\",%u",
             "AT+MQTTUNSUB=0,\"%s\"",
-            "AT+MQTTPUB=0,\"%s\",%u,%u,0,%u,\"%s\"",
+            "AT+MQTTPUB=0,\\\"%s\\\",%u,%u,%u,%u,\\\"%s\\\"",
             "hex_encode_payload",
             "parse_mqtt_conn_urc",
             "parse_mqtt_publish_urc",
@@ -215,14 +213,14 @@ class Ml307rContractTest(unittest.TestCase):
 
         configure_body = function_body(
             self.ml307r_c,
-            "static esp_err_t ml307r_mqtt_configure(modem_t *me,",
+            "static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,",
         )
         self.assertNotIn("escape_at_string", configure_body)
         self.assertNotIn("char *host", configure_body)
 
         publish_body = function_body(
             self.ml307r_c,
-            "static esp_err_t ml307r_mqtt_publish(modem_t *me,",
+            "static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,",
         )
         self.assertIn("hex_payload = hex_encode_payload", publish_body)
         self.assertIn("(unsigned int)publish->payload_len, hex_payload", publish_body)

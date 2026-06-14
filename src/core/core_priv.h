@@ -36,9 +36,6 @@ extern "C" {
 #define CORE_DEFAULT_FSM_QUEUE_SIZE           16
 #define CORE_DEFAULT_FSM_TASK_STACK           4096
 #define CORE_DEFAULT_FSM_TASK_PRIORITY        8
-#define CORE_EVENT_QUEUE_SIZE                 16
-#define CORE_EVENT_TASK_STACK                 4096
-#define CORE_EVENT_TASK_PRIORITY              8
 #define CORE_FSM_WAIT_MS                      100
 #define CORE_NET_MAX_RETRY                    3
 
@@ -106,7 +103,6 @@ typedef struct {
 struct core_handle {
     core_config_t config;
     modem_handle_t *modem;
-    esp_event_loop_handle_t event_loop;
     core_fsm_t fsm;
     net_mgr_t net_mgr;
     pdp_mgr_t pdp_mgr;
@@ -114,13 +110,10 @@ struct core_handle {
     bool destroying;
     bool destroy_in_progress;
     SemaphoreHandle_t lock;
-    TaskHandle_t event_loop_task;
-    SemaphoreHandle_t event_callback_done_sema;
-    TaskHandle_t event_callback_task;
-    int event_callback_active;
-    bool event_callback_waiting;
-    core_event_callback_t event_callback;
-    void *event_user_ctx;
+    core_protocol_callback_t protocol_callback;
+    void *protocol_user_ctx;
+    core_protocol_closed_callback_t protocol_closed_callback;
+    void *protocol_closed_user_ctx;
 };
 
 /**********************
@@ -161,11 +154,9 @@ esp_err_t pdp_mgr_set_active(pdp_mgr_t *me, uint8_t cid, bool active);
 esp_err_t core_set_state(core_handle_t *me, core_state_t state);
 core_state_t core_get_state_value(core_handle_t *me);
 bool core_is_destroying(core_handle_t *me);
-esp_err_t core_post_event(core_handle_t *me, core_event_id_t event_id,
-                          const core_event_data_t *data);
+esp_err_t core_post_event(core_handle_t *me, lwlte_event_id_t event_id,
+                          const lwlte_event_data_t *data);
 void core_free_cmd(core_cmd_t *cmd);
-esp_err_t core_post_protocol_data(core_handle_t *me,
-                                  const core_protocol_data_t *protocol_data);
 
 /**********************
  *      MACROS

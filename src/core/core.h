@@ -20,6 +20,7 @@ extern "C" {
 
 #include "esp_err.h"
 #include "esp_event.h"
+#include "lwlte.h"
 
 #include "modem.h"
 
@@ -42,6 +43,7 @@ typedef struct core_handle core_handle_t;
  * @details LTE core service configuration
  */
 typedef struct {
+    esp_event_loop_handle_t event_loop;   /**< 共享事件总线（借用）； Shared event bus (borrowed) */
     const char *apn;                     /**< APN； APN */
     uint8_t primary_cid;                 /**< 主 PDP 上下文 ID； Primary PDP context ID */
     uint32_t net_activate_timeout_ms;    /**< 网络激活总超时； Network activation timeout */
@@ -77,29 +79,6 @@ typedef enum {
 } core_net_state_t;
 
 /**
- * @brief LTE 核心服务事件基
- * @details LTE core service event base
- */
-ESP_EVENT_DECLARE_BASE(CORE_EVENT);
-
-/**
- * @brief LTE 核心服务事件 ID
- * @details LTE core service event ID
- */
-typedef enum {
-    CORE_EVENT_STARTED = 0,              /**< Core 已启动； Core started */
-    CORE_EVENT_READY,                    /**< Core 已就绪； Core ready */
-    CORE_EVENT_NET_CONNECTING,           /**< 网络连接中； Network connecting */
-    CORE_EVENT_NET_ONLINE,               /**< 网络在线； Network online */
-    CORE_EVENT_NET_OFFLINE,              /**< 网络离线； Network offline */
-    CORE_EVENT_NET_ERROR,                /**< 网络错误； Network error */
-    CORE_EVENT_STOPPED,                  /**< Core 已停止； Core stopped */
-    CORE_EVENT_ERROR,                    /**< Core 错误； Core error */
-    CORE_EVENT_PROTOCOL_DATA,            /**< 协议数据； Protocol data */
-    CORE_EVENT_PROTOCOL_CLOSED,          /**< 协议关闭； Protocol closed */
-} core_event_id_t;
-
-/**
  * @brief Core 协议类型
  * @details Core protocol type
  */
@@ -109,9 +88,9 @@ typedef enum {
 
 /**
  * @brief Core 协议数据
- * @details Core protocol data. For CORE_EVENT_PROTOCOL_DATA, topic/payload are
- * heap-owned by the protocol event consumer. The MQTT service must copy data it
- * needs and call core_release_event_payload() before its event callback returns.
+ * @details Core protocol data. topic/payload are borrowed and only valid during
+ * the core_protocol_callback_t invocation; the consumer must copy data it needs
+ * before returning.
  */
 typedef struct {
     core_protocol_t protocol;            /**< 协议类型； Protocol type */
@@ -120,6 +99,59 @@ typedef struct {
     const uint8_t *payload;              /**< 负载； Payload */
     size_t payload_len;                  /**< 负载长度； Payload length */
 } core_protocol_data_t;
+
+/**
+ * @brief Core 协议数据回调（私有，service-service 内部）
+ * @details Core protocol data callback (private, service-service internal)
+ * @note core FSM 同步调用；callback 必须只做轻量操作（入队、memcpy），不得阻塞。
+ */
+typedef void (*core_protocol_callback_t)(core_handle_t *me,
+                                         const core_protocol_data_t *data,
+                                         void *user_ctx);
+
+/**
+ * @brief Core 协议通道关闭回调（私有）
+ * @details Core protocol closed callback (private)
+ */
+typedef void (*core_protocol_closed_callback_t)(core_handle_t *me,
+                                                core_protocol_t protocol,
+                                                void *user_ctx);
+
+/**
+ * @brief 注册 Core 协议数据回调
+ * @details Register Core protocol data callback
+ * @note 回调在 Core FSM 任务上同步执行，必须非阻塞；只做轻量操作（入队、memcpy）。
+ * @note callback 为 NULL 时注销当前回调；user_ctx 不被 Core 拥有，注册期间须由调用方保持有效。
+ * @note Core 仅保存一个回调槽位，重复调用会覆盖之前的回调和用户上下文。
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] callback 协议数据回调，NULL 表示注销
+ * @param[in] user_ctx 用户上下文，原样传回回调
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: Core 正在销毁
+ */
+esp_err_t core_register_protocol_callback(core_handle_t *me,
+                                          core_protocol_callback_t callback,
+                                          void *user_ctx);
+
+/**
+ * @brief 注册 Core 协议通道关闭回调
+ * @details Register Core protocol closed callback
+ * @note 回调在 Core FSM 任务上同步执行，必须非阻塞。
+ * @note callback 为 NULL 时注销当前回调；user_ctx 不被 Core 拥有，注册期间须由调用方保持有效。
+ * @note Core 仅保存一个回调槽位，重复调用会覆盖之前的回调和用户上下文。
+ * @param[in] me LTE 核心服务句柄
+ * @param[in] callback 协议通道关闭回调，NULL 表示注销
+ * @param[in] user_ctx 用户上下文，原样传回回调
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: Core 正在销毁
+ */
+esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
+                                                 core_protocol_closed_callback_t callback,
+                                                 void *user_ctx);
 
 /**
  * @brief Core 服务命令类型
@@ -221,29 +253,6 @@ typedef struct {
     } data;                              /**< 命令数据； Command data */
 } core_cmd_t;
 
-/**
- * @brief LTE 核心服务事件数据
- * @details LTE core service event data
- */
-typedef struct {
-    core_net_state_t net_state;          /**< 网络状态； Network state */
-    int error_code;                      /**< 错误码； Error code */
-    core_protocol_data_t protocol_data;  /**< 协议数据； Protocol data */
-} core_event_data_t;
-
-/**
- * @brief LTE 核心服务事件回调
- * @details LTE core service event callback
- * @param[in] core LTE 核心服务句柄
- * @param[in] event_id LTE 核心服务事件 ID
- * @param[in] data LTE 核心服务事件数据，可能为 NULL
- * @param[in] user_ctx 用户上下文
- */
-typedef void (*core_event_callback_t)(core_handle_t *core,
-                                      core_event_id_t event_id,
-                                      const core_event_data_t *data,
-                                      void *user_ctx);
-
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
@@ -276,7 +285,7 @@ esp_err_t core_destroy(core_handle_t *me);
  * @brief 启动 LTE 核心服务
  * @details Start LTE core service
  * @note 该函数异步提交启动请求；Core FSM 会调用 modem_start()，随后执行网络激活流程。
- * @note ESP_OK 仅表示请求已提交；最终 online 结果通过 CORE_EVENT_NET_ONLINE 上报。
+ * @note ESP_OK 仅表示请求已提交；最终 online 结果通过 LWLTE_EVENT_NET_ONLINE 上报。
  * @param[in] me LTE 核心服务句柄
  * @return
  *         - ESP_OK: 请求已提交
@@ -298,31 +307,6 @@ esp_err_t core_start(core_handle_t *me);
  *         - ESP_FAIL: 请求提交失败
  */
 esp_err_t core_stop(core_handle_t *me);
-
-/**
- * @brief 注册 LTE 核心服务事件回调
- * @details Register LTE core service event callback
- * @note Core 仅保存一个回调槽位，重复调用会覆盖之前的回调和用户上下文。
- * @param[in] me LTE 核心服务句柄
- * @param[in] callback 事件回调函数
- * @param[in] user_ctx 用户上下文
- * @return
- *         - ESP_OK: 成功
- *         - ESP_ERR_INVALID_ARG: 参数无效
- */
-esp_err_t core_register_event_callback(core_handle_t *me,
-                                       core_event_callback_t callback,
-                                       void *user_ctx);
-
-/**
- * @brief 获取 LTE 核心服务事件循环
- * @details Get LTE core service event loop
- * @param[in] me LTE 核心服务句柄
- * @return
- *         - 非 NULL: LTE 核心服务事件循环句柄
- *         - NULL: 参数无效或事件循环未创建
- */
-esp_event_loop_handle_t core_get_event_loop(core_handle_t *me);
 
 /**
  * @brief 获取 LTE 核心服务状态
@@ -386,13 +370,6 @@ esp_err_t core_disconnect(core_handle_t *me);
  *         - ESP_ERR_TIMEOUT: FSM 队列已满
  */
 esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
-
-/**
- * @brief 释放 Core 协议事件负载
- * @details Release heap-owned payload carried by CORE_EVENT_PROTOCOL_DATA.
- * @param[in,out] event_data Core 事件数据
- */
-void core_release_event_payload(core_event_data_t *event_data);
 
 /**********************
  *      MACROS

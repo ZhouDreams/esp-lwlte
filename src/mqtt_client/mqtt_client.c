@@ -32,29 +32,32 @@
 static bool config_valid(const mqtt_client_config_t *config, core_handle_t *core);
 static esp_err_t normalize_config(const mqtt_client_config_t *config,
                                   mqtt_client_config_t *normalized);
-static esp_err_t create_event_loop(mqtt_client_handle_t *me);
-static esp_err_t destroy_event_loop(mqtt_client_handle_t *me);
 static char *clone_string(const char *value);
 static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len);
 static bool state_is(mqtt_client_handle_t *me, mqtt_client_state_t state);
 static esp_err_t set_state(mqtt_client_handle_t *me, mqtt_client_state_t state);
 static esp_err_t send_fsm_sig(mqtt_client_handle_t *me, const mqtt_fsm_sig_t *sig);
 static esp_err_t send_simple_sig(mqtt_client_handle_t *me, mqtt_fsm_sig_type_t type);
-static void handle_core_event(void *handler_arg, esp_event_base_t event_base,
-                              int32_t event_id, void *event_data);
+static void handle_lwlte_event(void *handler_arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data);
+static void mqtt_protocol_data_cb(core_handle_t *me,
+                                  const core_protocol_data_t *data,
+                                  void *user_ctx);
+static void mqtt_protocol_closed_cb(core_handle_t *me,
+                                    core_protocol_t protocol,
+                                    void *user_ctx);
 static void mqtt_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
                                   core_cmd_result_t result,
                                   const void *result_data, void *user_ctx);
 static void free_mqtt_fsm_sig_payload(mqtt_fsm_sig_t *sig);
 static void drain_fsm_queue_payloads(mqtt_client_handle_t *me, QueueHandle_t queue);
 static void cleanup_partial_client(mqtt_client_handle_t *me);
-static esp_err_t wait_event_callbacks_idle(mqtt_client_handle_t *me);
 static esp_err_t wait_stop_before_destroy(mqtt_client_handle_t *me);
+static lwlte_mqtt_state_t map_mqtt_state(mqtt_client_state_t state);
 static esp_err_t post_mqtt_event(mqtt_client_handle_t *me,
-                                 mqtt_client_event_id_t event_id,
-                                 const mqtt_client_event_data_t *event_data);
-static void post_error_event(mqtt_client_handle_t *me, int error_code,
-                             mqtt_client_operation_t operation);
+                                 lwlte_mqtt_event_id_t event_id,
+                                 const lwlte_mqtt_event_data_t *payload);
+static void post_error_event(mqtt_client_handle_t *me, int error_code);
 static esp_err_t submit_core_cmd(mqtt_client_handle_t *me, core_cmd_type_t type,
                                  mqtt_client_operation_t operation,
                                  const mqtt_fsm_sig_t *sig);
@@ -75,7 +78,6 @@ static void handle_protocol_data(mqtt_client_handle_t *me, mqtt_fsm_sig_t *sig);
 /**********************
  *  STATIC VARIABLES
  **********************/
-ESP_EVENT_DEFINE_BASE(MQTT_CLIENT_EVENT);
 
 /**********************
  *      MACROS
@@ -127,35 +129,6 @@ static esp_err_t normalize_config(const mqtt_client_config_t *config,
     }
 
     return ESP_OK;
-}
-
-static esp_err_t create_event_loop(mqtt_client_handle_t *me)
-{
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
-
-    esp_event_loop_args_t args = {
-        .queue_size = MQTT_CLIENT_DEFAULT_FSM_QUEUE_SIZE,
-        .task_name = "mqtt_evt",
-        .task_priority = MQTT_CLIENT_DEFAULT_FSM_PRIORITY,
-        .task_stack_size = MQTT_CLIENT_DEFAULT_FSM_TASK_STACK,
-        .task_core_id = tskNO_AFFINITY,
-    };
-
-    return esp_event_loop_create(&args, &me->event_loop);
-}
-
-static esp_err_t destroy_event_loop(mqtt_client_handle_t *me)
-{
-    if (!me || !me->event_loop) {
-        return ESP_OK;
-    }
-
-    esp_err_t ret = esp_event_loop_delete(me->event_loop);
-    if (ret == ESP_OK) {
-        me->event_loop = NULL;
-    }
-
-    return ret;
 }
 
 static char *clone_string(const char *value)
@@ -251,67 +224,84 @@ static esp_err_t send_simple_sig(mqtt_client_handle_t *me, mqtt_fsm_sig_type_t t
     return send_fsm_sig(me, &sig);
 }
 
-static void handle_core_event(void *handler_arg, esp_event_base_t event_base,
-                              int32_t event_id, void *event_data)
+static void handle_lwlte_event(void *handler_arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
 {
+    (void)event_data;
     mqtt_client_handle_t *me = (mqtt_client_handle_t *)handler_arg;
-    const core_event_data_t *data = (const core_event_data_t *)event_data;
-
-    if (!me || event_base != CORE_EVENT) {
+    if (!me || event_base != LWLTE_EVENT) {
+        return;
+    }
+    if (me->destroying) {
         return;
     }
 
     mqtt_fsm_sig_t sig = {0};
-    switch ((core_event_id_t)event_id) {
-    case CORE_EVENT_NET_ONLINE:
+    switch ((lwlte_event_id_t)event_id) {
+    case LWLTE_EVENT_NET_ONLINE:
         sig.type = MQTT_SIG_NET_ONLINE;
         (void)send_fsm_sig(me, &sig);
         break;
-    case CORE_EVENT_NET_OFFLINE:
+    case LWLTE_EVENT_NET_OFFLINE:
         sig.type = MQTT_SIG_NET_OFFLINE;
         (void)send_fsm_sig(me, &sig);
         break;
-    case CORE_EVENT_PROTOCOL_CLOSED:
-        sig.type = MQTT_SIG_PROTOCOL_CLOSED;
-        (void)send_fsm_sig(me, &sig);
-        break;
-    case CORE_EVENT_PROTOCOL_DATA: {
-        if (!data) {
-            return;
-        }
-        if (data->protocol_data.protocol != CORE_PROTOCOL_MQTT) {
-            core_release_event_payload((core_event_data_t *)data);
-            return;
-        }
-
-        mqtt_protocol_data_owned_t *owned = calloc(1, sizeof(*owned));
-        if (owned) {
-            owned->topic = clone_string(data->protocol_data.topic);
-            owned->topic_len = data->protocol_data.topic_len;
-            owned->payload = clone_payload(data->protocol_data.payload,
-                                           data->protocol_data.payload_len);
-            owned->payload_len = data->protocol_data.payload_len;
-        }
-        if (!owned || !owned->topic || !owned->payload) {
-            free((void *)(owned ? owned->topic : NULL));
-            free(owned ? owned->payload : NULL);
-            free(owned);
-            core_release_event_payload((core_event_data_t *)data);
-            return;
-        }
-
-        sig.type = MQTT_SIG_PROTOCOL_DATA;
-        sig.data = owned;
-        sig.data_size = sizeof(*owned);
-        if (send_fsm_sig(me, &sig) != ESP_OK) {
-            free_mqtt_fsm_sig_payload(&sig);
-        }
-        core_release_event_payload((core_event_data_t *)data);
-        break;
-    }
     default:
         break;
     }
+}
+
+static void mqtt_protocol_data_cb(core_handle_t *me,
+                                  const core_protocol_data_t *data,
+                                  void *user_ctx)
+{
+    (void)me;
+    mqtt_client_handle_t *client = (mqtt_client_handle_t *)user_ctx;
+    if (!client || !data || data->protocol != CORE_PROTOCOL_MQTT) {
+        return;
+    }
+
+    mqtt_protocol_data_owned_t *owned = calloc(1, sizeof(*owned));
+    if (!owned) {
+        ESP_LOGW(TAG, "protocol data cb: alloc owned failed");
+        return;
+    }
+    owned->topic = clone_string(data->topic);
+    owned->topic_len = data->topic_len;
+    owned->payload = clone_payload(data->payload, data->payload_len);
+    owned->payload_len = data->payload_len;
+    if ((data->topic && !owned->topic) ||
+        (data->payload && data->payload_len > 0 && !owned->payload)) {
+        free(owned->topic);
+        free(owned->payload);
+        free(owned);
+        ESP_LOGW(TAG, "protocol data cb: clone failed");
+        return;
+    }
+
+    mqtt_fsm_sig_t sig = {
+        .type      = MQTT_SIG_PROTOCOL_DATA,
+        .data      = owned,
+        .data_size = sizeof(*owned),
+    };
+    if (send_fsm_sig(client, &sig) != ESP_OK) {
+        free(owned->topic);
+        free(owned->payload);
+        free(owned);
+    }
+}
+
+static void mqtt_protocol_closed_cb(core_handle_t *me,
+                                    core_protocol_t protocol,
+                                    void *user_ctx)
+{
+    (void)me;
+    mqtt_client_handle_t *client = (mqtt_client_handle_t *)user_ctx;
+    if (!client || protocol != CORE_PROTOCOL_MQTT) {
+        return;
+    }
+    mqtt_fsm_sig_t sig = { .type = MQTT_SIG_PROTOCOL_CLOSED };
+    (void)send_fsm_sig(client, &sig);
 }
 
 static void mqtt_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
@@ -389,6 +379,26 @@ static void cleanup_partial_client(mqtt_client_handle_t *me)
         return;
     }
 
+    if (me->core) {
+        (void)core_register_protocol_callback(me->core, NULL, NULL);
+        (void)core_register_protocol_closed_callback(me->core, NULL, NULL);
+    }
+    if (me->config.event_loop) {
+        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+                                                LWLTE_EVENT_NET_ONLINE,
+                                                handle_lwlte_event);
+        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+                                                LWLTE_EVENT_NET_OFFLINE,
+                                                handle_lwlte_event);
+    } else {
+        (void)esp_event_handler_unregister(LWLTE_EVENT,
+                                           LWLTE_EVENT_NET_ONLINE,
+                                           handle_lwlte_event);
+        (void)esp_event_handler_unregister(LWLTE_EVENT,
+                                           LWLTE_EVENT_NET_OFFLINE,
+                                           handle_lwlte_event);
+    }
+
     if (me->fsm_task && me->fsm_task_done_sema) {
         xSemaphoreTake(me->fsm_task_done_sema, portMAX_DELAY);
         me->fsm_task = NULL;
@@ -406,11 +416,6 @@ static void cleanup_partial_client(mqtt_client_handle_t *me)
         vSemaphoreDelete(me->stop_done_sema);
         me->stop_done_sema = NULL;
     }
-    if (me->event_callback_done_sema) {
-        vSemaphoreDelete(me->event_callback_done_sema);
-        me->event_callback_done_sema = NULL;
-    }
-    (void)destroy_event_loop(me);
     free((void *)me->config.host);
     free((void *)me->config.client_id);
     free((void *)me->config.username);
@@ -420,44 +425,6 @@ static void cleanup_partial_client(mqtt_client_handle_t *me)
         me->lock = NULL;
     }
     free(me);
-}
-
-static esp_err_t wait_event_callbacks_idle(mqtt_client_handle_t *me)
-{
-    if (!me || !me->lock) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    int active = me->event_callback_active;
-    SemaphoreHandle_t done_sema = me->event_callback_done_sema;
-    if (me->event_callback_waiting) {
-        xSemaphoreGive(me->lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (active == 0) {
-        xSemaphoreGive(me->lock);
-        return ESP_OK;
-    }
-    if (me->event_callback_task == xTaskGetCurrentTaskHandle()) {
-        xSemaphoreGive(me->lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    me->event_callback_waiting = true;
-    xSemaphoreGive(me->lock);
-
-    while (active > 0) {
-        xSemaphoreTake(done_sema, portMAX_DELAY);
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        active = me->event_callback_active;
-        xSemaphoreGive(me->lock);
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    me->event_callback_waiting = false;
-    xSemaphoreGive(me->lock);
-
-    return ESP_OK;
 }
 
 static esp_err_t wait_stop_before_destroy(mqtt_client_handle_t *me)
@@ -485,68 +452,57 @@ static esp_err_t wait_stop_before_destroy(mqtt_client_handle_t *me)
     return state_is(me, MQTT_CLIENT_STATE_STOPPED) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
-static esp_err_t post_mqtt_event(mqtt_client_handle_t *me,
-                                 mqtt_client_event_id_t event_id,
-                                 const mqtt_client_event_data_t *event_data)
+static lwlte_mqtt_state_t map_mqtt_state(mqtt_client_state_t state)
 {
-    ESP_RETURN_ON_FALSE(me && me->lock && me->event_loop, ESP_ERR_INVALID_ARG,
-                        TAG, "NULL argument");
-
-    mqtt_client_event_data_t empty_data = {0};
-    if (!event_data) {
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        empty_data.state = me->state;
-        xSemaphoreGive(me->lock);
-        event_data = &empty_data;
+    switch (state) {
+    case MQTT_CLIENT_STATE_STOPPED:        return LWLTE_MQTT_STATE_STOPPED;
+    case MQTT_CLIENT_STATE_WAITING_NET:    return LWLTE_MQTT_STATE_WAITING_NET;
+    case MQTT_CLIENT_STATE_CONNECTING:     return LWLTE_MQTT_STATE_CONNECTING;
+    case MQTT_CLIENT_STATE_CONNECTED:      return LWLTE_MQTT_STATE_CONNECTED;
+    case MQTT_CLIENT_STATE_DISCONNECTING:  return LWLTE_MQTT_STATE_DISCONNECTING;
+    case MQTT_CLIENT_STATE_ERROR:
+    case MQTT_CLIENT_STATE_DESTROYING:
+    default:                               return LWLTE_MQTT_STATE_ERROR;
     }
-
-    if (event_id != MQTT_CLIENT_EVENT_DATA) {
-        (void)esp_event_post_to(me->event_loop, MQTT_CLIENT_EVENT, event_id,
-                                event_data, sizeof(*event_data), 0);
-    }
-
-    mqtt_client_event_callback_t callback = NULL;
-    void *user_ctx = NULL;
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    callback = me->event_callback;
-    user_ctx = me->event_user_ctx;
-    if (callback) {
-        me->event_callback_active++;
-        me->event_callback_task = xTaskGetCurrentTaskHandle();
-    }
-    xSemaphoreGive(me->lock);
-
-    if (callback) {
-        callback(me, event_id, event_data, user_ctx);
-
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        if (me->event_callback_active > 0) {
-            me->event_callback_active--;
-        }
-        bool callbacks_idle = me->event_callback_active == 0;
-        SemaphoreHandle_t done_sema = me->event_callback_done_sema;
-        if (callbacks_idle) {
-            me->event_callback_task = NULL;
-        }
-        xSemaphoreGive(me->lock);
-
-        if (callbacks_idle && done_sema) {
-            xSemaphoreGive(done_sema);
-        }
-    }
-
-    return ESP_OK;
 }
 
-static void post_error_event(mqtt_client_handle_t *me, int error_code,
-                             mqtt_client_operation_t operation)
+static esp_err_t post_mqtt_event(mqtt_client_handle_t *me,
+                                 lwlte_mqtt_event_id_t event_id,
+                                 const lwlte_mqtt_event_data_t *payload)
 {
-    mqtt_client_event_data_t data = {
-        .state = MQTT_CLIENT_STATE_ERROR,
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
+                        "NULL argument");
+
+    lwlte_mqtt_event_data_t empty_payload = {0};
+    if (!payload) {
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        empty_payload.mqtt_state = map_mqtt_state(me->state);
+        xSemaphoreGive(me->lock);
+        payload = &empty_payload;
+    }
+
+    esp_err_t ret;
+    if (me->config.event_loop) {
+        ret = esp_event_post_to(me->config.event_loop, LWLTE_MQTT_EVENT,
+                                event_id, payload, sizeof(*payload), 0);
+    } else {
+        ret = esp_event_post(LWLTE_MQTT_EVENT, event_id, payload,
+                             sizeof(*payload), 0);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post mqtt event %d failed: %s", (int)event_id,
+                 esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+static void post_error_event(mqtt_client_handle_t *me, int error_code)
+{
+    lwlte_mqtt_event_data_t payload = {
+        .mqtt_state = LWLTE_MQTT_STATE_ERROR,
         .error_code = error_code,
-        .data.operation = operation,
     };
-    (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_ERROR, &data);
+    (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_ERROR, &payload);
 }
 
 static esp_err_t submit_core_cmd(mqtt_client_handle_t *me, core_cmd_type_t type,
@@ -615,11 +571,10 @@ static esp_err_t begin_connect(mqtt_client_handle_t *me)
 {
     set_state(me, MQTT_CLIENT_STATE_CONNECTING);
     me->connect_step = MQTT_CONNECT_STEP_CONFIGURE;
-    mqtt_client_event_data_t data = {
-        .state = MQTT_CLIENT_STATE_CONNECTING,
-        .data.operation = MQTT_CLIENT_OPERATION_CONNECT,
+    lwlte_mqtt_event_data_t payload = {
+        .mqtt_state = LWLTE_MQTT_STATE_CONNECTING,
     };
-    (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_CONNECTING, &data);
+    (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_CONNECTING, &payload);
 
     return submit_core_cmd(me, CORE_CMD_MQTT_CONFIGURE,
                            MQTT_CLIENT_OPERATION_CONNECT, NULL);
@@ -690,7 +645,7 @@ static void handle_signal(mqtt_client_handle_t *me, mqtt_fsm_sig_t *sig)
             complete_stop(me);
         } else {
             set_state(me, MQTT_CLIENT_STATE_WAITING_NET);
-            (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_DISCONNECTED, NULL);
+            (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_DISCONNECTED, NULL);
         }
         break;
     case MQTT_SIG_CORE_CMD_DONE:
@@ -726,11 +681,11 @@ static void handle_start(mqtt_client_handle_t *me)
     if (me->net_online) {
         if (begin_connect(me) != ESP_OK) {
             set_state(me, MQTT_CLIENT_STATE_ERROR);
-            post_error_event(me, ESP_FAIL, MQTT_CLIENT_OPERATION_CONNECT);
+            post_error_event(me, ESP_FAIL);
         }
     } else {
         set_state(me, MQTT_CLIENT_STATE_WAITING_NET);
-        (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_STARTED, NULL);
+        (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_STARTED, NULL);
     }
 }
 
@@ -754,7 +709,7 @@ static void complete_stop(mqtt_client_handle_t *me)
     me->connect_step = MQTT_CONNECT_STEP_IDLE;
     me->stop_step = MQTT_STOP_STEP_IDLE;
     set_state(me, MQTT_CLIENT_STATE_STOPPED);
-    (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_STOPPED, NULL);
+    (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_STOPPED, NULL);
     if (me->stop_done_sema) {
         xSemaphoreGive(me->stop_done_sema);
     }
@@ -836,7 +791,7 @@ static void handle_core_cmd_done(mqtt_client_handle_t *me, mqtt_fsm_sig_t *sig)
     if (sig->core_result != CORE_CMD_RESULT_OK) {
         me->connect_step = MQTT_CONNECT_STEP_ERROR;
         set_state(me, MQTT_CLIENT_STATE_ERROR);
-        post_error_event(me, ESP_FAIL, operation);
+        post_error_event(me, ESP_FAIL);
         return;
     }
 
@@ -853,21 +808,20 @@ static void handle_core_cmd_done(mqtt_client_handle_t *me, mqtt_fsm_sig_t *sig)
             me->connect_step = MQTT_CONNECT_STEP_DONE;
             me->transport_open = true;
             set_state(me, MQTT_CLIENT_STATE_CONNECTED);
-            (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_CONNECTED, NULL);
+            (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_CONNECTED, NULL);
         }
         return;
     }
 
-    mqtt_client_event_data_t data = {
-        .state = MQTT_CLIENT_STATE_CONNECTED,
-        .data.operation = operation,
+    lwlte_mqtt_event_data_t payload = {
+        .mqtt_state = LWLTE_MQTT_STATE_CONNECTED,
     };
     if (operation == MQTT_CLIENT_OPERATION_SUBSCRIBE) {
-        (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_SUBSCRIBED, &data);
+        (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_SUBSCRIBED, &payload);
     } else if (operation == MQTT_CLIENT_OPERATION_UNSUBSCRIBE) {
-        (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_UNSUBSCRIBED, &data);
+        (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_UNSUBSCRIBED, &payload);
     } else if (operation == MQTT_CLIENT_OPERATION_PUBLISH) {
-        (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_PUBLISHED, &data);
+        (void)post_mqtt_event(me, LWLTE_MQTT_EVENT_PUBLISHED, &payload);
     }
 }
 
@@ -883,7 +837,7 @@ static void handle_runtime_operation(mqtt_client_handle_t *me, mqtt_fsm_sig_t *s
         return;
     }
     if (!state_is(me, MQTT_CLIENT_STATE_CONNECTED)) {
-        post_error_event(me, ESP_ERR_INVALID_STATE, operation);
+        post_error_event(me, ESP_ERR_INVALID_STATE);
         return;
     }
 
@@ -896,7 +850,7 @@ static void handle_runtime_operation(mqtt_client_handle_t *me, mqtt_fsm_sig_t *s
         ret = submit_core_cmd(me, CORE_CMD_MQTT_PUBLISH, operation, sig);
     }
     if (ret != ESP_OK) {
-        post_error_event(me, ret, operation);
+        post_error_event(me, ret);
     }
 }
 
@@ -907,14 +861,31 @@ static void handle_protocol_data(mqtt_client_handle_t *me, mqtt_fsm_sig_t *sig)
         return;
     }
 
-    mqtt_client_event_data_t data = {
-        .state = MQTT_CLIENT_STATE_CONNECTED,
+    char *topic_copy = clone_string(owned->topic);
+    uint8_t *payload_copy = clone_payload(owned->payload, owned->payload_len);
+    if ((owned->topic && !topic_copy) ||
+        (owned->payload && owned->payload_len > 0 && !payload_copy)) {
+        free(topic_copy);
+        free(payload_copy);
+        ESP_LOGW(TAG, "handle_protocol_data: clone for bus failed, dropping");
+        return;
+    }
+
+    lwlte_mqtt_event_data_t payload = {
+        .mqtt_state    = LWLTE_MQTT_STATE_CONNECTED,
+        .error_code    = 0,
+        .msg = {
+            .topic       = topic_copy,
+            .topic_len   = owned->topic_len,
+            .payload     = payload_copy,
+            .payload_len = owned->payload_len,
+        },
+        .owns_payload  = true,
     };
-    data.data.msg.topic = owned->topic;
-    data.data.msg.topic_len = owned->topic_len;
-    data.data.msg.payload = owned->payload;
-    data.data.msg.payload_len = owned->payload_len;
-    (void)post_mqtt_event(me, MQTT_CLIENT_EVENT_DATA, &data);
+    if (post_mqtt_event(me, LWLTE_MQTT_EVENT_DATA, &payload) != ESP_OK) {
+        free(topic_copy);
+        free(payload_copy);
+    }
 }
 
 /**********************
@@ -949,21 +920,45 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
     me->fsm_queue = xQueueCreate(me->config.fsm_queue_size, sizeof(mqtt_fsm_sig_t));
     me->fsm_task_done_sema = xSemaphoreCreateBinary();
     me->stop_done_sema = xSemaphoreCreateBinary();
-    me->event_callback_done_sema = xSemaphoreCreateBinary();
     if (!me->lock || !me->fsm_queue || !me->fsm_task_done_sema ||
-        !me->stop_done_sema || !me->event_callback_done_sema) {
+        !me->stop_done_sema) {
         cleanup_partial_client(me);
         return NULL;
     }
 
-    ret = create_event_loop(me);
+    ret = core_register_protocol_callback(core, mqtt_protocol_data_cb, me);
+    if (ret != ESP_OK) {
+        cleanup_partial_client(me);
+        return NULL;
+    }
+    ret = core_register_protocol_closed_callback(core, mqtt_protocol_closed_cb, me);
     if (ret != ESP_OK) {
         cleanup_partial_client(me);
         return NULL;
     }
 
-    ret = esp_event_handler_register_with(core_get_event_loop(core), CORE_EVENT,
-                                          ESP_EVENT_ANY_ID, handle_core_event, me);
+    if (me->config.event_loop) {
+        ret = esp_event_handler_register_with(me->config.event_loop, LWLTE_EVENT,
+                                              LWLTE_EVENT_NET_ONLINE,
+                                              handle_lwlte_event, me);
+    } else {
+        ret = esp_event_handler_register(LWLTE_EVENT,
+                                         LWLTE_EVENT_NET_ONLINE,
+                                         handle_lwlte_event, me);
+    }
+    if (ret != ESP_OK) {
+        cleanup_partial_client(me);
+        return NULL;
+    }
+    if (me->config.event_loop) {
+        ret = esp_event_handler_register_with(me->config.event_loop, LWLTE_EVENT,
+                                              LWLTE_EVENT_NET_OFFLINE,
+                                              handle_lwlte_event, me);
+    } else {
+        ret = esp_event_handler_register(LWLTE_EVENT,
+                                         LWLTE_EVENT_NET_OFFLINE,
+                                         handle_lwlte_event, me);
+    }
     if (ret != ESP_OK) {
         cleanup_partial_client(me);
         return NULL;
@@ -988,9 +983,6 @@ esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me)
     ESP_RETURN_ON_FALSE(!(me->fsm_task == xTaskGetCurrentTaskHandle()),
                         ESP_ERR_INVALID_STATE, TAG,
                         "destroy from MQTT FSM task is not allowed");
-    ESP_RETURN_ON_FALSE(!(me->event_callback_task == xTaskGetCurrentTaskHandle()),
-                        ESP_ERR_INVALID_STATE, TAG,
-                        "destroy from MQTT callback task is not allowed");
 
     esp_err_t ret = wait_stop_before_destroy(me);
     if (ret != ESP_OK) {
@@ -1002,19 +994,31 @@ esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me)
     me->state = MQTT_CLIENT_STATE_DESTROYING;
     xSemaphoreGive(me->lock);
 
-    esp_event_loop_handle_t core_loop = core_get_event_loop(me->core);
-    if (core_loop) {
-        (void)esp_event_handler_unregister_with(core_loop, CORE_EVENT,
-                                                ESP_EVENT_ANY_ID, handle_core_event);
-    }
-
     if (me->fsm_task && me->fsm_task_done_sema) {
         xSemaphoreTake(me->fsm_task_done_sema, portMAX_DELAY);
         me->fsm_task = NULL;
     }
 
-    ESP_RETURN_ON_ERROR(wait_event_callbacks_idle(me), TAG,
-                        "wait MQTT callbacks idle failed");
+    if (me->config.event_loop) {
+        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+                                                LWLTE_EVENT_NET_ONLINE,
+                                                handle_lwlte_event);
+        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+                                                LWLTE_EVENT_NET_OFFLINE,
+                                                handle_lwlte_event);
+    } else {
+        (void)esp_event_handler_unregister(LWLTE_EVENT,
+                                           LWLTE_EVENT_NET_ONLINE,
+                                           handle_lwlte_event);
+        (void)esp_event_handler_unregister(LWLTE_EVENT,
+                                           LWLTE_EVENT_NET_OFFLINE,
+                                           handle_lwlte_event);
+    }
+
+    if (me->core) {
+        (void)core_register_protocol_callback(me->core, NULL, NULL);
+        (void)core_register_protocol_closed_callback(me->core, NULL, NULL);
+    }
 
     if (me->fsm_queue) {
         drain_fsm_queue_payloads(me, me->fsm_queue);
@@ -1029,11 +1033,6 @@ esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me)
         vSemaphoreDelete(me->stop_done_sema);
         me->stop_done_sema = NULL;
     }
-    if (me->event_callback_done_sema) {
-        vSemaphoreDelete(me->event_callback_done_sema);
-        me->event_callback_done_sema = NULL;
-    }
-    (void)destroy_event_loop(me);
     free((void *)me->config.host);
     free((void *)me->config.client_id);
     free((void *)me->config.username);
@@ -1068,49 +1067,6 @@ esp_err_t mqtt_client_stop(mqtt_client_handle_t *me)
                         ESP_ERR_INVALID_STATE, TAG, "destroying");
 
     return send_simple_sig(me, MQTT_SIG_STOP);
-}
-
-esp_err_t mqtt_client_register_event_callback(mqtt_client_handle_t *me,
-                                              mqtt_client_event_callback_t callback,
-                                              void *user_ctx)
-{
-    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
-                        "NULL argument");
-
-    while (true) {
-        xSemaphoreTake(me->lock, portMAX_DELAY);
-        if (me->destroying || me->state == MQTT_CLIENT_STATE_DESTROYING) {
-            xSemaphoreGive(me->lock);
-            return ESP_ERR_INVALID_STATE;
-        }
-        if (me->event_callback_active == 0) {
-            me->event_callback = callback;
-            me->event_user_ctx = callback ? user_ctx : NULL;
-            xSemaphoreGive(me->lock);
-            return ESP_OK;
-        }
-        if (me->event_callback_task == xTaskGetCurrentTaskHandle()) {
-            xSemaphoreGive(me->lock);
-            return ESP_ERR_INVALID_STATE;
-        }
-        xSemaphoreGive(me->lock);
-
-        ESP_RETURN_ON_ERROR(wait_event_callbacks_idle(me), TAG,
-                            "wait MQTT callbacks idle failed");
-    }
-}
-
-esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_handle_t *me)
-{
-    if (!me || !me->lock) {
-        return NULL;
-    }
-
-    xSemaphoreTake(me->lock, portMAX_DELAY);
-    esp_event_loop_handle_t event_loop = me->event_loop;
-    xSemaphoreGive(me->lock);
-
-    return event_loop;
 }
 
 esp_err_t mqtt_client_get_state(mqtt_client_handle_t *me,

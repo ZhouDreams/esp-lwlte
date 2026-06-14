@@ -21,6 +21,7 @@ extern "C" {
 #include "core.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "lwlte.h"
 
 /*********************
  *      DEFINES
@@ -48,6 +49,7 @@ typedef struct {
     int fsm_queue_size;
     int fsm_task_stack;
     int fsm_task_priority;
+    esp_event_loop_handle_t event_loop;   /**< 共享事件总线（借用）； Shared event bus (borrowed) */
 } mqtt_client_config_t;
 
 typedef enum {
@@ -59,21 +61,6 @@ typedef enum {
     MQTT_CLIENT_STATE_ERROR,
     MQTT_CLIENT_STATE_DESTROYING,
 } mqtt_client_state_t;
-
-ESP_EVENT_DECLARE_BASE(MQTT_CLIENT_EVENT);
-
-typedef enum {
-    MQTT_CLIENT_EVENT_STARTED = 0,
-    MQTT_CLIENT_EVENT_STOPPED,
-    MQTT_CLIENT_EVENT_CONNECTING,
-    MQTT_CLIENT_EVENT_CONNECTED,
-    MQTT_CLIENT_EVENT_DISCONNECTED,
-    MQTT_CLIENT_EVENT_SUBSCRIBED,
-    MQTT_CLIENT_EVENT_UNSUBSCRIBED,
-    MQTT_CLIENT_EVENT_PUBLISHED,
-    MQTT_CLIENT_EVENT_DATA,
-    MQTT_CLIENT_EVENT_ERROR,
-} mqtt_client_event_id_t;
 
 typedef enum {
     MQTT_CLIENT_OPERATION_CONNECT = 0,
@@ -91,27 +78,6 @@ typedef struct {
     bool retain;
 } mqtt_client_publish_t;
 
-typedef struct {
-    const char *topic;
-    size_t topic_len;
-    const uint8_t *payload;
-    size_t payload_len;
-} mqtt_client_msg_t;
-
-typedef struct {
-    mqtt_client_state_t state;
-    int error_code;
-    union {
-        mqtt_client_operation_t operation;
-        mqtt_client_msg_t msg;
-    } data;
-} mqtt_client_event_data_t;
-
-typedef void (*mqtt_client_event_callback_t)(mqtt_client_handle_t *client,
-                                             mqtt_client_event_id_t event_id,
-                                             const mqtt_client_event_data_t *data,
-                                             void *user_ctx);
-
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
@@ -120,10 +86,6 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
 esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me);
 esp_err_t mqtt_client_start(mqtt_client_handle_t *me);
 esp_err_t mqtt_client_stop(mqtt_client_handle_t *me);
-esp_err_t mqtt_client_register_event_callback(mqtt_client_handle_t *me,
-                                               mqtt_client_event_callback_t callback,
-                                               void *user_ctx);
-esp_event_loop_handle_t mqtt_client_get_event_loop(mqtt_client_handle_t *me);
 esp_err_t mqtt_client_get_state(mqtt_client_handle_t *me,
                                  mqtt_client_state_t *state);
 esp_err_t mqtt_client_subscribe(mqtt_client_handle_t *me,

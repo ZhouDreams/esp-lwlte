@@ -21,6 +21,7 @@ extern "C" {
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_err.h"
+#include "esp_event.h"
 
 /*********************
  *      DEFINES
@@ -124,8 +125,21 @@ typedef struct {
 } lwlte_ping_summary_t;
 
 /**
+ * @brief LTE 用户事件 base
+ * @details LTE user event base (esp_event_base_t string identifier)
+ */
+ESP_EVENT_DECLARE_BASE(LWLTE_EVENT);
+
+/**
+ * @brief LTE MQTT 用户事件 base
+ * @details LTE MQTT user event base (esp_event_base_t string identifier)
+ */
+ESP_EVENT_DECLARE_BASE(LWLTE_MQTT_EVENT);
+
+/**
  * @brief LTE 用户事件 ID
  * @details LTE user event ID
+ * @note 投递到共享事件总线 LWLTE_EVENT。
  */
 typedef enum {
     LWLTE_EVENT_STARTED = 0,        /**< 已启动； Started */
@@ -136,17 +150,25 @@ typedef enum {
     LWLTE_EVENT_NET_ERROR,          /**< 网络错误； Network error */
     LWLTE_EVENT_STOPPED,            /**< 已停止； Stopped */
     LWLTE_EVENT_ERROR,              /**< 错误； Error */
-    LWLTE_EVENT_MQTT_STARTED,        /**< MQTT 已启动； MQTT started */
-    LWLTE_EVENT_MQTT_STOPPED,        /**< MQTT 已停止； MQTT stopped */
-    LWLTE_EVENT_MQTT_CONNECTING,     /**< MQTT 连接中； MQTT connecting */
-    LWLTE_EVENT_MQTT_CONNECTED,      /**< MQTT 已连接； MQTT connected */
-    LWLTE_EVENT_MQTT_DISCONNECTED,   /**< MQTT 已断开； MQTT disconnected */
-    LWLTE_EVENT_MQTT_SUBSCRIBED,     /**< MQTT 已订阅； MQTT subscribed */
-    LWLTE_EVENT_MQTT_UNSUBSCRIBED,   /**< MQTT 已取消订阅； MQTT unsubscribed */
-    LWLTE_EVENT_MQTT_PUBLISHED,      /**< MQTT 已发布； MQTT published */
-    LWLTE_EVENT_MQTT_DATA,           /**< MQTT 数据； MQTT data */
-    LWLTE_EVENT_MQTT_ERROR,          /**< MQTT 错误； MQTT error */
 } lwlte_event_id_t;
+
+/**
+ * @brief LTE MQTT 用户事件 ID
+ * @details LTE MQTT user event ID
+ * @note 投递到共享事件总线 LWLTE_MQTT_EVENT。
+ */
+typedef enum {
+    LWLTE_MQTT_EVENT_STARTED = 0,   /**< MQTT 已启动； MQTT started */
+    LWLTE_MQTT_EVENT_STOPPED,       /**< MQTT 已停止； MQTT stopped */
+    LWLTE_MQTT_EVENT_CONNECTING,    /**< MQTT 连接中； MQTT connecting */
+    LWLTE_MQTT_EVENT_CONNECTED,     /**< MQTT 已连接； MQTT connected */
+    LWLTE_MQTT_EVENT_DISCONNECTED,  /**< MQTT 已断开； MQTT disconnected */
+    LWLTE_MQTT_EVENT_SUBSCRIBED,    /**< MQTT 已订阅； MQTT subscribed */
+    LWLTE_MQTT_EVENT_UNSUBSCRIBED,  /**< MQTT 已取消订阅； MQTT unsubscribed */
+    LWLTE_MQTT_EVENT_PUBLISHED,     /**< MQTT 已发布； MQTT published */
+    LWLTE_MQTT_EVENT_DATA,          /**< MQTT 数据； MQTT data */
+    LWLTE_MQTT_EVENT_ERROR,         /**< MQTT 错误； MQTT error */
+} lwlte_mqtt_event_id_t;
 
 /**
  * @brief LTE 用户事件数据
@@ -154,26 +176,19 @@ typedef enum {
  */
 typedef struct {
     lwlte_net_state_t net_state;    /**< 网络状态； Network state */
-    lwlte_mqtt_state_t mqtt_state;  /**< MQTT 状态； MQTT state */
-    int error_code;                 /**< 错误码； Error code */
-    union {
-        lwlte_mqtt_msg_t mqtt_msg;  /**< MQTT 消息，仅在回调期间有效； MQTT message, callback-scoped */
-    } data;
+    int error_code;                 /**< 诊断错误码； Diagnostic error code */
 } lwlte_event_data_t;
 
 /**
- * @brief LTE 用户事件回调
- * @details LTE user event callback
- * @note data 指针仅在回调执行期间有效；如需异步使用，调用方必须复制其中内容。
- * @param[in] lte LTE 用户门面句柄
- * @param[in] event_id 事件 ID
- * @param[in] data 事件数据，可能为 NULL
- * @param[in] user_ctx 用户上下文
+ * @brief LTE MQTT 用户事件数据
+ * @details LTE MQTT user event data
  */
-typedef void (*lwlte_event_callback_t)(lwlte_handle_t *lte,
-                                       lwlte_event_id_t event_id,
-                                       const lwlte_event_data_t *data,
-                                       void *user_ctx);
+typedef struct {
+    lwlte_mqtt_state_t mqtt_state;  /**< MQTT 状态； MQTT state */
+    int error_code;                 /**< 诊断错误码； Diagnostic error code */
+    lwlte_mqtt_msg_t msg;           /**< MQTT 消息，仅 LWLTE_MQTT_EVENT_DATA 有效 */
+    bool owns_payload;              /**< DATA 事件为 true，其余为 false */
+} lwlte_mqtt_event_data_t;
 
 /**
  * @brief MQTT 客户端配置
@@ -232,6 +247,7 @@ typedef struct {
     int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
     int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
     int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
+    esp_event_loop_handle_t event_loop;    /**< 可选事件总线，NULL 使用 default loop； Optional event loop, NULL uses default */
 } lwlte_air780ep_config_t;
 
 /**
@@ -269,6 +285,7 @@ typedef struct {
     int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
     int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
     int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
+    esp_event_loop_handle_t event_loop;    /**< 可选事件总线，NULL 使用 default loop； Optional event loop, NULL uses default */
 } lwlte_ml307r_config_t;
 
 /**********************
@@ -280,7 +297,7 @@ typedef struct {
  * @details Initialize Air780EP LTE user facade
  * @note 该函数只创建 LTE 用户门面及内部对象，不启动模块、不等待 AT ready、不激活 PDP。
  * @note ESP_OK 返回时 *out_lte 为可用句柄，所有权转移给调用方，必须通过 lwlte_destroy() 释放。
- * @note 调用方应注册事件回调后调用 lwlte_start()；最终 online 结果通过 LWLTE_EVENT_NET_ONLINE 上报。
+ * @note 调用方应注册事件处理函数后调用 lwlte_start()；最终 online 结果通过 LWLTE_EVENT_NET_ONLINE 上报。
  * @note 非 ESP_OK 返回时不会转移句柄所有权，门面会尽力释放已创建的内部资源。
  * @note config 及其 apn 字符串指针由调用方拥有，在函数返回前必须保持有效。
  * @param[in] config Air780EP LTE 初始化配置
@@ -328,28 +345,11 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
 esp_err_t lwlte_destroy(lwlte_handle_t *me);
 
 /**
- * @brief 注册 LTE 用户事件回调
- * @details Register LTE user event callback
- * @note 门面仅保存一个用户回调槽位，重复调用会覆盖之前的回调和用户上下文。
- * @note callback 为 NULL 时注销当前用户回调；user_ctx 不被门面拥有，注册期间必须由调用方保持有效。
- * @param[in] me LTE 用户门面句柄
- * @param[in] callback 事件回调函数，NULL 表示注销
- * @param[in] user_ctx 用户上下文，原样传回回调
- * @return
- *         - ESP_OK: 成功
- *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - ESP_ERR_INVALID_STATE: 门面正在销毁
- */
-esp_err_t lwlte_register_event_callback(lwlte_handle_t *me,
-                                        lwlte_event_callback_t callback,
-                                        void *user_ctx);
-
-/**
  * @brief 启动 LTE 并异步联网
  * @details Start LTE and connect network asynchronously
  * @note 该函数异步提交启动请求，ESP_OK 仅表示请求已提交，不表示模块 ready 或网络 online。
  * @note 成功联网通过 LWLTE_EVENT_NET_ONLINE 上报，也可通过 lwlte_get_net_state() 查询。
- * @note 建议在调用本函数前先调用 lwlte_register_event_callback() 注册事件回调。
+ * @note 建议在调用本函数前先用 esp_event_handler_register() 注册 LWLTE_EVENT 事件处理函数。
  * @param[in] me LTE 用户门面句柄
  * @return
  *         - ESP_OK: 请求已提交
@@ -363,7 +363,7 @@ esp_err_t lwlte_start(lwlte_handle_t *me);
 /**
  * @brief 断开 LTE 网络
  * @details Disconnect LTE network
- * @note 该函数异步提交网络断开请求，ESP_OK 仅表示请求已提交，最终结果通过用户事件回调或状态查询获得。
+ * @note 该函数异步提交网络断开请求，ESP_OK 仅表示请求已提交，最终结果通过 LWLTE_EVENT 事件总线或状态查询获得。
  * @param[in] me LTE 用户门面句柄
  * @return
  *         - ESP_OK: 请求已提交
@@ -423,12 +423,20 @@ esp_err_t lwlte_ping(lwlte_handle_t *me,
                      lwlte_ping_summary_t *summary);
 
 /**
+ * @brief 释放 MQTT_DATA 事件的堆缓冲
+ * @details Release heap buffers carried by LWLTE_MQTT_EVENT_DATA
+ * @note 处理 LWLTE_MQTT_EVENT_DATA 的 handler 必须在返回前调用。
+ * @note 如果注册了多个 LWLTE_MQTT_EVENT_DATA handler，只有最后一个调 release() 的才真正释放缓冲；建议单消费者模式，额外观察者应自行拷贝数据。
+ * @param[in] data 事件数据指针，可为 NULL
+ */
+void lwlte_mqtt_event_data_release(lwlte_mqtt_event_data_t *data);
+
+/**
  * @brief 初始化 MQTT 客户端
  * @details Initialize MQTT client
- * @note 该函数只创建 MQTT 客户端对象及内部事件桥，不启动连接；连接由 lwlte_mqtt_start() 触发。
+ * @note 该函数只创建 MQTT 客户端对象，不启动连接；连接由 lwlte_mqtt_start() 触发。
  * @note 须在 lwlte_air780ep_init()/lwlte_ml307r_init() 返回句柄之后、lwlte_destroy() 之前调用；与 lwlte_start() 的先后顺序无要求。
  * @note 同一句柄只能初始化一次，重复调用返回 ESP_ERR_INVALID_STATE；要更换配置须先 lwlte_mqtt_destroy()。
- * @note 内部自动注册事件桥，应用层无需手动调用事件注册 API。
  * @note config 及其字符串字段由调用方拥有，仅在该函数执行期间被借用；函数返回后调用方可释放或复用。
  * @note ESP_OK 返回时 MQTT 客户端可用，最终须通过 lwlte_mqtt_destroy() 或 lwlte_destroy() 释放。
  * @param[in] me LTE 用户门面句柄

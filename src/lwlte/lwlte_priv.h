@@ -31,7 +31,6 @@ extern "C" {
 /*********************
  *      DEFINES
  *********************/
-#define LWLTE_CALLBACK_TASKS_MAX 4
 
 /**********************
  *      TYPEDEFS
@@ -46,20 +45,13 @@ struct lwlte_handle {
     SemaphoreHandle_t lock;
     SemaphoreHandle_t ready_sema;
     SemaphoreHandle_t api_done_sema;
-    SemaphoreHandle_t callback_done_sema;
-    lwlte_event_callback_t event_callback;
-    void *event_user_ctx;
+    esp_event_loop_handle_t event_loop;
     int init_error_code;
     int active_api_calls;
-    int callback_active;
-    int callback_task_overflow;
     int ready_waiter_count;
-    TaskHandle_t callback_tasks[LWLTE_CALLBACK_TASKS_MAX];
-    int callback_task_counts[LWLTE_CALLBACK_TASKS_MAX];
     bool ready;
     bool init_failed;
     bool destroying;
-    bool callback_waiting;
 };
 
 /**********************
@@ -68,12 +60,18 @@ struct lwlte_handle {
 
 esp_err_t lwlte_create_empty(lwlte_handle_t **out_lte);
 esp_err_t lwlte_wait_ready(lwlte_handle_t *me, uint32_t timeout_ms);
-void lwlte_handle_core_event(core_handle_t *core, core_event_id_t event_id,
-                             const core_event_data_t *data, void *user_ctx);
-void lwlte_handle_mqtt_event(mqtt_client_handle_t *mqtt,
-                             mqtt_client_event_id_t event_id,
-                             const mqtt_client_event_data_t *data,
-                             void *user_ctx);
+
+/**
+ * @brief 门面内部 READY/ERROR 事件处理器
+ * @details Facade internal READY/ERROR event handler
+ * @note 注册到共享事件总线，驱动 lwlte_wait_ready 同步。
+ * @param[in] arg LTE 用户门面句柄
+ * @param[in] base 事件 base
+ * @param[in] id 事件 ID
+ * @param[in] data 事件数据，指向 lwlte_event_data_t
+ */
+void facade_ready_handler(void *arg, esp_event_base_t base,
+                          int32_t id, void *data);
 
 /**********************
  *      MACROS

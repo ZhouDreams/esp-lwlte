@@ -136,7 +136,7 @@ Service 层职责：通过 `core_submit_cmd()` 串行驱动 `modem_ops`，管理
 | 项 | 内容 |
 |----|------|
 | 归属 | Core。power 配置并入 `core_config`。 |
-| 新增命令/事件 | 睡眠/唤醒事件经 CORE → Facade 上行（如 `CORE_EVENT_SLEEP` / `CORE_EVENT_WAKE`）。 |
+| 新增命令/事件 | 睡眠/唤醒事件经 CORE → Facade 上行（如 `LWLTE_EVENT_SLEEP` / `LWLTE_EVENT_WAKE`）。 |
 | 编排逻辑 | Core 在命令队列空闲时才允许模块进入睡眠；有命令待发时先唤醒再发；统一管理睡眠/唤醒状态并上抛事件。 |
 | Facade API | `lwlte_set_power_mode()` / `lwlte_get_power_mode()`；事件 `LWLTE_EVENT_SLEEP` / `LWLTE_EVENT_WAKE`。 |
 

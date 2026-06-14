@@ -683,8 +683,10 @@ int lwlte_board_init(void)
         .primary_cid    = 1,
     };
 
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(lwlte_air780ep_init(&config, &g_lte));
-    ESP_ERROR_CHECK(lwlte_register_event_callback(g_lte, app_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(LWLTE_EVENT, ESP_EVENT_ANY_ID,
+                                               app_event_handler, NULL));
     ESP_ERROR_CHECK(lwlte_start(g_lte));
 
     return 0;

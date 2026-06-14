@@ -221,11 +221,11 @@ static bool is_primary_pdp(core_handle_t *me, const modem_pdp_context_t *pdp);
  * @brief 发布网络状态事件
  * @details Post network state event
  * @param[in] me LTE 核心服务句柄
- * @param[in] event_id LTE 核心服务事件 ID
+ * @param[in] event_id LTE 用户事件 ID
  * @param[in] net_state LTE 网络状态
  * @param[in] error_code 错误码
  */
-static void post_net_state(core_handle_t *me, core_event_id_t event_id,
+static void post_net_state(core_handle_t *me, lwlte_event_id_t event_id,
                            core_net_state_t net_state, int error_code);
 
 /**********************
@@ -437,7 +437,7 @@ esp_err_t net_mgr_deactivate(core_handle_t *me)
         return state_ret;
     }
     if (old_state != CORE_NET_STATE_OFFLINE) {
-        post_net_state(me, CORE_EVENT_NET_OFFLINE, CORE_NET_STATE_OFFLINE, 0);
+        post_net_state(me, LWLTE_EVENT_NET_OFFLINE, CORE_NET_STATE_OFFLINE, 0);
     }
 
     return ESP_OK;
@@ -501,7 +501,7 @@ esp_err_t net_mgr_handle_pdp_deactivated(core_handle_t *me,
     if (ret != ESP_OK) {
         return ret;
     }
-    post_net_state(me, CORE_EVENT_NET_OFFLINE, CORE_NET_STATE_OFFLINE, 0);
+    post_net_state(me, LWLTE_EVENT_NET_OFFLINE, CORE_NET_STATE_OFFLINE, 0);
 
     if (me->net_mgr.reconnect_enabled && !core_is_destroying(me) &&
         me->net_mgr.reconnect_timer) {
@@ -627,7 +627,7 @@ static esp_err_t enter_activation(core_handle_t *me)
     }
 
     set_activation_step(me, NET_STEP_CHECK_SIM);
-    post_net_state(me, CORE_EVENT_NET_CONNECTING,
+    post_net_state(me, LWLTE_EVENT_NET_CONNECTING,
                    CORE_NET_STATE_ACTIVATING, 0);
 
     return ESP_OK;
@@ -929,7 +929,7 @@ static esp_err_t complete_activation(core_handle_t *me,
 
     pdp_mgr_update(&me->pdp_mgr, pdp);
     set_activation_step(me, NET_STEP_DONE);
-    post_net_state(me, CORE_EVENT_NET_ONLINE, CORE_NET_STATE_ONLINE, 0);
+    post_net_state(me, LWLTE_EVENT_NET_ONLINE, CORE_NET_STATE_ONLINE, 0);
 
     return ESP_OK;
 }
@@ -949,7 +949,7 @@ static esp_err_t fail_activation(core_handle_t *me, esp_err_t err)
         return ret;
     }
     me->net_mgr.current_step = NET_STEP_ERROR;
-    post_net_state(me, CORE_EVENT_NET_ERROR, CORE_NET_STATE_ERROR, err);
+    post_net_state(me, LWLTE_EVENT_NET_ERROR, CORE_NET_STATE_ERROR, err);
 
     return err;
 }
@@ -978,11 +978,11 @@ static bool is_primary_pdp(core_handle_t *me, const modem_pdp_context_t *pdp)
     return me && pdp && pdp->cid == me->config.primary_cid;
 }
 
-static void post_net_state(core_handle_t *me, core_event_id_t event_id,
+static void post_net_state(core_handle_t *me, lwlte_event_id_t event_id,
                            core_net_state_t net_state, int error_code)
 {
-    core_event_data_t data = {
-        .net_state = net_state,
+    lwlte_event_data_t data = {
+        .net_state = (lwlte_net_state_t)net_state,
         .error_code = error_code,
     };
 

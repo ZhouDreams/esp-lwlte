@@ -173,7 +173,7 @@ ESP-IDF 没有内置"仅记录日志"的宏，项目自定义如下：
 ESP_LOG_ON_ERROR(uart_driver_delete(UART_NUM), TAG, "uart deinit failed");
 
 /* 事件发送失败可忽略 */
-ESP_LOG_ON_ERROR(core_post_event(me, CORE_EVENT_STARTED, NULL), TAG, "post event failed");
+ESP_LOG_ON_ERROR(core_post_event(me, LWLTE_EVENT_STARTED, NULL), TAG, "post event failed");
 ```
 
 ---
@@ -303,3 +303,10 @@ esp_err_t lwlte_transport_send(transport_t *me, const uint8_t *data, size_t len)
 | goto 标签不用 `err` | 统一用 `err`，全项目一致 |
 | Core 层及以上调用 `ESP_ERROR_CHECK` | 致命 abort 只允许在 Board Init |
 | 返回 `int` 表示错误 | 统一返回 `esp_err_t` |
+
+## 8. 事件数据中的 `error_code` 语义
+
+`error_code` is a best-effort diagnostic number carried in event data structs.
+For non-error events it is 0. For error events, it may be a CME/CMS code (positive)
+from the AT layer or an esp_err_t value (negative). Callers MUST NOT branch on
+specific values for control flow.
