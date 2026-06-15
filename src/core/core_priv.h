@@ -47,7 +47,6 @@ typedef enum {
     CORE_SIG_START,
     CORE_SIG_STOP,
     CORE_SIG_NET_ACTIVATE,
-    CORE_SIG_NET_DEACTIVATE,
     CORE_SIG_SERVICE_CMD,
     CORE_SIG_NET_STEP_DONE,
     CORE_SIG_NET_STEP_TIMEOUT,
@@ -109,6 +108,7 @@ struct core_handle {
     core_state_t state;
     bool destroying;
     bool destroy_in_progress;
+    bool stop_pending;
     SemaphoreHandle_t lock;
     core_protocol_callback_t protocol_callback;
     void *protocol_user_ctx;
@@ -154,6 +154,7 @@ esp_err_t pdp_mgr_set_active(pdp_mgr_t *me, uint8_t cid, bool active);
 esp_err_t core_set_state(core_handle_t *me, core_state_t state);
 core_state_t core_get_state_value(core_handle_t *me);
 bool core_is_destroying(core_handle_t *me);
+bool core_stop_pending(core_handle_t *me);
 esp_err_t core_post_event(core_handle_t *me, lwlte_event_id_t event_id,
                           const lwlte_event_data_t *data);
 void core_free_cmd(core_cmd_t *cmd);

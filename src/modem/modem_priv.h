@@ -145,6 +145,7 @@ typedef struct modem_ops {
     /* ── 生命周期管理； Lifecycle ─────────────────────────── */
     modem_no_arg_fn destroy;                         /**< 销毁子类资源； Destroy subclass resources */
     modem_no_arg_fn start;                           /**< 启动模块； Start modem */
+    modem_no_arg_fn stop;                            /**< 停止并断电； Stop and power off */
     modem_no_arg_fn reset;                           /**< 复位模块； Reset modem */
 
     /* ── 状态与信息查询； Status & information query ──────── */

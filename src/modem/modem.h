@@ -59,6 +59,7 @@ typedef enum {
     MODEM_STATE_REGISTERED,         /**< 已注册； Registered */
     MODEM_STATE_PDP_ACTIVE,         /**< PDP 已激活； PDP active */
     MODEM_STATE_ERROR,              /**< 错误； Error */
+    MODEM_STATE_OFF,                /**< 已断电、可重启； Powered off, restartable */
     MODEM_STATE_DESTROYING,         /**< 销毁中； Destroying */
 } modem_state_t;
 
@@ -300,6 +301,20 @@ esp_err_t modem_destroy(modem_handle_t *me);
  *         - ESP_FAIL: 启动失败
  */
 esp_err_t modem_start(modem_handle_t *me);
+
+/**
+ * @brief 停止并对模块断电
+ * @details Stop modem and power it off (drive EN low and hold)
+ * @note 从任意非 DESTROYING 状态可调用；en_pin==GPIO_NUM_NC 时降级为逻辑停机。
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 正在销毁
+ *         - ESP_ERR_NOT_SUPPORTED: 子类未实现 stop
+ *         - 其他 esp_err_t: 下层断电错误
+ */
+esp_err_t modem_stop(modem_handle_t *me);
 
 /**
  * @brief 复位调制解调器

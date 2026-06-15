@@ -592,6 +592,7 @@ typedef enum {
     MODEM_STATE_REGISTERED,        // 已注册到蜂窝网络
     MODEM_STATE_PDP_ACTIVE,        // PDP 已激活
     MODEM_STATE_ERROR,             // 低层错误，需要 Core 决策恢复策略
+    MODEM_STATE_OFF,               // 已停机、可重启；EN 未配置时可能仍上电
     MODEM_STATE_DESTROYING,        // 正在销毁
 } modem_state_t;
 ```
@@ -969,11 +970,12 @@ esp_err_t core_get_state(core_handle_t *me, core_state_t *state);
 esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
 
 esp_err_t core_connect(core_handle_t *me);
-esp_err_t core_disconnect(core_handle_t *me);
 esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 ```
 
-`core_start()` 是 Facade `lwlte_start()` 的内部入口，只投递 `CORE_SIG_START` 后返回。Core FSM 在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程；最终网络 online 通过 `LWLTE_EVENT_NET_ONLINE` 投递到共享事件总线。
+`core_start()` 是 Facade `lwlte_start()` 的内部入口，成功投递 `CORE_SIG_START` 时在同一锁保护下把 Core 标记为 `CORE_STATE_STARTING` 后返回。Core FSM 消费 `CORE_SIG_START` 后调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程；最终网络 online 通过 `LWLTE_EVENT_NET_ONLINE` 投递到共享事件总线。
+
+`core_stop()` 是 Facade `lwlte_stop()` 的内部入口，只投递 `CORE_SIG_STOP` 后返回。Core FSM 先去激活网络，再通过 `modem_stop()` 停止模块；配置 EN GPIO 时拉低 EN 断电，`en_pin == GPIO_NUM_NC` 时只进入逻辑 `MODEM_STATE_OFF`，模块可能仍上电。后续 `lwlte_start()` 可重新启动联网。
 
 `core_connect()` 保留为 Core 内部 command helper，不是用户 API；App 不直接调用，也不通过 Facade 暴露为用户连接函数。
 
@@ -990,7 +992,7 @@ esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 - `modem` 句柄由 Facade 模块 factory 传入，Core 不拥有 Modem 生命周期。
 - 事件总线通过 `config.event_loop` 借用（NULL = default loop），Core 不创建自己的 loop；事件直接 post 到共享总线的 `LWLTE_EVENT` base。
 - `lock` 只保护 `state`/`destroying` 等短字段访问，FSM 线程调用 `modem_*` API 时不持锁。
-- Facade 调用的 `start`、`disconnect` 只投递信号到 FSM 队列即返回，不阻塞。
+- Facade 调用的 `start`、`stop` 不执行阻塞 Modem/网络流程；`core_start()` 仅在成功投递 START 时同步标记 `STARTING`，`core_stop()` 仅在成功投递 STOP 时同步标记 `stop_pending`。
 
 ### 3.4 Core 状态和事件类型
 
@@ -1184,7 +1186,6 @@ typedef enum {
     CORE_SIG_START,
     CORE_SIG_STOP,
     CORE_SIG_NET_ACTIVATE,
-    CORE_SIG_NET_DEACTIVATE,
     CORE_SIG_SERVICE_CMD,
     CORE_SIG_NET_STEP_DONE,
     CORE_SIG_NET_STEP_TIMEOUT,
@@ -1344,7 +1345,7 @@ Core FSM 处理 `CORE_SIG_SERVICE_CMD` 时执行 Core-owned `core_cmd_t`，按�
 | Modem 回调不调 Core API | Modem event_task 中只 `xQueueSend` 到 FSM 队列，与 Modem 层"URC handler 不调 Core 回调"约束一致 |
 | FSM 线程不持锁跨阻塞 | `core->lock` 只保护短字段，调用 `modem_*` API 时不持锁 |
 | esp_event_post_to 不阻塞 | 投递事件不阻塞 FSM 线程 |
-| 网络控制 Facade API 不阻塞 | `start`/`disconnect` 等网络控制 API 只投递信号即返回；`start` 是用户显式 LTE online 动作，同步 `lwlte_ping()` 是用户诊断 API 例外 |
+| 网络控制 Facade API 不阻塞 | `start`/`stop` 等网络控制 API 只做信号投递和轻量状态标记后返回；`start` 是用户显式 LTE online 动作，同步 `lwlte_ping()` 是用户诊断 API 例外 |
 
 **Modem 事件 → Core 行为映射**：
 
@@ -1935,10 +1936,11 @@ esp_err_t lwlte_ping_async(lwlte_handle_t *me,
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
                               lwlte_handle_t **out_lte);
 esp_err_t lwlte_start(lwlte_handle_t *me);
+esp_err_t lwlte_stop(lwlte_handle_t *me);
 esp_err_t lwlte_destroy(lwlte_handle_t *me);
 ```
 
-`lwlte_air780ep_init()` 只创建和装配 Facade、AT Engine、Modem、Core、Ping service；`lwlte_start()` 才是用户显式启动入口，异步提交启动请求，最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
+`lwlte_air780ep_init()` 只创建和装配 Facade、AT Engine、Modem、Core、Ping service；`lwlte_start()` 才是用户显式启动入口，异步提交启动请求，最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。`lwlte_stop()` 是对称停机入口，异步提交停止请求，停止 MQTT、去激活网络；配置 EN GPIO 时拉低 EN 断电，`en_pin == GPIO_NUM_NC` 时降级为逻辑 `MODEM_STATE_OFF`，模块可能仍上电。后续 `lwlte_start()` 可重新启动联网。
 
 MQTT 第一版会增加这些用户可见类型和函数：
 

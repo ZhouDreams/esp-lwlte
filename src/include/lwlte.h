@@ -361,18 +361,21 @@ esp_err_t lwlte_destroy(lwlte_handle_t *me);
 esp_err_t lwlte_start(lwlte_handle_t *me);
 
 /**
- * @brief 断开 LTE 网络
- * @details Disconnect LTE network
- * @note 该函数异步提交网络断开请求，ESP_OK 仅表示请求已提交，最终结果通过 LWLTE_EVENT 事件总线或状态查询获得。
+ * @brief 停止 LTE 并对模块断电（硬件关机）
+ * @details Stop LTE and power off the module
+ * @note 该函数异步提交停机请求：去激活网络、停止 MQTT、对模块 EN 断电，Core 回到 STOPPED。
+ * @note ESP_OK 仅表示请求已提交；完成通过 LWLTE_EVENT_STOPPED 上报，或用 lwlte_get_state() 查询。
+ * @note 停机后可再次 lwlte_start() 重新上电联网；重启前应等待状态变为 LWLTE_STATE_STOPPED。
+ * @note en_pin 为 GPIO_NUM_NC 时无法物理断电，降级为逻辑停机（模块仍上电）。
  * @param[in] me LTE 用户门面句柄
  * @return
  *         - ESP_OK: 请求已提交
  *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - ESP_ERR_INVALID_STATE: 当前状态不允许断开或门面正在销毁
+ *         - ESP_ERR_INVALID_STATE: 当前状态不允许停止或门面正在销毁
  *         - ESP_FAIL: 请求提交失败
- *         - 其他 esp_err_t: 下层断开错误
+ *         - 其他 esp_err_t: 下层停止错误
  */
-esp_err_t lwlte_disconnect(lwlte_handle_t *me);
+esp_err_t lwlte_stop(lwlte_handle_t *me);
 
 /**
  * @brief 获取 LTE 门面状态

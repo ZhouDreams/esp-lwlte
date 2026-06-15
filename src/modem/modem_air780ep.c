@@ -135,6 +135,17 @@ static esp_err_t air780ep_destroy(modem_handle_t *me);
 static esp_err_t air780ep_start(modem_handle_t *me);
 
 /**
+ * @brief 停止 Air780EP 调制解调器
+ * @details Stop Air780EP modem
+ * @param[in] me 调制解调器句柄
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - 其他: 停止失败
+ */
+static esp_err_t air780ep_stop(modem_handle_t *me);
+
+/**
  * @brief 复位 Air780EP 调制解调器
  * @details Reset Air780EP modem
  * @param[in] me 调制解调器句柄
@@ -920,6 +931,15 @@ static esp_err_t finish_modem_ready(modem_handle_t *me, modem_air780ep_t *self);
 static esp_err_t hardware_reset(modem_air780ep_t *self);
 
 /**
+ * @brief 硬件关机
+ * @details 拉低 EN 引脚并保持，使模块断电
+ * @note 持 AT 命令路径独占；en_pin==GPIO_NUM_NC 时降级为无操作返回 ESP_OK。
+ * @param[in] self Air780EP 实例
+ * @return ESP_OK 成功，其它为 GPIO/AT 错误
+ */
+static esp_err_t hardware_power_off(modem_air780ep_t *self);
+
+/**
  * @brief 注册 Air780EP URC 处理器
  * @details Register Air780EP URC handlers
  * @param[in] self Air780EP 调制解调器实例
@@ -1041,6 +1061,7 @@ static bool parse_msub_direct(const char *line, char **topic, size_t *topic_len,
 static const modem_ops_t s_air780ep_ops = {
     .destroy = air780ep_destroy,
     .start = air780ep_start,
+    .stop = air780ep_stop,
     .reset = air780ep_reset,
     .get_info = air780ep_get_info,
     .get_sim_status = air780ep_get_sim_status,
@@ -2303,6 +2324,39 @@ err:
     return ret;
 }
 
+static esp_err_t hardware_power_off(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    esp_err_t ret = at_engine_begin_exclusive(self->base.at);
+    ESP_RETURN_ON_ERROR(ret, TAG, "begin AT exclusive failed");
+
+    if (self->config.en_pin == GPIO_NUM_NC) {
+        at_engine_end_exclusive(self->base.at);
+        ESP_LOGW(TAG, "no EN pin; modem stays powered (logical stop only)");
+        return ESP_OK;
+    }
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << (uint32_t)self->config.en_pin,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ret = gpio_config(&io_conf);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "configure EN GPIO failed");
+
+    ret = gpio_set_level(self->config.en_pin, 0);
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "set EN GPIO low failed");
+
+    (void)at_engine_flush_rx_exclusive(self->base.at);
+
+err:
+    at_engine_end_exclusive(self->base.at);
+    return ret;
+}
+
 static esp_err_t register_urcs(modem_air780ep_t *self)
 {
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2563,6 +2617,52 @@ err:
     }
     set_initialized(self, false);
     (void)modem_set_state(me, MODEM_STATE_ERROR);
+    return ret;
+}
+
+static esp_err_t air780ep_stop(modem_handle_t *me)
+{
+    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+
+    modem_air780ep_t *self = to_air780ep(me);
+
+    /* 1. 复位内部运行状态（逆 start 步 1/8）*/
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    self->mqtt_data_enabled = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_tcp_connected = false;
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    set_initialized(self, false);
+
+    esp_err_t ret = ESP_OK;
+
+    /* 2. 注销 URC（逆 start 步 7）*/
+    if (self->urc_registered) {
+        esp_err_t urc_ret = unregister_urcs(self);
+        if (urc_ret != ESP_OK) {
+            ESP_LOGW(TAG, "unregister URCs during stop failed: %s", esp_err_to_name(urc_ret));
+            if (ret == ESP_OK) {
+                ret = urc_ret;
+            }
+        }
+    }
+
+    /* 3. 硬件断电（逆 start 步 4 的上电）*/
+    esp_err_t power_ret = hardware_power_off(self);
+    if (power_ret != ESP_OK) {
+        ESP_LOGW(TAG, "hardware power off failed: %s", esp_err_to_name(power_ret));
+        if (ret == ESP_OK) {
+            ret = power_ret;
+        }
+    }
+
+    /* 4. 逻辑停止已完成；即使硬件操作失败也落 OFF，后续 start 会重新上电复位。 */
+    (void)modem_set_state(me, MODEM_STATE_OFF);
+
     return ret;
 }
 

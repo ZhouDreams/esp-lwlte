@@ -324,7 +324,8 @@ Facade 模块 factory 是 composition root，是唯一认识所有装配 API 和
 
 - `lwlte_air780ep_init()` 只负责创建和装配 `lwlte_handle_t`、AT Engine、Modem、Core、Ping service，不启动模块、不等待 AT 通道 ready、不激活 PDP。MQTT 客户端由独立的 `lwlte_mqtt_init()` 创建。
 - `lwlte_start()` 是用户显式启动入口，异步提交启动请求；最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。
-- Core 在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程。
+- `lwlte_stop()` 是与 `lwlte_start()` 对称的用户停机入口，异步提交停止请求，去激活网络；配置 EN GPIO 时拉低 EN 断电，`en_pin == GPIO_NUM_NC` 时降级为逻辑停机。
+- `core_start()` 成功投递 `CORE_SIG_START` 时会同步标记 `CORE_STATE_STARTING`；Core FSM 随后在 `CORE_SIG_START` 中调用阻塞式 `modem_start()`。`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程。
 - `modem_start()` 表示模块动态开机到基础 AT ready：硬复位/等待 `AT OK`/基础 AT 初始化，并注册运行期 URC；不负责 APN/PDP/IP。
 
 Air780EP modem 的动态开机由 Core 启动流程触发。Facade factory 只装配依赖并注册事件桥接，不在 init 中等待模块 ready。

@@ -346,16 +346,6 @@ static void handle_signal(core_handle_t *me, core_fsm_sig_t *sig)
         }
         break;
     }
-    case CORE_SIG_NET_DEACTIVATE: {
-        core_state_t state = core_get_state_value(me);
-        if (state == CORE_STATE_NET_ACTIVATING ||
-            state == CORE_STATE_ONLINE ||
-            state == CORE_STATE_ERROR) {
-            net_mgr_deactivate(me);
-            core_set_state(me, CORE_STATE_READY);
-        }
-        break;
-    }
     case CORE_SIG_MODEM_EVENT:
         handle_modem_event(me, &sig->modem_event);
         release_modem_protocol_payload(&sig->modem_event);
@@ -386,10 +376,15 @@ static void handle_start(core_handle_t *me)
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 1：前置状态检查
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    /* 只接受从 STOPPED 状态启动；STARTING / READY / ONLINE 等状态直接忽略 */
+    /* API submission moves STOPPED -> STARTING before the FSM consumes START;
+     * accept both states here and ignore already-running states. */
     core_state_t state = core_get_state_value(me);
 
-    if (state != CORE_STATE_STOPPED) {
+    if (state != CORE_STATE_STOPPED && state != CORE_STATE_STARTING) {
+        return;
+    }
+
+    if (core_stop_pending(me)) {
         return;
     }
 
@@ -412,6 +407,11 @@ static void handle_start(core_handle_t *me)
         return;
     }
 
+    if (core_stop_pending(me)) {
+        handle_stop(me);
+        return;
+    }
+
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 4：进入 READY 并启动网络激活
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
@@ -430,14 +430,28 @@ static void handle_stop(core_handle_t *me)
 
     if (state == CORE_STATE_STOPPED ||
         state == CORE_STATE_DESTROYING) {
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        me->stop_pending = false;
+        xSemaphoreGive(me->lock);
         return;
     }
 
     net_mgr_set_reconnect_enabled(me, false);
     net_mgr_cancel_reconnect(me);
     net_mgr_deactivate(me);
+
+    esp_err_t off_ret = modem_stop(me->modem);
+    if (off_ret != ESP_OK) {
+        ESP_LOGW(TAG, "power off modem during stop failed: %s",
+                 esp_err_to_name(off_ret));
+    }
+
     core_set_state(me, CORE_STATE_STOPPED);
     post_event_checked(me, LWLTE_EVENT_STOPPED, NULL);
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    me->stop_pending = false;
+    xSemaphoreGive(me->lock);
 }
 
 static void handle_modem_event(core_handle_t *me, const modem_event_t *event)
@@ -545,6 +559,15 @@ static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
 {
     if (!me || !cmd) {
         core_free_cmd(cmd);
+        return;
+    }
+
+    core_state_t cmd_state = core_get_state_value(me);
+    if (cmd_state == CORE_STATE_STOPPED ||
+        cmd_state == CORE_STATE_ERROR ||
+        cmd_state == CORE_STATE_DESTROYING) {
+        esp_err_t invalid_state = ESP_ERR_INVALID_STATE;
+        finish_service_cmd(me, cmd, CORE_CMD_RESULT_ERROR, &invalid_state);
         return;
     }
 

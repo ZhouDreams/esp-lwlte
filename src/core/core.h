@@ -344,19 +344,6 @@ esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
 esp_err_t core_connect(core_handle_t *me);
 
 /**
- * @brief 断开 LTE 网络
- * @details Disconnect LTE network
- * @note 该函数异步提交网络断开请求，返回 ESP_OK 表示请求已提交；最终结果通过事件或回调通知。
- * @param[in] me LTE 核心服务句柄
- * @return
- *         - ESP_OK: 请求已提交
- *         - ESP_ERR_INVALID_ARG: 参数无效
- *         - ESP_ERR_INVALID_STATE: 状态错误
- *         - ESP_FAIL: 请求提交失败
- */
-esp_err_t core_disconnect(core_handle_t *me);
-
-/**
  * @brief 提交 Core 服务命令
  * @details Submit Core service command
  * @note 该函数异步提交服务命令，返回 ESP_OK 表示命令已入队。

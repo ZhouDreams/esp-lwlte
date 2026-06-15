@@ -290,6 +290,7 @@ esp_err_t modem_destroy(modem_handle_t *me)
     xSemaphoreTake(me->lock, portMAX_DELAY);
     modem_state_t state = me->state;
     bool allowed = (state == MODEM_STATE_CREATED ||
+                    state == MODEM_STATE_OFF ||
                     state == MODEM_STATE_READY ||
                     state == MODEM_STATE_REGISTERING ||
                     state == MODEM_STATE_REGISTERED ||
@@ -343,6 +344,21 @@ esp_err_t modem_start(modem_handle_t *me)
                         ESP_ERR_NOT_SUPPORTED, TAG, "start not supported");
 
     return call_no_arg(me, me->ops->start);
+}
+
+esp_err_t modem_stop(modem_handle_t *me)
+{
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    bool destroying = me->destroying || me->state == MODEM_STATE_DESTROYING;
+    xSemaphoreGive(me->lock);
+    ESP_RETURN_ON_FALSE(!destroying, ESP_ERR_INVALID_STATE, TAG, "modem destroying");
+
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->stop,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "stop not supported");
+
+    return call_no_arg(me, me->ops->stop);
 }
 
 esp_err_t modem_reset(modem_handle_t *me)
@@ -732,7 +748,7 @@ static esp_err_t check_ready(modem_handle_t *me, bool allow_created)
     if (destroying) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (state == MODEM_STATE_CREATED && allow_created) {
+    if ((state == MODEM_STATE_CREATED || state == MODEM_STATE_OFF) && allow_created) {
         return ESP_OK;
     }
     if (state == MODEM_STATE_READY ||

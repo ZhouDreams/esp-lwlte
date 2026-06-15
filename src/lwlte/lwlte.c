@@ -268,13 +268,25 @@ esp_err_t lwlte_start(lwlte_handle_t *me)
     return ret;
 }
 
-esp_err_t lwlte_disconnect(lwlte_handle_t *me)
+esp_err_t lwlte_stop(lwlte_handle_t *me)
 {
     core_handle_t *core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
 
-    ret = core_disconnect(core);
+    esp_err_t mqtt_ret = ESP_OK;
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    mqtt_client_handle_t *mqtt = me->mqtt;
+    if (mqtt) {
+        mqtt_ret = mqtt_client_stop(mqtt);
+        if (mqtt_ret != ESP_OK) {
+            ESP_LOGW(TAG, "stop MQTT during lwlte_stop failed: %s",
+                     esp_err_to_name(mqtt_ret));
+        }
+    }
+    xSemaphoreGive(me->lock);
+
+    ret = core_stop(core);
     end_api_call(me);
 
     return ret;

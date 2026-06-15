@@ -251,8 +251,30 @@ esp_err_t core_start(core_handle_t *me)
                         "NULL argument");
     ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_START),
                         ESP_ERR_INVALID_STATE, TAG, "start not allowed");
-    ESP_RETURN_ON_ERROR(send_simple_signal(me, CORE_SIG_START), TAG,
-                        "send start signal failed");
+
+    core_fsm_sig_t sig = {
+        .type = CORE_SIG_START,
+    };
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->state != CORE_STATE_STOPPED ||
+        me->fsm.stop_requested || !me->fsm.running ||
+        !me->fsm.task || !me->fsm.queue) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    BaseType_t send_ret = xQueueSend(me->fsm.queue, &sig, 0);
+    if (send_ret == pdTRUE) {
+        me->state = CORE_STATE_STARTING;
+        me->stop_pending = false;
+    }
+    xSemaphoreGive(me->lock);
+
+    if (send_ret != pdTRUE) {
+        ESP_LOGE(TAG, "send start signal failed: %s",
+                 esp_err_to_name(ESP_ERR_TIMEOUT));
+        return ESP_ERR_TIMEOUT;
+    }
 
     return ESP_OK;
 }
@@ -263,8 +285,26 @@ esp_err_t core_stop(core_handle_t *me)
                         "NULL argument");
     ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_STOP),
                         ESP_ERR_INVALID_STATE, TAG, "stop not allowed");
-    ESP_RETURN_ON_ERROR(send_simple_signal(me, CORE_SIG_STOP), TAG,
-                        "send stop signal failed");
+
+    core_fsm_sig_t sig = {
+        .type = CORE_SIG_STOP,
+    };
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->fsm.stop_requested || !me->fsm.running ||
+        !me->fsm.task || !me->fsm.queue) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    BaseType_t send_ret = xQueueSend(me->fsm.queue, &sig, 0);
+    if (send_ret == pdTRUE) {
+        me->stop_pending = true;
+    }
+    xSemaphoreGive(me->lock);
+
+    if (send_ret != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
 
     return ESP_OK;
 }
@@ -328,18 +368,6 @@ esp_err_t core_connect(core_handle_t *me)
                         ESP_ERR_INVALID_STATE, TAG, "connect not allowed");
     ESP_RETURN_ON_ERROR(send_simple_signal(me, CORE_SIG_NET_ACTIVATE), TAG,
                         "send connect signal failed");
-
-    return ESP_OK;
-}
-
-esp_err_t core_disconnect(core_handle_t *me)
-{
-    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
-                        "NULL argument");
-    ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_NET_DEACTIVATE),
-                        ESP_ERR_INVALID_STATE, TAG, "disconnect not allowed");
-    ESP_RETURN_ON_ERROR(send_simple_signal(me, CORE_SIG_NET_DEACTIVATE), TAG,
-                        "send disconnect signal failed");
 
     return ESP_OK;
 }
@@ -414,6 +442,19 @@ bool core_is_destroying(core_handle_t *me)
     xSemaphoreGive(me->lock);
 
     return destroying;
+}
+
+bool core_stop_pending(core_handle_t *me)
+{
+    if (!me || !me->lock) {
+        return false;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    bool pending = me->stop_pending;
+    xSemaphoreGive(me->lock);
+
+    return pending;
 }
 
 esp_err_t core_post_event(core_handle_t *me, lwlte_event_id_t event_id,
@@ -503,10 +544,7 @@ static esp_err_t send_simple_signal(core_handle_t *me,
                                     core_fsm_sig_type_t sig_type)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
-    ESP_RETURN_ON_FALSE(sig_type == CORE_SIG_START ||
-                        sig_type == CORE_SIG_STOP ||
-                        sig_type == CORE_SIG_NET_ACTIVATE ||
-                        sig_type == CORE_SIG_NET_DEACTIVATE,
+    ESP_RETURN_ON_FALSE(sig_type == CORE_SIG_NET_ACTIVATE,
                         ESP_ERR_INVALID_ARG, TAG, "invalid simple signal");
 
     core_fsm_sig_t sig = {
@@ -538,10 +576,6 @@ static bool api_state_allows(core_handle_t *me, core_fsm_sig_type_t sig_type)
         return state != CORE_STATE_STOPPED;
     case CORE_SIG_NET_ACTIVATE:
         return state == CORE_STATE_READY ||
-               state == CORE_STATE_ERROR;
-    case CORE_SIG_NET_DEACTIVATE:
-        return state == CORE_STATE_NET_ACTIVATING ||
-               state == CORE_STATE_ONLINE ||
                state == CORE_STATE_ERROR;
     default:
         return false;

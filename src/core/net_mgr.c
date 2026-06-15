@@ -406,7 +406,8 @@ esp_err_t net_mgr_start_activation(core_handle_t *me)
     if (ret == ESP_OK) {
         return ESP_OK;
     }
-    if (ret == ESP_ERR_INVALID_STATE && core_is_destroying(me)) {
+    if (ret == ESP_ERR_INVALID_STATE &&
+        (core_is_destroying(me) || core_stop_pending(me))) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -567,6 +568,9 @@ static esp_err_t check_activation_continue(core_handle_t *me,
                                             uint32_t activation_start_ms)
 {
     if (core_is_destroying(me)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (core_stop_pending(me)) {
         return ESP_ERR_INVALID_STATE;
     }
     if (activation_timed_out(me, activation_start_ms)) {

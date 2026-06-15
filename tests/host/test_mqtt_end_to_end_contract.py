@@ -861,7 +861,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertNotIn("core_start", self.lwlte_air780ep_c)
         start_body = self.lwlte_c[
             self.lwlte_c.index("esp_err_t lwlte_start"):
-            self.lwlte_c.index("esp_err_t lwlte_disconnect")
+            self.lwlte_c.index("esp_err_t lwlte_stop")
         ]
         self.assertIn("core_start(core)", start_body)
 

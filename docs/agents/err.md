@@ -10,7 +10,7 @@
 
 ```c
 esp_err_t lwlte_start(lwlte_handle_t *me);
-esp_err_t lwlte_disconnect(lwlte_handle_t *me);
+esp_err_t lwlte_stop(lwlte_handle_t *me);
 esp_err_t lwlte_destroy(lwlte_handle_t *me);
 ```
 
@@ -89,8 +89,29 @@ esp_err_t core_start(core_handle_t *me)
     ESP_RETURN_ON_FALSE(api_state_allows(me, CORE_SIG_START),
                         ESP_ERR_INVALID_STATE, TAG, "start not allowed");
 
-    esp_err_t ret = send_simple_signal(me, CORE_SIG_START);
-    ESP_RETURN_ON_ERROR(ret, TAG, "send start signal failed");
+    core_fsm_sig_t sig = {
+        .type = CORE_SIG_START,
+    };
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    if (me->destroying || me->state != CORE_STATE_STOPPED ||
+        me->fsm.stop_requested || !me->fsm.running ||
+        !me->fsm.task || !me->fsm.queue) {
+        xSemaphoreGive(me->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    BaseType_t send_ret = xQueueSend(me->fsm.queue, &sig, 0);
+    if (send_ret == pdTRUE) {
+        me->state = CORE_STATE_STARTING;
+        me->stop_pending = false;
+    }
+    xSemaphoreGive(me->lock);
+
+    if (send_ret != pdTRUE) {
+        ESP_LOGE(TAG, "send start signal failed: %s",
+                 esp_err_to_name(ESP_ERR_TIMEOUT));
+        return ESP_ERR_TIMEOUT;
+    }
 
     return ESP_OK;
 }
