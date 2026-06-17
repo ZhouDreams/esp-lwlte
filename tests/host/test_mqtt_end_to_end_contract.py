@@ -830,14 +830,14 @@ class MqttEndToEndContractTest(unittest.TestCase):
             self.lwlte_air780ep_c.rindex("static bool gpio_required_valid")
         ]
         for token in [
-            "config->uart_num",
-            "config->uart_tx_pin",
-            "config->uart_rx_pin",
-            "config->uart_baud_rate > 0",
-            "config->primary_cid == LWLTE_AIR780EP_PRIMARY_CID",
-            "non_negative_int(config->at_rx_buf_size)",
-            "non_negative_int(config->at_rx_task_stack)",
-            "non_negative_int(config->at_rx_task_priority)",
+            "config->base.uart.num",
+            "config->base.uart.tx_pin",
+            "config->base.uart.rx_pin",
+            "config->base.uart.baud_rate > 0",
+            "config->base.core.primary_cid == LWLTE_AIR780EP_PRIMARY_CID",
+            "non_negative_int(config->base.at_engine.rx_buf_size)",
+            "non_negative_int(config->base.at_engine.rx_task_stack)",
+            "non_negative_int(config->base.at_engine.rx_task_priority)",
         ]:
             self.assertIn(token, validate_body)
 
@@ -849,6 +849,9 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "at_engine_create(&at_config)",
             "modem_air780ep_create(me->at, &modem_config)",
             "core_create(&core_config, me->modem)",
+            "me->event_loop = config->base.event.loop",
+            ".event_loop = me->event_loop",
+            "esp_event_handler_register_with(me->event_loop, LWLTE_EVENT,",
             "facade_ready_handler, me",
             "ping_client_create(me->core)",
             "cleanup_after_failure(me, ret)",
@@ -1093,19 +1096,28 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertNotIn("mqtt_client_get_event_loop", self.mqtt_h)
 
     def test_event_loop_field_in_configs(self):
-        """Both lwlte config structs must carry typed event_loop field."""
-        # Verify esp_event_loop_handle_t event_loop appears as a field declaration
-        # in both config struct regions, not just as a substring anywhere.
-        # The typedef name appears only at the struct's closing brace
-        # ("} lwlte_..._config_t;"), so extract each struct body via regex
-        # anchored on the typedef-closing name.
+        """Both lwlte config structs must carry typed event loop via base.event."""
+        event_match = re.search(r"typedef\s+struct\s*\{(?P<body>[^{}]*?)\}\s*"
+                                r"lwlte_event_config_t\s*;",
+                                self.lwlte_h, re.DOTALL)
+        self.assertIsNotNone(event_match, "lwlte_event_config_t typedef not found in lwlte.h")
+        self.assertIn("esp_event_loop_handle_t loop", event_match.group("body"),
+                      "lwlte_event_config_t missing loop field")
+
+        base_match = re.search(r"typedef\s+struct\s*\{(?P<body>[^{}]*?)\}\s*"
+                               r"lwlte_base_config_t\s*;",
+                               self.lwlte_h, re.DOTALL)
+        self.assertIsNotNone(base_match, "lwlte_base_config_t typedef not found in lwlte.h")
+        self.assertRegex(base_match.group("body"), r"lwlte_event_config_t\s+event;",
+                         "lwlte_base_config_t missing event config field")
+
         for config_name in ["lwlte_air780ep_config_t", "lwlte_ml307r_config_t"]:
             match = re.search(r"typedef\s+struct\s*\{(?P<body>[^{}]*?)\}\s*"
                               + config_name + r"\s*;",
                               self.lwlte_h, re.DOTALL)
             self.assertIsNotNone(match, f"{config_name} typedef not found in lwlte.h")
-            self.assertIn("esp_event_loop_handle_t event_loop", match.group("body"),
-                          f"{config_name} missing event_loop field")
+            self.assertRegex(match.group("body"), r"lwlte_base_config_t\s+base;",
+                             f"{config_name} missing base config field")
 
 
 if __name__ == "__main__":

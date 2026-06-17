@@ -129,6 +129,9 @@ class Ml307rContractTest(unittest.TestCase):
             "at_engine_create(&at_config)",
             "modem_ml307r_create(me->at, &modem_config)",
             "core_create(&core_config, me->modem)",
+            "me->event_loop = config->base.event.loop",
+            ".event_loop = me->event_loop",
+            "esp_event_handler_register_with(me->event_loop, LWLTE_EVENT,",
             "facade_ready_handler, me",
             "ping_client_create(me->core)",
         ]:
@@ -143,7 +146,7 @@ class Ml307rContractTest(unittest.TestCase):
             "esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,",
         )
         self.assertIn(
-            ".rx_line_buf_size = config->at_rx_line_buf_size ?",
+            ".rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?",
             init_body,
         )
         self.assertIn(

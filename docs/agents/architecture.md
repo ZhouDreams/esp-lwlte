@@ -1,6 +1,6 @@
 # 架构概览
 
-esp-lwlte 采用**用户门面 + 内部分层服务架构**。业务 App 代码只通过 `lwlte_handle_t` 和 `lwlte_*` 用户 API 操作 LTE；板级初始化或 App 自有配置代码可以通过公共 `lwlte_air780ep_config_t` 填写 UART/GPIO 参数。门面负责把用户 API 转成内部 service 调用，并在模块 factory 中完成依赖装配。内部层通过包装 API + 事件队列/回调注册实现单向依赖与数据上行。
+esp-lwlte 采用**用户门面 + 内部分层服务架构**。业务 App 代码只通过 `lwlte_handle_t` 和 `lwlte_*` 用户 API 操作 LTE；板级初始化或 App 自有配置代码可以通过公共 `lwlte_air780ep_config_t` 填写 `base.uart`、`base.modem` 等嵌套公开配置组。门面负责把用户 API 转成内部 service 调用，并在模块 factory 中完成依赖装配。内部层通过包装 API + 事件队列/回调注册实现单向依赖与数据上行。
 
 本组件直接构建在 ESP-IDF 之上，所有层都可以直接使用 ESP-IDF / FreeRTOS API（`xTaskCreate`、`xQueueCreate`、`vTaskDelay`、`uart_write_bytes` 等），不做平台抽象封装。这与 Espressif 官方组件（esp-mqtt、button、esp-sr 等）的设计哲学一致。
 
@@ -74,7 +74,7 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 | 层 | 可以调用的层 | 可以使用的 ESP-IDF API | 可以知道的符号 |
 |----|------------|----------------------|-------------|
 | App 业务代码 | LWLTE Facade 用户操作 API | 不限（但不应掺入 LTE 硬件装配逻辑） | `lwlte.h`、`lwlte_handle_t`、`lwlte_start()` 等 |
-| 板级初始化 / App 配置代码 | LWLTE Facade 模块 factory | 不限（用于准备公开配置） | `lwlte_air780ep_config_t` 中的 UART/GPIO 字段 |
+| 板级初始化 / App 配置代码 | LWLTE Facade 模块 factory | 不限（用于准备公开配置） | `lwlte_air780ep_config_t.base` 下的 `uart` / `at_engine` / `modem` / `core` / `event` 公开分组 |
 | Facade 通用文件 | Core/MQTT/TCP/HTTP 等 service API | 不限 | `lwlte_handle_t`、`core_handle_t`、service 层间类型 |
 | Facade 模块 factory | AT Engine、Modem、具体 Modem factory、Core | 不限（driver/gpio.h、driver/uart.h 等用于配置装配） | 完整装配 API，但不 include 任意 `_priv.h` |
 | Service: Core | Modem `modem_*` 统一 API | 不限（FreeRTOS task/queue/timer、esp_event 等） | `modem_handle_t`、Core 自身定义的类型 |
@@ -277,7 +277,7 @@ MQTT Client Service 通过 Core event handler 接收网络和协议数据事件�
 | 维度 | 说明 |
 |------|------|
 | **职责** | 用户业务逻辑 |
-| **知道什么** | 业务代码知道 `lwlte_handle_t` 和 `lwlte_*` 操作；板级初始化代码可知道 `lwlte_air780ep_config_t` 中公开的 UART/GPIO 字段 |
+| **知道什么** | 业务代码知道 `lwlte_handle_t` 和 `lwlte_*` 操作；板级初始化代码可知道 `lwlte_air780ep_config_t.base` 下的公开配置分组 |
 | **不知道什么** | 业务代码不认识模块内部类型、AT 指令、协议细节；板级初始化也不 include 内部层头文件 |
 | **规则** | 业务逻辑与硬件配置分开；内部层头文件、AT 指令字符串和具体装配 API 不出现在业务逻辑中 |
 
@@ -287,7 +287,7 @@ MQTT Client Service 通过 Core event handler 接收网络和协议数据事件�
 
 ### 6.1 初始化链
 
-板级初始化或 App 自有配置代码只调用用户门面 factory，不直接创建 AT Engine、Modem 或 Core。这里填写的是公共 `lwlte_air780ep_config_t`（只含 Core/Modem/AT 字段），MQTT 配置通过独立的 `lwlte_mqtt_config_t` 传入：
+板级初始化或 App 自有配置代码只调用用户门面 factory，不直接创建 AT Engine、Modem 或 Core。这里填写的是公共 `lwlte_air780ep_config_t.base` 下的 `uart`、`at_engine`、`modem`、`core`、`event` 嵌套公开分组；MQTT 配置仍通过独立的 `lwlte_mqtt_config_t` 传入：
 
 ```c
 ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -299,13 +299,24 @@ lwlte_mqtt_config_t mqtt_config = {
 };
 
 lwlte_air780ep_config_t config = {
-    .uart_num       = UART_NUM_1,
-    .uart_tx_pin    = GPIO_NUM_17,
-    .uart_rx_pin    = GPIO_NUM_16,
-    .uart_baud_rate = 115200,
-    .apn            = CONFIG_LWLTE_APN,
-    .primary_cid    = 1,
-    .event_loop     = NULL,
+    .base = {
+        .uart = {
+            .num       = UART_NUM_1,
+            .tx_pin    = GPIO_NUM_17,
+            .rx_pin    = GPIO_NUM_16,
+            .baud_rate = 115200,
+        },
+        .modem = {
+            .en_pin = GPIO_NUM_NC,
+        },
+        .core = {
+            .apn         = CONFIG_LWLTE_APN,
+            .primary_cid = 1,
+        },
+        .event = {
+            .loop = NULL,
+        },
+    },
 };
 
 lwlte_handle_t *lte = NULL;
@@ -343,7 +354,7 @@ Facade factory
     │       ├─ 传入 modem 句柄，Core 通过 modem_* API 操作模块
     │       └─ core 内部注册事件回调到 modem
     │
-    ├─ 4. esp_event_handler_register(LWLTE_EVENT, LWLTE_EVENT_READY, facade_ready_handler, lte)
+    ├─ 4. 按 event_loop 选择 esp_event_handler_register_with() 或默认 loop 注册
     │       └─ Facade 注册内部 handler 驱动 lwlte_wait_ready 同步
     │
     ├─ 5. ping_client_create(core)              → 创建 Ping Service
@@ -365,27 +376,46 @@ struct lwlte_handle {
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
                               lwlte_handle_t **out_lte)
 {
-    /* 1. 底：创建 AT Engine（直接传入 UART 硬件配置） */
+    /* 1. 底：创建 AT Engine（直接传入 UART 硬件和 AT 引擎调优配置） */
     at_engine_config_t at_cfg = {
-        .uart_num  = config->uart_num,
-        .tx_pin    = config->uart_tx_pin,
-        .rx_pin    = config->uart_rx_pin,
-        .baud_rate = config->uart_baud_rate,
+        .uart_num               = config->base.uart.num,
+        .tx_pin                 = config->base.uart.tx_pin,
+        .rx_pin                 = config->base.uart.rx_pin,
+        .baud_rate              = config->base.uart.baud_rate,
+        .rx_buf_size            = config->base.at_engine.rx_buf_size,
+        .rx_task_stack          = config->base.at_engine.rx_task_stack,
+        .rx_task_priority       = config->base.at_engine.rx_task_priority,
+        .rx_line_buf_size       = config->base.at_engine.rx_line_buf_size,
+        .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
+        .max_response_lines     = config->base.at_engine.max_response_lines,
     };
     at_engine_handle_t *at = at_engine_create(&at_cfg);
     if (!at) return ESP_FAIL;
 
     /* 2. 模块适配（换模块只需换这一组配置和工厂） */
     modem_air780ep_config_t modem_cfg = {
-        .en_pin = config->en_pin,
+        .en_pin                 = config->base.modem.en_pin,
+        .reset_pulse_ms         = config->base.modem.reset_pulse_ms,
+        .ready_timeout_ms       = config->base.modem.ready_timeout_ms,
+        .default_cmd_timeout_ms = config->base.modem.default_cmd_timeout_ms,
+        .event_queue_size       = config->base.modem.event_queue_size,
+        .event_task_stack       = config->base.modem.event_task_stack,
+        .event_task_priority    = config->base.modem.event_task_priority,
     };
     modem_handle_t *modem = modem_air780ep_create(at, &modem_cfg);
     if (!modem) goto err_at;
 
     /* 3. 核心服务：启动请求由 lwlte_start() 异步提交给 Core。 */
+    esp_event_loop_handle_t event_loop = config->base.event.loop;
     core_config_t core_cfg = {
-        .apn          = config->apn,
-        .primary_cid  = config->primary_cid,
+        .apn                     = config->base.core.apn ? config->base.core.apn : "",
+        .primary_cid             = config->base.core.primary_cid,
+        .net_activate_timeout_ms = config->base.core.net_activate_timeout_ms,
+        .reconnect_delay_ms      = config->base.core.reconnect_delay_ms,
+        .fsm_queue_size          = config->base.core.fsm_queue_size,
+        .fsm_task_stack          = config->base.core.fsm_task_stack,
+        .fsm_task_priority       = config->base.core.fsm_task_priority,
+        .event_loop              = event_loop,
     };
     core_handle_t *core = core_create(&core_cfg, modem);
     if (!core) goto err_modem;
@@ -396,8 +426,14 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     lte->at = at;
     lte->modem = modem;
     lte->core = core;
-    esp_event_handler_register(LWLTE_EVENT, LWLTE_EVENT_READY,
-                               facade_ready_handler, lte);
+    lte->event_loop = event_loop;
+    if (event_loop) {
+        esp_event_handler_register_with(event_loop, LWLTE_EVENT, LWLTE_EVENT_READY,
+                                        facade_ready_handler, lte);
+    } else {
+        esp_event_handler_register(LWLTE_EVENT, LWLTE_EVENT_READY,
+                                   facade_ready_handler, lte);
+    }
 
     /* MQTT 客户端不在 factory 中创建；由 lwlte_mqtt_init() 独立创建。 */
 
@@ -459,7 +495,7 @@ from the application.
 | **抽象类** | Modem public API | 对外只暴露 `modem_handle_t` + `modem_*` 包装函数，内部 ops 表由子类填充 |
 | **vptr 注入** | Modem 层内部 init 函数 | `me->ops = ops` 在具体模块 init/create 时完成，`static const` 存于 `.rodata` |
 | **资源装配** | Facade 模块 factory | 唯一认识所有装配 API 和具体模块 factory，组装依赖树 |
-| **业务/装配分离** | App 层 + Facade factory | 业务代码只操作 `lwlte_handle_t`；板级初始化可填 UART/GPIO config；内部装配集中在 Facade factory |
+| **业务/装配分离** | App 层 + Facade factory | 业务代码只操作 `lwlte_handle_t`；板级初始化可填 `base.uart` / `base.modem` 等公开 config 分组；内部装配集中在 Facade factory |
 
 ---
 

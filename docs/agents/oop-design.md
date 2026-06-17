@@ -604,12 +604,12 @@ int lwlte_channel_send(struct lwlte_channel *me,
 
 ### 5.1 App / Facade / 内部分层
 
-本项目保留"业务逻辑与装配分离"的思想：业务代码只操作 `lwlte_handle_t`，板级初始化或 App 自有配置代码可通过公开 config 填写 UART/GPIO，真正的依赖树装配集中在 LWLTE Facade 模块 factory 内部。
+本项目保留"业务逻辑与装配分离"的思想：业务代码只操作 `lwlte_handle_t`，板级初始化或 App 自有配置代码可通过公开 config 填写 `base.uart`、`base.modem` 等嵌套配置组，真正的依赖树装配集中在 LWLTE Facade 模块 factory 内部。
 
 ```
 应用层 (main.c / app.c)
     │  #include "lwlte.h"
-    │  业务代码只调用用户操作 API；初始化代码可填写公开 UART/GPIO 配置
+    │  业务代码只调用用户操作 API；初始化代码可填写 base.uart/base.modem 等公开配置组
     ▼
 门面 factory (src/lwlte/lwlte_air780ep.c)
     │  composition root：创建 AT Engine、Modem、Core 并持有依赖树
@@ -675,12 +675,21 @@ lwlte_handle_t *g_lte;
 int lwlte_board_init(void)
 {
     lwlte_air780ep_config_t config = {
-        .uart_num       = CONFIG_LWLTE_UART_NUM,
-        .uart_tx_pin    = CONFIG_LWLTE_TX_GPIO,
-        .uart_rx_pin    = CONFIG_LWLTE_RX_GPIO,
-        .uart_baud_rate = 115200,
-        .apn            = CONFIG_LWLTE_APN,
-        .primary_cid    = 1,
+        .base = {
+            .uart = {
+                .num       = CONFIG_LWLTE_UART_NUM,
+                .tx_pin    = CONFIG_LWLTE_TX_GPIO,
+                .rx_pin    = CONFIG_LWLTE_RX_GPIO,
+                .baud_rate = 115200,
+            },
+            .modem = {
+                .en_pin = GPIO_NUM_NC,
+            },
+            .core = {
+                .apn         = CONFIG_LWLTE_APN,
+                .primary_cid = 1,
+            },
+        },
     };
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());

@@ -118,16 +118,18 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
 
     /* AT Engine 是最底层：直接操作 UART 硬件，运行 RX task 接收字节 */
     const at_engine_config_t at_config = {
-        .uart_num = config->uart_num,
-        .tx_pin = config->uart_tx_pin,
-        .rx_pin = config->uart_rx_pin,
-        .baud_rate = config->uart_baud_rate,
-        .rx_buf_size = config->at_rx_buf_size,
-        .rx_task_stack = config->at_rx_task_stack,
-        .rx_task_priority = config->at_rx_task_priority,
-        .rx_line_buf_size = config->at_rx_line_buf_size,
-        .cmd_default_timeout_ms = config->at_cmd_default_timeout_ms,
-        .max_response_lines = config->at_max_response_lines,
+        /* uart 组 */
+        .uart_num = config->base.uart.num,
+        .tx_pin = config->base.uart.tx_pin,
+        .rx_pin = config->base.uart.rx_pin,
+        .baud_rate = config->base.uart.baud_rate,
+        /* at_engine 组 */
+        .rx_buf_size = config->base.at_engine.rx_buf_size,
+        .rx_task_stack = config->base.at_engine.rx_task_stack,
+        .rx_task_priority = config->base.at_engine.rx_task_priority,
+        .rx_line_buf_size = config->base.at_engine.rx_line_buf_size,
+        .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
+        .max_response_lines = config->base.at_engine.max_response_lines,
     };
     me->at = at_engine_create(&at_config);
     if (!me->at) {
@@ -139,13 +141,13 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
      * 步骤 3：创建 Air780EP Modem 适配器
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     const modem_air780ep_config_t modem_config = {
-        .en_pin = config->en_pin,
-        .reset_pulse_ms = config->modem_reset_pulse_ms,
-        .ready_timeout_ms = config->init_ready_timeout_ms,
-        .default_cmd_timeout_ms = config->modem_default_cmd_timeout_ms,
-        .event_queue_size = config->modem_event_queue_size,
-        .event_task_stack = config->modem_event_task_stack,
-        .event_task_priority = config->modem_event_task_priority,
+        .en_pin = config->base.modem.en_pin,
+        .reset_pulse_ms = config->base.modem.reset_pulse_ms,
+        .ready_timeout_ms = config->base.modem.ready_timeout_ms,
+        .default_cmd_timeout_ms = config->base.modem.default_cmd_timeout_ms,
+        .event_queue_size = config->base.modem.event_queue_size,
+        .event_task_stack = config->base.modem.event_task_stack,
+        .event_task_priority = config->base.modem.event_task_priority,
     };
     me->modem = modem_air780ep_create(me->at, &modem_config);
     if (!me->modem) {
@@ -157,16 +159,16 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
      * 步骤 4：创建 Core Service
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     /* Core 是网络状态机的归属层，负责 PDP 管理、连接/重连策略 */
-    me->event_loop = config->event_loop;   /* NULL = use default loop */
+    me->event_loop = config->base.event.loop;   /* NULL = use default loop */
 
     const core_config_t core_config = {
-        .apn = config->apn ? config->apn : "",
-        .primary_cid = config->primary_cid,
-        .net_activate_timeout_ms = config->net_activate_timeout_ms,
-        .reconnect_delay_ms = config->reconnect_delay_ms,
-        .fsm_queue_size = config->core_fsm_queue_size,
-        .fsm_task_stack = config->core_fsm_task_stack,
-        .fsm_task_priority = config->core_fsm_task_priority,
+        .apn = config->base.core.apn ? config->base.core.apn : "",
+        .primary_cid = config->base.core.primary_cid,
+        .net_activate_timeout_ms = config->base.core.net_activate_timeout_ms,
+        .reconnect_delay_ms = config->base.core.reconnect_delay_ms,
+        .fsm_queue_size = config->base.core.fsm_queue_size,
+        .fsm_task_stack = config->base.core.fsm_task_stack,
+        .fsm_task_priority = config->base.core.fsm_task_priority,
         .event_loop = me->event_loop,
     };
     me->core = core_create(&core_config, me->modem);
@@ -223,31 +225,31 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
 static esp_err_t validate_config(const lwlte_air780ep_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "config is NULL");
-    ESP_RETURN_ON_FALSE(config->uart_num >= UART_NUM_0 &&
-                        config->uart_num < UART_NUM_MAX,
+    ESP_RETURN_ON_FALSE(config->base.uart.num >= UART_NUM_0 &&
+                        config->base.uart.num < UART_NUM_MAX,
                         ESP_ERR_INVALID_ARG, TAG, "invalid uart_num");
-    ESP_RETURN_ON_FALSE(gpio_required_valid(config->uart_tx_pin) &&
-                        gpio_required_valid(config->uart_rx_pin),
+    ESP_RETURN_ON_FALSE(gpio_required_valid(config->base.uart.tx_pin) &&
+                        gpio_required_valid(config->base.uart.rx_pin),
                         ESP_ERR_INVALID_ARG, TAG, "invalid UART pins");
-    ESP_RETURN_ON_FALSE(gpio_optional_valid(config->en_pin),
+    ESP_RETURN_ON_FALSE(gpio_optional_valid(config->base.modem.en_pin),
                         ESP_ERR_INVALID_ARG, TAG, "invalid en_pin GPIO");
-    ESP_RETURN_ON_FALSE(config->uart_baud_rate > 0,
+    ESP_RETURN_ON_FALSE(config->base.uart.baud_rate > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid UART baud rate");
-    ESP_RETURN_ON_FALSE(config->primary_cid == LWLTE_AIR780EP_PRIMARY_CID,
+    ESP_RETURN_ON_FALSE(config->base.core.primary_cid == LWLTE_AIR780EP_PRIMARY_CID,
                         ESP_ERR_INVALID_ARG, TAG,
                         "primary CID must be 1");
-    ESP_RETURN_ON_FALSE(non_negative_int(config->at_rx_buf_size) &&
-                        non_negative_int(config->at_rx_task_stack) &&
-                        non_negative_int(config->at_rx_task_priority) &&
-                        non_negative_int(config->at_rx_line_buf_size) &&
-                        non_negative_int(config->at_cmd_default_timeout_ms) &&
-                        non_negative_int(config->at_max_response_lines) &&
-                        non_negative_int(config->modem_event_queue_size) &&
-                        non_negative_int(config->modem_event_task_stack) &&
-                        non_negative_int(config->modem_event_task_priority) &&
-                        non_negative_int(config->core_fsm_queue_size) &&
-                        non_negative_int(config->core_fsm_task_stack) &&
-                        non_negative_int(config->core_fsm_task_priority),
+    ESP_RETURN_ON_FALSE(non_negative_int(config->base.at_engine.rx_buf_size) &&
+                        non_negative_int(config->base.at_engine.rx_task_stack) &&
+                        non_negative_int(config->base.at_engine.rx_task_priority) &&
+                        non_negative_int(config->base.at_engine.rx_line_buf_size) &&
+                        non_negative_int(config->base.at_engine.cmd_default_timeout_ms) &&
+                        non_negative_int(config->base.at_engine.max_response_lines) &&
+                        non_negative_int(config->base.modem.event_queue_size) &&
+                        non_negative_int(config->base.modem.event_task_stack) &&
+                        non_negative_int(config->base.modem.event_task_priority) &&
+                        non_negative_int(config->base.core.fsm_queue_size) &&
+                        non_negative_int(config->base.core.fsm_task_stack) &&
+                        non_negative_int(config->base.core.fsm_task_priority),
                         ESP_ERR_INVALID_ARG, TAG,
                         "defaultable integer fields must be non-negative");
 

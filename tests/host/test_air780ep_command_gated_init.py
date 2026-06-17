@@ -141,15 +141,14 @@ class Air780EpCommandGatedInitTest(unittest.TestCase):
         self.assertLess(handle_start.index("modem_start(me->modem)"), handle_start.index("net_mgr_start_activation(me)"))
 
     def test_public_config_comments_use_at_ready_not_rdy_wait(self):
-        note_start = self.lwlte_h.index("@note init_ready_timeout_ms")
-        field_start = self.lwlte_h.index("uint32_t init_ready_timeout_ms", note_start)
-        field_end = self.lwlte_h.index("uint32_t net_activate_timeout_ms", field_start)
-        config_timeout_text = self.lwlte_h[note_start:field_end]
+        modem_end = self.lwlte_h.index("} lwlte_modem_config_t;")
+        modem_start = self.lwlte_h.rindex("typedef struct {", 0, modem_end)
+        modem_body = self.lwlte_h[modem_start:modem_end]
 
-        self.assertIn("init_ready_timeout_ms", config_timeout_text)
-        self.assertIn("AT OK", config_timeout_text)
-        self.assertNotIn("RDY" + " 等待超时", config_timeout_text)
-        self.assertNotIn("RDY " + "wait timeout", config_timeout_text)
+        self.assertIn("ready_timeout_ms;", modem_body)
+        self.assertIn("AT OK", modem_body)
+        self.assertNotIn("RDY" + " 等待超时", modem_body)
+        self.assertNotIn("RDY " + "wait timeout", modem_body)
 
     def test_docs_describe_at_ok_gate_not_rdy_gate(self):
         for required in [

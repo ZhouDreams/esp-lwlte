@@ -210,82 +210,106 @@ typedef struct {
 } lwlte_mqtt_config_t;
 
 /**
+ * @brief UART 硬件配置
+ * @details UART hardware configuration
+ */
+typedef struct {
+    uart_port_t num;        /**< 必填 UART 端口号； Required UART port number */
+    gpio_num_t  tx_pin;     /**< 必填 UART TX GPIO，不能为 GPIO_NUM_NC； Required UART TX GPIO, not GPIO_NUM_NC */
+    gpio_num_t  rx_pin;     /**< 必填 UART RX GPIO，不能为 GPIO_NUM_NC； Required UART RX GPIO, not GPIO_NUM_NC */
+    int         baud_rate;  /**< 必填 UART 波特率，必须大于 0； Required UART baud rate, must be > 0 */
+} lwlte_uart_config_t;
+
+/**
+ * @brief AT 引擎调优配置
+ * @details AT engine tuning configuration
+ * @note 所有字段为 0 时使用下层默认值，非 0 值必须大于 0。
+ */
+typedef struct {
+    int rx_buf_size;            /**< AT RX 缓冲大小，0 使用默认值； AT RX buffer size, 0 uses default */
+    int rx_task_stack;          /**< AT RX 任务栈大小，0 使用默认值； AT RX task stack, 0 uses default */
+    int rx_task_priority;       /**< AT RX 任务优先级，0 使用默认值； AT RX task priority, 0 uses default */
+    int rx_line_buf_size;       /**< AT 单行缓冲大小，0 使用默认值； AT line buffer size, 0 uses default */
+    int cmd_default_timeout_ms; /**< AT 默认命令超时，0 使用默认值； AT default command timeout, 0 uses default */
+    int max_response_lines;     /**< AT 最大响应行数，0 使用默认值； AT maximum response lines, 0 uses default */
+} lwlte_at_engine_config_t;
+
+/**
+ * @brief 调制解调器配置
+ * @details Modem configuration
+ * @note en_pin 可设为 GPIO_NUM_NC 以禁用门面对 EN GPIO 的控制。
+ * @note ready_timeout_ms 为 0 时使用下层默认值；该值为硬复位后等待 AT OK 的总超时。
+ * @note 有符号的队列、任务字段允许 0 表示默认值，非 0 值必须大于 0。
+ */
+typedef struct {
+    gpio_num_t en_pin;                 /**< 可选模块 EN GPIO，GPIO_NUM_NC 表示不控制； Optional module EN GPIO, GPIO_NUM_NC disables control */
+    uint32_t   reset_pulse_ms;         /**< Modem 复位脉冲(EN 拉低保持)时长，0 表示不额外等待； Modem reset pulse (EN low hold) length, 0 skips extra wait */
+    uint32_t   ready_timeout_ms;       /**< 启动 AT OK 等待总超时，0 使用下层默认值； Startup AT OK wait timeout, 0 uses lower-layer default */
+    uint32_t   default_cmd_timeout_ms; /**< Modem 默认命令超时，0 使用默认值； Modem default command timeout, 0 uses default */
+    int        event_queue_size;       /**< Modem 事件队列长度，0 使用默认值； Modem event queue size, 0 uses default */
+    int        event_task_stack;       /**< Modem 事件任务栈大小，0 使用默认值； Modem event task stack, 0 uses default */
+    int        event_task_priority;    /**< Modem 事件任务优先级，0 使用默认值； Modem event task priority, 0 uses default */
+} lwlte_modem_config_t;
+
+/**
+ * @brief Core 网络/PDP 与状态机配置
+ * @details Core network/PDP and FSM configuration
+ * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
+ * @note primary_cid 当前仅支持 1。
+ * @note 有符号的队列、任务字段允许 0 表示默认值，非 0 值必须大于 0。
+ */
+typedef struct {
+    const char *apn;                     /**< 可选 APN，NULL/空表示门面不配置； Optional APN, NULL/empty means facade does not configure it */
+    uint8_t     primary_cid;             /**< 必填主 PDP 上下文 ID，当前仅支持 1； Required primary PDP context ID, currently supports 1 only */
+    uint32_t    net_activate_timeout_ms; /**< 网络激活总超时，0 使用 Core 默认值； Network activation timeout, 0 uses Core default */
+    uint32_t    reconnect_delay_ms;      /**< 重连延迟，0 使用 Core 默认值； Reconnect delay, 0 uses Core default */
+    int         fsm_queue_size;          /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
+    int         fsm_task_stack;          /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
+    int         fsm_task_priority;       /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
+} lwlte_core_config_t;
+
+/**
+ * @brief 事件总线配置
+ * @details Event bus configuration
+ */
+typedef struct {
+    esp_event_loop_handle_t loop;        /**< 可选事件总线，NULL 使用 default loop； Optional event loop, NULL uses default */
+} lwlte_event_config_t;
+
+/**
+ * @brief LTE 公共基础配置
+ * @details LTE common base configuration
+ */
+typedef struct {
+    lwlte_uart_config_t      uart;      /**< UART 硬件； UART hardware */
+    lwlte_at_engine_config_t at_engine; /**< AT 引擎调优； AT engine tuning */
+    lwlte_modem_config_t     modem;     /**< 调制解调器； Modem */
+    lwlte_core_config_t      core;      /**< Core 网络/状态机； Core network/FSM */
+    lwlte_event_config_t     event;     /**< 事件总线； Event bus */
+} lwlte_base_config_t;
+
+/**
  * @brief Air780EP LTE 初始化配置
  * @details Air780EP LTE initialization configuration
- * @note uart_num、uart_tx_pin、uart_rx_pin、uart_baud_rate 和 primary_cid 为必填字段。
- * @note en_pin 可设为 GPIO_NUM_NC，以禁用门面对 EN GPIO 的控制。
- * @note 超时、任务和缓冲区字段为 0 时使用下层默认值。
- * @note init_ready_timeout_ms 为 0 时使用下层默认值；lwlte_start() 仅提交启动请求，Core FSM 处理启动信号并调用阻塞式 modem_start() 时，该值作为 Air780EP 硬复位后等待 AT OK 的总超时。
- * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
- * @note UART 端口必须满足 UART_NUM_0 <= uart_num < UART_NUM_MAX；UART TX/RX 必须是有效 GPIO 且不能为 GPIO_NUM_NC。
- * @note uart_baud_rate 必须大于 0；Air780EP 门面当前仅支持 primary_cid 为 1。
- * @note 有符号的队列、任务和缓冲区字段允许 0 表示默认值，非 0 值必须大于 0。
+ * @note base 为公共基础配置；UART 端口必须满足 UART_NUM_0 <= base.uart.num < UART_NUM_MAX，TX/RX 必须是有效 GPIO 且不能为 GPIO_NUM_NC，base.uart.baud_rate 必须大于 0。
+ * @note Air780EP 启动在硬复位后通过 AT OK 探测就绪；base.modem.ready_timeout_ms 为该阶段总超时。
  * @note MQTT 客户端不再在此配置中初始化；请在 lwlte_air780ep_init() 之后调用 lwlte_mqtt_init()。
  */
 typedef struct {
-    uart_port_t uart_num;                 /**< 必填 UART 端口号； Required UART port number */
-    gpio_num_t uart_tx_pin;               /**< 必填 UART TX GPIO，不能为 GPIO_NUM_NC； Required UART TX GPIO, not GPIO_NUM_NC */
-    gpio_num_t uart_rx_pin;               /**< 必填 UART RX GPIO，不能为 GPIO_NUM_NC； Required UART RX GPIO, not GPIO_NUM_NC */
-    int uart_baud_rate;                   /**< 必填 UART 波特率，必须大于 0； Required UART baud rate, must be > 0 */
-    gpio_num_t en_pin;                    /**< 可选模块 EN GPIO，GPIO_NUM_NC 表示不控制； Optional module EN GPIO, GPIO_NUM_NC disables control */
-    const char *apn;                      /**< 可选 APN，NULL/空表示门面不配置； Optional APN, NULL/empty means facade does not configure it */
-    uint8_t primary_cid;                  /**< 必填主 PDP 上下文 ID，Air780EP 门面当前仅支持 1； Required primary PDP context ID, Air780EP facade currently supports 1 only */
-    uint32_t init_ready_timeout_ms;        /**< Air780EP AT OK 等待总超时，0 使用下层默认值； Air780EP AT OK wait timeout, 0 uses lower-layer default */
-    uint32_t net_activate_timeout_ms;      /**< 网络激活总超时，0 使用 Core 默认值； Network activation timeout, 0 uses Core default */
-    uint32_t reconnect_delay_ms;           /**< 重连延迟，0 使用 Core 默认值； Reconnect delay, 0 uses Core default */
-    int at_rx_buf_size;                   /**< AT RX 缓冲大小，0 使用默认值； AT RX buffer size, 0 uses default */
-    int at_rx_task_stack;                 /**< AT RX 任务栈大小，0 使用默认值； AT RX task stack, 0 uses default */
-    int at_rx_task_priority;              /**< AT RX 任务优先级，0 使用默认值； AT RX task priority, 0 uses default */
-    int at_rx_line_buf_size;              /**< AT 单行缓冲大小，0 使用默认值； AT line buffer size, 0 uses default */
-    int at_cmd_default_timeout_ms;         /**< AT 默认命令超时，0 使用默认值； AT default command timeout, 0 uses default */
-    int at_max_response_lines;             /**< AT 最大响应行数，0 使用默认值； AT maximum response lines, 0 uses default */
-    uint32_t modem_reset_pulse_ms;         /**< Modem 复位脉冲(EN 拉低保持)时长，0 表示不额外等待； Modem reset pulse (EN low hold) length, 0 skips extra wait */
-    uint32_t modem_default_cmd_timeout_ms; /**< Modem 默认命令超时，0 使用默认值； Modem default command timeout, 0 uses default */
-    int modem_event_queue_size;            /**< Modem 事件队列长度，0 使用默认值； Modem event queue size, 0 uses default */
-    int modem_event_task_stack;            /**< Modem 事件任务栈大小，0 使用默认值； Modem event task stack, 0 uses default */
-    int modem_event_task_priority;         /**< Modem 事件任务优先级，0 使用默认值； Modem event task priority, 0 uses default */
-    int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
-    int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
-    int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
-    esp_event_loop_handle_t event_loop;    /**< 可选事件总线，NULL 使用 default loop； Optional event loop, NULL uses default */
+    lwlte_base_config_t base;  /**< 公共基础配置； Common base configuration */
+    /* Air780EP 特有字段：暂无，预留； Air780EP-specific fields: none yet, reserved */
 } lwlte_air780ep_config_t;
 
 /**
  * @brief ML307R LTE 初始化配置
  * @details ML307R LTE initialization configuration
- * @note uart_num、uart_tx_pin、uart_rx_pin、uart_baud_rate 和 primary_cid 为必填字段。
- * @note en_pin 可设为 GPIO_NUM_NC，以禁用门面对 EN GPIO 的控制。
- * @note ML307R 启动不等待 +MATREADY；init_ready_timeout_ms 表示硬复位后重复发送 AT 并等待 OK 的总超时。
- * @note apn 为 NULL 或空字符串表示门面不配置 APN 字符串。
- * @note ML307R 门面当前仅支持 primary_cid 为 1。
+ * @note base 为公共基础配置；校验约束与 Air780EP 相同。
+ * @note ML307R 启动不等待 +MATREADY，硬复位后重复发送 AT 并等待 OK；base.modem.ready_timeout_ms 为该阶段总超时。
  * @note MQTT 客户端不再在此配置中初始化；请在 lwlte_ml307r_init() 之后调用 lwlte_mqtt_init()。
  */
 typedef struct {
-    uart_port_t uart_num;                 /**< 必填 UART 端口号； Required UART port number */
-    gpio_num_t uart_tx_pin;               /**< 必填 UART TX GPIO，不能为 GPIO_NUM_NC； Required UART TX GPIO, not GPIO_NUM_NC */
-    gpio_num_t uart_rx_pin;               /**< 必填 UART RX GPIO，不能为 GPIO_NUM_NC； Required UART RX GPIO, not GPIO_NUM_NC */
-    int uart_baud_rate;                   /**< 必填 UART 波特率，必须大于 0； Required UART baud rate, must be > 0 */
-    gpio_num_t en_pin;                    /**< 可选模块 EN GPIO，GPIO_NUM_NC 表示不控制； Optional module EN GPIO, GPIO_NUM_NC disables control */
-    const char *apn;                      /**< 可选 APN，NULL/空表示门面不配置； Optional APN, NULL/empty means facade does not configure it */
-    uint8_t primary_cid;                  /**< 必填主 PDP 上下文 ID，ML307R 门面当前仅支持 1； Required primary PDP context ID, ML307R facade currently supports 1 only */
-    uint32_t init_ready_timeout_ms;        /**< ML307R AT OK 等待总超时，0 使用下层默认值； ML307R AT OK wait timeout, 0 uses lower-layer default */
-    uint32_t net_activate_timeout_ms;      /**< 网络激活总超时，0 使用 Core 默认值； Network activation timeout, 0 uses Core default */
-    uint32_t reconnect_delay_ms;           /**< 重连延迟，0 使用 Core 默认值； Reconnect delay, 0 uses Core default */
-    int at_rx_buf_size;                   /**< AT RX 缓冲大小，0 使用默认值； AT RX buffer size, 0 uses default */
-    int at_rx_task_stack;                 /**< AT RX 任务栈大小，0 使用默认值； AT RX task stack, 0 uses default */
-    int at_rx_task_priority;              /**< AT RX 任务优先级，0 使用默认值； AT RX task priority, 0 uses default */
-    int at_rx_line_buf_size;              /**< AT 单行缓冲大小，0 使用默认值； AT line buffer size, 0 uses default */
-    int at_cmd_default_timeout_ms;         /**< AT 默认命令超时，0 使用默认值； AT default command timeout, 0 uses default */
-    int at_max_response_lines;             /**< AT 最大响应行数，0 使用默认值； AT maximum response lines, 0 uses default */
-    uint32_t modem_reset_pulse_ms;         /**< Modem 复位脉冲(EN 拉低保持)时长，0 表示不额外等待； Modem reset pulse (EN low hold) length, 0 skips extra wait */
-    uint32_t modem_default_cmd_timeout_ms; /**< Modem 默认命令超时，0 使用默认值； Modem default command timeout, 0 uses default */
-    int modem_event_queue_size;            /**< Modem 事件队列长度，0 使用默认值； Modem event queue size, 0 uses default */
-    int modem_event_task_stack;            /**< Modem 事件任务栈大小，0 使用默认值； Modem event task stack, 0 uses default */
-    int modem_event_task_priority;         /**< Modem 事件任务优先级，0 使用默认值； Modem event task priority, 0 uses default */
-    int core_fsm_queue_size;               /**< Core FSM 队列长度，0 使用默认值； Core FSM queue size, 0 uses default */
-    int core_fsm_task_stack;               /**< Core FSM 任务栈大小，0 使用默认值； Core FSM task stack, 0 uses default */
-    int core_fsm_task_priority;            /**< Core FSM 任务优先级，0 使用默认值； Core FSM task priority, 0 uses default */
-    esp_event_loop_handle_t event_loop;    /**< 可选事件总线，NULL 使用 default loop； Optional event loop, NULL uses default */
+    lwlte_base_config_t base;  /**< 公共基础配置； Common base configuration */
+    /* ML307R 特有字段：暂无，预留； ML307R-specific fields: none yet, reserved */
 } lwlte_ml307r_config_t;
 
 /**********************

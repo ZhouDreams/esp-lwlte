@@ -85,11 +85,17 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
     def test_public_api_has_start_not_connect_or_auto_connect(self):
         assert_contains(self, self.lwlte_h, "esp_err_t lwlte_start(lwlte_handle_t *me);", "lwlte.h")
         assert_not_contains(self, self.lwlte_h, "esp_err_t lwlte_connect(lwlte_handle_t *me);", "lwlte.h")
-        config_start = require_index(self, self.lwlte_h, "typedef struct {", "lwlte.h")
-        config_start = require_index(self, self.lwlte_h, "uart_port_t uart_num;", "lwlte_air780ep_config_t", config_start)
-        config_end = require_index(self, self.lwlte_h, "} lwlte_air780ep_config_t;", "lwlte_air780ep_config_t", config_start)
-        config_body = self.lwlte_h[config_start:config_end]
-        assert_not_contains(self, config_body, "auto_connect", "lwlte_air780ep_config_t")
+        assert_not_contains(self, self.lwlte_h, "auto_connect", "lwlte.h")
+        for token in [
+            "} lwlte_uart_config_t;",
+            "} lwlte_at_engine_config_t;",
+            "} lwlte_modem_config_t;",
+            "} lwlte_core_config_t;",
+            "} lwlte_event_config_t;",
+            "} lwlte_base_config_t;",
+            "lwlte_base_config_t base;",
+        ]:
+            assert_contains(self, self.lwlte_h, token, "lwlte.h")
 
     def test_facade_start_delegates_only_to_core_start(self):
         body = function_body(self.lwlte_c, "esp_err_t lwlte_start(lwlte_handle_t *me)")

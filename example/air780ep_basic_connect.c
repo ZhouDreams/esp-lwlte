@@ -37,7 +37,7 @@
 #define EXAMPLE_LTE_PRIMARY_CID              1
 
 #define EXAMPLE_MODEM_RESET_PULSE_MS         500
-#define EXAMPLE_INIT_READY_TIMEOUT_MS        30000
+#define EXAMPLE_READY_TIMEOUT_MS             30000
 #define EXAMPLE_NET_ONLINE_TIMEOUT_MS        120000
 #define EXAMPLE_POLL_INTERVAL_MS             100
 #define EXAMPLE_IDLE_DELAY_MS                1000
@@ -101,16 +101,26 @@ void example_air780ep_basic_connect_run(void)
 
     lwlte_handle_t *lte = NULL;
     const lwlte_air780ep_config_t config = {
-        .uart_num = EXAMPLE_LTE_UART_NUM,
-        .uart_tx_pin = EXAMPLE_LTE_UART_TX_PIN,
-        .uart_rx_pin = EXAMPLE_LTE_UART_RX_PIN,
-        .uart_baud_rate = EXAMPLE_LTE_UART_BAUD_RATE,
-        .en_pin = EXAMPLE_LTE_EN_PIN,
-        .apn = EXAMPLE_LTE_APN,
-        .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
-        .init_ready_timeout_ms = EXAMPLE_INIT_READY_TIMEOUT_MS,
-        .modem_reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
-        .event_loop = NULL,
+        .base = {
+            .uart = {
+                .num = EXAMPLE_LTE_UART_NUM,
+                .tx_pin = EXAMPLE_LTE_UART_TX_PIN,
+                .rx_pin = EXAMPLE_LTE_UART_RX_PIN,
+                .baud_rate = EXAMPLE_LTE_UART_BAUD_RATE,
+            },
+            .modem = {
+                .en_pin = EXAMPLE_LTE_EN_PIN,
+                .ready_timeout_ms = EXAMPLE_READY_TIMEOUT_MS,
+                .reset_pulse_ms = EXAMPLE_MODEM_RESET_PULSE_MS,
+            },
+            .core = {
+                .apn = EXAMPLE_LTE_APN,
+                .primary_cid = EXAMPLE_LTE_PRIMARY_CID,
+            },
+            .event = {
+                .loop = NULL,
+            },
+        },
     };
 
     ESP_LOGI(TAG, "Air780EP basic connect example");
