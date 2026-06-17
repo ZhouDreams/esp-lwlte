@@ -88,10 +88,11 @@ static void handle_protocol_data(mqtt_client_handle_t *me, mqtt_fsm_sig_t *sig);
  **********************/
 static bool config_valid(const mqtt_client_config_t *config, core_handle_t *core)
 {
-    return config && core && config->host && config->host[0] &&
-           config->port > 0 && config->client_id && config->client_id[0] &&
-           (config->transport == MQTT_CLIENT_TRANSPORT_PLAIN_TCP ||
-            config->transport == MQTT_CLIENT_TRANSPORT_TLS);
+    return config && core && config->endpoint.host && config->endpoint.host[0] &&
+           config->endpoint.port > 0 && config->auth.client_id &&
+           config->auth.client_id[0] &&
+           (config->endpoint.transport == MQTT_CLIENT_TRANSPORT_PLAIN_TCP ||
+            config->endpoint.transport == MQTT_CLIENT_TRANSPORT_TLS);
 }
 
 static esp_err_t normalize_config(const mqtt_client_config_t *config,
@@ -101,31 +102,31 @@ static esp_err_t normalize_config(const mqtt_client_config_t *config,
                         "NULL argument");
 
     *normalized = *config;
-    normalized->host = clone_string(config->host);
-    normalized->client_id = clone_string(config->client_id);
-    normalized->username = config->username ? clone_string(config->username) : NULL;
-    normalized->password = config->password ? clone_string(config->password) : NULL;
-    if (!normalized->host || !normalized->client_id ||
-        (config->username && !normalized->username) ||
-        (config->password && !normalized->password)) {
-        free((void *)normalized->host);
-        free((void *)normalized->client_id);
-        free((void *)normalized->username);
-        free((void *)normalized->password);
+    normalized->endpoint.host = clone_string(config->endpoint.host);
+    normalized->auth.client_id = clone_string(config->auth.client_id);
+    normalized->auth.username = config->auth.username ? clone_string(config->auth.username) : NULL;
+    normalized->auth.password = config->auth.password ? clone_string(config->auth.password) : NULL;
+    if (!normalized->endpoint.host || !normalized->auth.client_id ||
+        (config->auth.username && !normalized->auth.username) ||
+        (config->auth.password && !normalized->auth.password)) {
+        free((void *)normalized->endpoint.host);
+        free((void *)normalized->auth.client_id);
+        free((void *)normalized->auth.username);
+        free((void *)normalized->auth.password);
         memset(normalized, 0, sizeof(*normalized));
         return ESP_ERR_NO_MEM;
     }
-    if (normalized->keepalive_s == 0) {
-        normalized->keepalive_s = MQTT_CLIENT_DEFAULT_KEEPALIVE_S;
+    if (normalized->session.keepalive_s == 0) {
+        normalized->session.keepalive_s = MQTT_CLIENT_DEFAULT_KEEPALIVE_S;
     }
-    if (normalized->fsm_queue_size <= 0) {
-        normalized->fsm_queue_size = MQTT_CLIENT_DEFAULT_FSM_QUEUE_SIZE;
+    if (normalized->fsm.queue_size <= 0) {
+        normalized->fsm.queue_size = MQTT_CLIENT_DEFAULT_FSM_QUEUE_SIZE;
     }
-    if (normalized->fsm_task_stack <= 0) {
-        normalized->fsm_task_stack = MQTT_CLIENT_DEFAULT_FSM_TASK_STACK;
+    if (normalized->fsm.task_stack <= 0) {
+        normalized->fsm.task_stack = MQTT_CLIENT_DEFAULT_FSM_TASK_STACK;
     }
-    if (normalized->fsm_task_priority <= 0) {
-        normalized->fsm_task_priority = MQTT_CLIENT_DEFAULT_FSM_PRIORITY;
+    if (normalized->fsm.task_priority <= 0) {
+        normalized->fsm.task_priority = MQTT_CLIENT_DEFAULT_FSM_PRIORITY;
     }
 
     return ESP_OK;
@@ -383,11 +384,11 @@ static void cleanup_partial_client(mqtt_client_handle_t *me)
         (void)core_register_protocol_callback(me->core, NULL, NULL);
         (void)core_register_protocol_closed_callback(me->core, NULL, NULL);
     }
-    if (me->config.event_loop) {
-        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+    if (me->config.event.loop) {
+        (void)esp_event_handler_unregister_with(me->config.event.loop, LWLTE_EVENT,
                                                 LWLTE_EVENT_NET_ONLINE,
                                                 handle_lwlte_event);
-        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+        (void)esp_event_handler_unregister_with(me->config.event.loop, LWLTE_EVENT,
                                                 LWLTE_EVENT_NET_OFFLINE,
                                                 handle_lwlte_event);
     } else {
@@ -416,10 +417,10 @@ static void cleanup_partial_client(mqtt_client_handle_t *me)
         vSemaphoreDelete(me->stop_done_sema);
         me->stop_done_sema = NULL;
     }
-    free((void *)me->config.host);
-    free((void *)me->config.client_id);
-    free((void *)me->config.username);
-    free((void *)me->config.password);
+    free((void *)me->config.endpoint.host);
+    free((void *)me->config.auth.client_id);
+    free((void *)me->config.auth.username);
+    free((void *)me->config.auth.password);
     if (me->lock) {
         vSemaphoreDelete(me->lock);
         me->lock = NULL;
@@ -482,8 +483,8 @@ static esp_err_t post_mqtt_event(mqtt_client_handle_t *me,
     }
 
     esp_err_t ret;
-    if (me->config.event_loop) {
-        ret = esp_event_post_to(me->config.event_loop, LWLTE_MQTT_EVENT,
+    if (me->config.event.loop) {
+        ret = esp_event_post_to(me->config.event.loop, LWLTE_MQTT_EVENT,
                                 event_id, payload, sizeof(*payload), 0);
     } else {
         ret = esp_event_post(LWLTE_MQTT_EVENT, event_id, payload,
@@ -520,13 +521,13 @@ static esp_err_t submit_core_cmd(mqtt_client_handle_t *me, core_cmd_type_t type,
 
     switch (type) {
     case CORE_CMD_MQTT_CONFIGURE:
-        cmd.data.mqtt_config.client_id = me->config.client_id;
-        cmd.data.mqtt_config.username = me->config.username;
-        cmd.data.mqtt_config.password = me->config.password;
-        cmd.data.mqtt_config.host = me->config.host;
-        cmd.data.mqtt_config.port = me->config.port;
-        cmd.data.mqtt_config.clean_session = me->config.clean_session;
-        cmd.data.mqtt_config.keepalive_s = me->config.keepalive_s;
+        cmd.data.mqtt_config.client_id = me->config.auth.client_id;
+        cmd.data.mqtt_config.username = me->config.auth.username;
+        cmd.data.mqtt_config.password = me->config.auth.password;
+        cmd.data.mqtt_config.host = me->config.endpoint.host;
+        cmd.data.mqtt_config.port = me->config.endpoint.port;
+        cmd.data.mqtt_config.clean_session = me->config.session.clean_session;
+        cmd.data.mqtt_config.keepalive_s = me->config.session.keepalive_s;
         break;
     case CORE_CMD_MQTT_TCP_CONNECT:
     case CORE_CMD_MQTT_CONNECT:
@@ -899,7 +900,7 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
     }
     /* TLS is reserved in the API, but the first service implementation only
      * supports plain TCP and rejects TLS consistently at creation time. */
-    if (config->transport == MQTT_CLIENT_TRANSPORT_TLS) {
+    if (config->endpoint.transport == MQTT_CLIENT_TRANSPORT_TLS) {
         return NULL;
     }
 
@@ -917,7 +918,7 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
     me->state = MQTT_CLIENT_STATE_STOPPED;
 
     me->lock = xSemaphoreCreateMutex();
-    me->fsm_queue = xQueueCreate(me->config.fsm_queue_size, sizeof(mqtt_fsm_sig_t));
+    me->fsm_queue = xQueueCreate(me->config.fsm.queue_size, sizeof(mqtt_fsm_sig_t));
     me->fsm_task_done_sema = xSemaphoreCreateBinary();
     me->stop_done_sema = xSemaphoreCreateBinary();
     if (!me->lock || !me->fsm_queue || !me->fsm_task_done_sema ||
@@ -937,8 +938,8 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
         return NULL;
     }
 
-    if (me->config.event_loop) {
-        ret = esp_event_handler_register_with(me->config.event_loop, LWLTE_EVENT,
+    if (me->config.event.loop) {
+        ret = esp_event_handler_register_with(me->config.event.loop, LWLTE_EVENT,
                                               LWLTE_EVENT_NET_ONLINE,
                                               handle_lwlte_event, me);
     } else {
@@ -950,8 +951,8 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
         cleanup_partial_client(me);
         return NULL;
     }
-    if (me->config.event_loop) {
-        ret = esp_event_handler_register_with(me->config.event_loop, LWLTE_EVENT,
+    if (me->config.event.loop) {
+        ret = esp_event_handler_register_with(me->config.event.loop, LWLTE_EVENT,
                                               LWLTE_EVENT_NET_OFFLINE,
                                               handle_lwlte_event, me);
     } else {
@@ -965,8 +966,8 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
     }
 
     BaseType_t task_ret = xTaskCreate(mqtt_fsm_task, "mqtt_fsm",
-                                      me->config.fsm_task_stack, me,
-                                      me->config.fsm_task_priority,
+                                      me->config.fsm.task_stack, me,
+                                      me->config.fsm.task_priority,
                                       &me->fsm_task);
     if (task_ret != pdPASS) {
         mqtt_client_destroy(me);
@@ -999,11 +1000,11 @@ esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me)
         me->fsm_task = NULL;
     }
 
-    if (me->config.event_loop) {
-        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+    if (me->config.event.loop) {
+        (void)esp_event_handler_unregister_with(me->config.event.loop, LWLTE_EVENT,
                                                 LWLTE_EVENT_NET_ONLINE,
                                                 handle_lwlte_event);
-        (void)esp_event_handler_unregister_with(me->config.event_loop, LWLTE_EVENT,
+        (void)esp_event_handler_unregister_with(me->config.event.loop, LWLTE_EVENT,
                                                 LWLTE_EVENT_NET_OFFLINE,
                                                 handle_lwlte_event);
     } else {
@@ -1033,10 +1034,10 @@ esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me)
         vSemaphoreDelete(me->stop_done_sema);
         me->stop_done_sema = NULL;
     }
-    free((void *)me->config.host);
-    free((void *)me->config.client_id);
-    free((void *)me->config.username);
-    free((void *)me->config.password);
+    free((void *)me->config.endpoint.host);
+    free((void *)me->config.auth.client_id);
+    free((void *)me->config.auth.username);
+    free((void *)me->config.auth.password);
     vSemaphoreDelete(me->lock);
     me->lock = NULL;
     free(me);

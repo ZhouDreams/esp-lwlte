@@ -42,8 +42,8 @@ extern "C" {
  **********************/
 
 /**
- * @brief AT 引擎配置
- * @details AT engine configuration
+ * @brief AT 引擎 UART 配置
+ * @details AT engine UART configuration
  */
 typedef struct {
     uart_port_t uart_num;               /**< UART 端口号； UART port number */
@@ -51,11 +51,27 @@ typedef struct {
     int rx_pin;                         /**< RX GPIO； RX GPIO */
     int baud_rate;                      /**< 波特率； Baud rate */
     int rx_buf_size;                    /**< UART RX 环形缓冲区大小； UART RX ring buffer size */
+} at_engine_uart_config_t;
+
+/**
+ * @brief AT 引擎运行参数
+ * @details AT engine runtime configuration
+ */
+typedef struct {
     int rx_task_stack;                  /**< 接收任务栈大小； RX task stack size */
     int rx_task_priority;               /**< 接收任务优先级； RX task priority */
     int rx_line_buf_size;               /**< 单行最大长度； Maximum line length */
     int cmd_default_timeout_ms;         /**< 默认命令超时； Default command timeout */
     int max_response_lines;             /**< 单次响应最大行数； Maximum response lines */
+} at_engine_runtime_config_t;
+
+/**
+ * @brief AT 引擎配置
+ * @details AT engine configuration
+ */
+typedef struct {
+    at_engine_uart_config_t uart;        /**< UART 硬件； UART hardware */
+    at_engine_runtime_config_t runtime;  /**< 运行参数； Runtime parameters */
 } at_engine_config_t;
 
 /**

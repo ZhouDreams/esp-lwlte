@@ -140,7 +140,7 @@ esp_err_t core_fsm_init(core_handle_t *me)
     me->fsm.running = false;
     me->fsm.stop_requested = false;
 
-    me->fsm.queue = xQueueCreate(me->config.fsm_queue_size,
+    me->fsm.queue = xQueueCreate(me->config.fsm.queue_size,
                                  sizeof(core_fsm_sig_t));
     ESP_GOTO_ON_FALSE(me->fsm.queue, ESP_ERR_NO_MEM, err, TAG,
                       "create fsm queue failed");
@@ -150,8 +150,8 @@ esp_err_t core_fsm_init(core_handle_t *me)
                       "create task_done_sema failed");
 
     BaseType_t task_ret = xTaskCreate(fsm_task, "lwlte_fsm",
-                                      me->config.fsm_task_stack, me,
-                                      me->config.fsm_task_priority,
+                                      me->config.fsm.task_stack, me,
+                                      me->config.fsm.task_priority,
                                       &me->fsm.task);
     ESP_GOTO_ON_FALSE(task_ret == pdPASS, ESP_ERR_NO_MEM, err, TAG,
                       "create fsm task failed");

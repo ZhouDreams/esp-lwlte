@@ -1114,11 +1114,11 @@ modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
 
     /* 保存配置快照，为 0 的字段填入 Air780EP 默认值 */
     self->config = *config;
-    if (self->config.default_cmd_timeout_ms == 0) {
-        self->config.default_cmd_timeout_ms = AIR780EP_DEFAULT_CMD_TIMEOUT_MS;
+    if (self->config.base.timing.default_cmd_timeout_ms == 0) {
+        self->config.base.timing.default_cmd_timeout_ms = AIR780EP_DEFAULT_CMD_TIMEOUT_MS;
     }
-    if (self->config.ready_timeout_ms == 0) {
-        self->config.ready_timeout_ms = AIR780EP_DEFAULT_READY_TIMEOUT_MS;
+    if (self->config.base.timing.ready_timeout_ms == 0) {
+        self->config.base.timing.ready_timeout_ms = AIR780EP_DEFAULT_READY_TIMEOUT_MS;
     }
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1145,9 +1145,9 @@ modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
      * lock / event_queue / event_task 等基类公共资源。
      * 失败时 self 由本函数释放，调用方无需清理。 */
     esp_err_t ret = modem_base_init(&self->base, "air780ep", at, &s_air780ep_ops,
-                                    config->event_queue_size,
-                                    config->event_task_stack,
-                                    config->event_task_priority);
+                                    self->config.base.event.event_queue_size,
+                                    self->config.base.event.event_task_stack,
+                                    self->config.base.event.event_task_priority);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "modem base init failed: %s", esp_err_to_name(ret));
         free(self);
@@ -1187,7 +1187,7 @@ static esp_err_t send_cmd(modem_air780ep_t *self, const char *cmd,
 {
     ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
 
-    uint32_t wait_ms = timeout_ms ? timeout_ms : self->config.default_cmd_timeout_ms;
+    uint32_t wait_ms = timeout_ms ? timeout_ms : self->config.base.timing.default_cmd_timeout_ms;
     if (wait_ms == 0) {
         wait_ms = AIR780EP_DEFAULT_CMD_TIMEOUT_MS;
     }
@@ -2183,7 +2183,7 @@ static esp_err_t wait_at_ready(modem_air780ep_t *self)
 {
     ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
 
-    const uint32_t timeout_ms = self->config.ready_timeout_ms;
+    const uint32_t timeout_ms = self->config.base.timing.ready_timeout_ms;
     const uint32_t start_ms = now_ms();
     unsigned int attempt = 1;
 
@@ -2281,13 +2281,13 @@ static esp_err_t hardware_reset(modem_air780ep_t *self)
     ret = at_engine_flush_rx_exclusive(self->base.at);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "flush RX input before reset failed");
 
-    if (self->config.en_pin == GPIO_NUM_NC) {
+    if (self->config.base.hardware.en_pin == GPIO_NUM_NC) {
         at_engine_end_exclusive(self->base.at);
         return ESP_OK;
     }
 
     gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << (uint32_t)self->config.en_pin,
+        .pin_bit_mask = 1ULL << (uint32_t)self->config.base.hardware.en_pin,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -2296,17 +2296,17 @@ static esp_err_t hardware_reset(modem_air780ep_t *self)
     ret = gpio_config(&io_conf);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "configure EN GPIO failed");
 
-    ret = gpio_set_level(self->config.en_pin, 0);
+    ret = gpio_set_level(self->config.base.hardware.en_pin, 0);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "set EN GPIO low failed");
 
-    if (self->config.reset_pulse_ms > 0) {
-        vTaskDelay(timeout_ticks(self->config.reset_pulse_ms));
+    if (self->config.base.timing.reset_pulse_ms > 0) {
+        vTaskDelay(timeout_ticks(self->config.base.timing.reset_pulse_ms));
     }
 
     ret = at_engine_flush_rx_exclusive(self->base.at);
     ESP_GOTO_ON_ERROR(ret, err_restore_en, TAG, "flush RX input after EN low failed");
 
-    ret = gpio_set_level(self->config.en_pin, 1);
+    ret = gpio_set_level(self->config.base.hardware.en_pin, 1);
     ESP_GOTO_ON_ERROR(ret, err_restore_en, TAG, "set EN GPIO high failed");
 
     at_engine_end_exclusive(self->base.at);
@@ -2314,7 +2314,7 @@ static esp_err_t hardware_reset(modem_air780ep_t *self)
 
 err_restore_en:
     {
-        esp_err_t restore_ret = gpio_set_level(self->config.en_pin, 1);
+        esp_err_t restore_ret = gpio_set_level(self->config.base.hardware.en_pin, 1);
         if (restore_ret != ESP_OK) {
             ESP_LOGW(TAG, "restore EN GPIO high failed: %s", esp_err_to_name(restore_ret));
         }
@@ -2331,14 +2331,14 @@ static esp_err_t hardware_power_off(modem_air780ep_t *self)
     esp_err_t ret = at_engine_begin_exclusive(self->base.at);
     ESP_RETURN_ON_ERROR(ret, TAG, "begin AT exclusive failed");
 
-    if (self->config.en_pin == GPIO_NUM_NC) {
+    if (self->config.base.hardware.en_pin == GPIO_NUM_NC) {
         at_engine_end_exclusive(self->base.at);
         ESP_LOGW(TAG, "no EN pin; modem stays powered (logical stop only)");
         return ESP_OK;
     }
 
     gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << (uint32_t)self->config.en_pin,
+        .pin_bit_mask = 1ULL << (uint32_t)self->config.base.hardware.en_pin,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -2347,7 +2347,7 @@ static esp_err_t hardware_power_off(modem_air780ep_t *self)
     ret = gpio_config(&io_conf);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "configure EN GPIO failed");
 
-    ret = gpio_set_level(self->config.en_pin, 0);
+    ret = gpio_set_level(self->config.base.hardware.en_pin, 0);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "set EN GPIO low failed");
 
     (void)at_engine_flush_rx_exclusive(self->base.at);
@@ -3020,7 +3020,7 @@ static esp_err_t air780ep_activate_pdp(modem_handle_t *me, uint8_t cid)
         .value = NULL,
     };
     const at_cmd_options_t cifsr_options = {
-        .timeout_ms = self->config.default_cmd_timeout_ms,
+        .timeout_ms = self->config.base.timing.default_cmd_timeout_ms,
         .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL,
         .success_matches = &cifsr_match,
         .success_match_count = 1,

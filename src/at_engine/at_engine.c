@@ -514,15 +514,15 @@ at_engine_handle_t *at_engine_create(const at_engine_config_t *config)
     ESP_GOTO_ON_ERROR(ret, err, TAG, "init UART failed");
 
     BaseType_t task_ret = xTaskCreate(rx_task, "at_engine_rx",
-                                      me->config.rx_task_stack, me,
-                                      me->config.rx_task_priority, &me->rx_task);
+                                      me->config.runtime.rx_task_stack, me,
+                                      me->config.runtime.rx_task_priority, &me->rx_task);
     ESP_GOTO_ON_FALSE(task_ret == pdPASS, ESP_ERR_NO_MEM, err, TAG, "create RX task failed");
 
     return me;
 
 err:
     if (me->uart_driver_installed) {
-        esp_err_t del_ret = uart_driver_delete(me->config.uart_num);
+        esp_err_t del_ret = uart_driver_delete(me->config.uart.uart_num);
         if (del_ret != ESP_OK) {
             ESP_LOGW(TAG, "uart_driver_delete during create rollback failed: %s", esp_err_to_name(del_ret));
         }
@@ -559,7 +559,7 @@ esp_err_t at_engine_destroy(at_engine_handle_t *me)
         xSemaphoreTake(me->rx_task_done_sema, portMAX_DELAY);
     }
 
-    esp_err_t ret = uart_driver_delete(me->config.uart_num);
+    esp_err_t ret = uart_driver_delete(me->config.uart.uart_num);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "uart_driver_delete failed: %s", esp_err_to_name(ret));
         return ret;
@@ -834,7 +834,7 @@ static esp_err_t send_cmd_internal(at_engine_handle_t *me, const char *cmd,
      * 步骤 2：计算超时并获取命令串行锁
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     uint32_t wait_ms = options->timeout_ms ? options->timeout_ms :
-                       (uint32_t)me->config.cmd_default_timeout_ms;
+                       (uint32_t)me->config.runtime.cmd_default_timeout_ms;
     if (wait_ms == 0) {
         end_send_call(me);
         return ESP_ERR_INVALID_ARG;
@@ -997,7 +997,7 @@ static void rx_task(void *arg)
                 uint32_t read_epoch = me->rx_epoch;
                 xSemaphoreGive(me->lock);
 
-                int len = uart_read_bytes(me->config.uart_num, rx_buf, chunk,
+                int len = uart_read_bytes(me->config.uart.uart_num, rx_buf, chunk,
                                           pdMS_TO_TICKS(AT_ENGINE_RX_WAIT_MS));
                 if (len <= 0) {
                     /* 驱动层无数据 / 出错，结束本批，下一轮事件再处理 */
@@ -1140,7 +1140,7 @@ static void process_rx_char(at_engine_handle_t *me, char c, uint32_t epoch)
 
     /* 缓冲将满（预留 1 字节给 '\0'）：丢弃当前行并进入 overflow 模式，
      * 等待下一个 '\n' 才能恢复正常累行 */
-    if (me->line_buf_pos + 1 >= me->config.rx_line_buf_size) {
+    if (me->line_buf_pos + 1 >= me->config.runtime.rx_line_buf_size) {
         ESP_LOGW(TAG, "RX line too long, drop current line");
         me->line_buf_pos = 0;
         me->line_buf[0] = '\0';
@@ -1441,7 +1441,7 @@ static esp_err_t write_cmd(at_engine_handle_t *me, const char *cmd)
 #ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
         log_uart_line("TX", cmd, len);
 #endif
-        int written = uart_write_bytes(me->config.uart_num, cmd, len);
+        int written = uart_write_bytes(me->config.uart.uart_num, cmd, len);
         ESP_RETURN_ON_FALSE(written == (int)len, ESP_FAIL, TAG, "uart_write_bytes failed");
         return ESP_OK;
     }
@@ -1456,7 +1456,7 @@ static esp_err_t write_cmd(at_engine_handle_t *me, const char *cmd)
 #ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
     log_uart_line("TX", buf, len + 2);
 #endif
-    int written = uart_write_bytes(me->config.uart_num, buf, len + 2);
+    int written = uart_write_bytes(me->config.uart.uart_num, buf, len + 2);
     free(buf);
     ESP_RETURN_ON_FALSE(written == (int)(len + 2), ESP_FAIL, TAG, "uart_write_bytes failed");
     return ESP_OK;
@@ -1470,7 +1470,7 @@ static esp_err_t write_payload(at_engine_handle_t *me, const uint8_t *payload,
 #ifdef CONFIG_LWLTE_AT_ENGINE_LOG_IO
     log_uart_line("TX_PAYLOAD", (const char *)payload, payload_len);
 #endif
-    int written = uart_write_bytes(me->config.uart_num, payload, payload_len);
+    int written = uart_write_bytes(me->config.uart.uart_num, payload, payload_len);
     ESP_RETURN_ON_FALSE(written == (int)payload_len, ESP_FAIL, TAG,
                         "uart_write_bytes payload failed");
     return ESP_OK;
@@ -1518,7 +1518,7 @@ static void clear_done_signal(at_engine_handle_t *me)
 
 static void flush_rx_input_locked(at_engine_handle_t *me)
 {
-    (void)uart_flush_input(me->config.uart_num);
+    (void)uart_flush_input(me->config.uart.uart_num);
     if (me->uart_queue) {
         xQueueReset(me->uart_queue);
     }
@@ -1533,32 +1533,34 @@ static void flush_rx_input_locked(at_engine_handle_t *me)
 static esp_err_t normalize_config(const at_engine_config_t *in, at_engine_config_t *out)
 {
     ESP_RETURN_ON_FALSE(in && out, ESP_ERR_INVALID_ARG, TAG, "NULL config");
-    ESP_RETURN_ON_FALSE(in->uart_num >= UART_NUM_0 && in->uart_num < UART_NUM_MAX,
+    ESP_RETURN_ON_FALSE(in->uart.uart_num >= UART_NUM_0 &&
+                        in->uart.uart_num < UART_NUM_MAX,
                         ESP_ERR_INVALID_ARG, TAG, "invalid uart_num");
-    ESP_RETURN_ON_FALSE(in->tx_pin >= 0 && in->rx_pin >= 0,
+    ESP_RETURN_ON_FALSE(in->uart.tx_pin >= 0 && in->uart.rx_pin >= 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid UART pins");
-    ESP_RETURN_ON_FALSE(in->baud_rate > 0, ESP_ERR_INVALID_ARG, TAG, "invalid baud rate");
+    ESP_RETURN_ON_FALSE(in->uart.baud_rate > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid baud rate");
 
     *out = *in;
-    if (out->rx_buf_size <= 0) {
-        out->rx_buf_size = AT_ENGINE_DEFAULT_RX_BUF_SIZE;
+    if (out->uart.rx_buf_size <= 0) {
+        out->uart.rx_buf_size = AT_ENGINE_DEFAULT_RX_BUF_SIZE;
     }
-    if (out->rx_task_stack <= 0) {
-        out->rx_task_stack = AT_ENGINE_DEFAULT_RX_TASK_STACK;
+    if (out->runtime.rx_task_stack <= 0) {
+        out->runtime.rx_task_stack = AT_ENGINE_DEFAULT_RX_TASK_STACK;
     }
-    if (out->rx_task_priority <= 0) {
-        out->rx_task_priority = AT_ENGINE_DEFAULT_RX_TASK_PRIORITY;
+    if (out->runtime.rx_task_priority <= 0) {
+        out->runtime.rx_task_priority = AT_ENGINE_DEFAULT_RX_TASK_PRIORITY;
     }
-    if (out->rx_line_buf_size <= 0) {
-        out->rx_line_buf_size = AT_ENGINE_DEFAULT_LINE_BUF_SIZE;
+    if (out->runtime.rx_line_buf_size <= 0) {
+        out->runtime.rx_line_buf_size = AT_ENGINE_DEFAULT_LINE_BUF_SIZE;
     }
-    if (out->cmd_default_timeout_ms <= 0) {
-        out->cmd_default_timeout_ms = AT_ENGINE_DEFAULT_TIMEOUT_MS;
+    if (out->runtime.cmd_default_timeout_ms <= 0) {
+        out->runtime.cmd_default_timeout_ms = AT_ENGINE_DEFAULT_TIMEOUT_MS;
     }
-    if (out->max_response_lines <= 0) {
-        out->max_response_lines = AT_ENGINE_DEFAULT_MAX_RESP_LINES;
-    } else if (out->max_response_lines < AT_ENGINE_DEFAULT_MAX_RESP_LINES) {
-        out->max_response_lines = AT_ENGINE_DEFAULT_MAX_RESP_LINES;
+    if (out->runtime.max_response_lines <= 0) {
+        out->runtime.max_response_lines = AT_ENGINE_DEFAULT_MAX_RESP_LINES;
+    } else if (out->runtime.max_response_lines < AT_ENGINE_DEFAULT_MAX_RESP_LINES) {
+        out->runtime.max_response_lines = AT_ENGINE_DEFAULT_MAX_RESP_LINES;
     }
 
     return ESP_OK;
@@ -1581,14 +1583,14 @@ static esp_err_t init_resources(at_engine_handle_t *me)
     me->lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(me->lock, ESP_ERR_NO_MEM, TAG, "create lock failed");
 
-    me->line_buf = calloc(1, me->config.rx_line_buf_size);
+    me->line_buf = calloc(1, me->config.runtime.rx_line_buf_size);
     ESP_RETURN_ON_FALSE(me->line_buf, ESP_ERR_NO_MEM, TAG, "create line_buf failed");
 
-    me->line_work_buf = calloc(1, me->config.rx_line_buf_size);
+    me->line_work_buf = calloc(1, me->config.runtime.rx_line_buf_size);
     ESP_RETURN_ON_FALSE(me->line_work_buf, ESP_ERR_NO_MEM, TAG, "create line_work_buf failed");
 
-    me->response_pool_lines = me->config.max_response_lines;
-    me->response_line_size = me->config.rx_line_buf_size;
+    me->response_pool_lines = me->config.runtime.max_response_lines;
+    me->response_line_size = me->config.runtime.rx_line_buf_size;
     me->response_pool = calloc((size_t)me->response_pool_lines, (size_t)me->response_line_size);
     ESP_RETURN_ON_FALSE(me->response_pool, ESP_ERR_NO_MEM, TAG, "create response_pool failed");
 
@@ -1600,7 +1602,7 @@ static esp_err_t init_uart(at_engine_handle_t *me)
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
     const uart_config_t uart_config = {
-        .baud_rate = me->config.baud_rate,
+        .baud_rate = me->config.uart.baud_rate,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
@@ -1608,16 +1610,18 @@ static esp_err_t init_uart(at_engine_handle_t *me)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    ESP_RETURN_ON_ERROR(uart_driver_install(me->config.uart_num,
-                                            me->config.rx_buf_size,
+    ESP_RETURN_ON_ERROR(uart_driver_install(me->config.uart.uart_num,
+                                            me->config.uart.rx_buf_size,
                                             AT_ENGINE_UART_TX_BUF_SIZE,
                                             AT_ENGINE_UART_EVENT_QUEUE_SIZE,
                                             &me->uart_queue, 0),
                         TAG, "uart_driver_install failed");
     me->uart_driver_installed = true;
-    ESP_RETURN_ON_ERROR(uart_param_config(me->config.uart_num, &uart_config),
+    ESP_RETURN_ON_ERROR(uart_param_config(me->config.uart.uart_num, &uart_config),
                         TAG, "uart_param_config failed");
-    ESP_RETURN_ON_ERROR(uart_set_pin(me->config.uart_num, me->config.tx_pin, me->config.rx_pin,
+    ESP_RETURN_ON_ERROR(uart_set_pin(me->config.uart.uart_num,
+                                     me->config.uart.tx_pin,
+                                     me->config.uart.rx_pin,
                                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
                         TAG, "uart_set_pin failed");
 

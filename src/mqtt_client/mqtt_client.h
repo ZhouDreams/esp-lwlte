@@ -41,15 +41,35 @@ typedef struct {
     mqtt_client_transport_t transport;
     const char *host;
     uint16_t port;
+} mqtt_client_endpoint_config_t;
+
+typedef struct {
     const char *client_id;
     const char *username;
     const char *password;
+} mqtt_client_auth_config_t;
+
+typedef struct {
     uint16_t keepalive_s;
     bool clean_session;
-    int fsm_queue_size;
-    int fsm_task_stack;
-    int fsm_task_priority;
-    esp_event_loop_handle_t event_loop;   /**< 共享事件总线（借用）； Shared event bus (borrowed) */
+} mqtt_client_session_config_t;
+
+typedef struct {
+    int queue_size;
+    int task_stack;
+    int task_priority;
+} mqtt_client_fsm_config_t;
+
+typedef struct {
+    esp_event_loop_handle_t loop;        /**< 共享事件总线（借用）； Shared event bus (borrowed) */
+} mqtt_client_event_config_t;
+
+typedef struct {
+    mqtt_client_endpoint_config_t endpoint;
+    mqtt_client_auth_config_t auth;
+    mqtt_client_session_config_t session;
+    mqtt_client_fsm_config_t fsm;
+    mqtt_client_event_config_t event;
 } mqtt_client_config_t;
 
 typedef enum {

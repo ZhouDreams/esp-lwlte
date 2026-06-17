@@ -25,7 +25,7 @@ AT Engine 是内部最底层，负责 AT 协议解析和 UART 硬件操作。该
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
-| `at_engine_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | UART 硬件参数 + 任务参数 |
+| `at_engine_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | 分组保存 UART 硬件参数和运行参数 |
 | `at_engine_handle_t` | 层间 API (opaque) | Modem 层 + Facade 模块 factory | 句柄 | AT Engine 实例句柄 |
 | `at_response_t` | 层间 API | Modem 层 | 值对象 | 一次 AT 命令的响应结果 |
 | `at_cmd_options_t` | 层间 API | Modem 层 | 值对象 | 单次命令的超时、成功终止匹配和 OK 处理选项 |
@@ -42,21 +42,24 @@ AT Engine 是内部最底层，负责 AT 协议解析和 UART 硬件操作。该
 
 ```c
 typedef struct {
-    /* UART 硬件参数 */
-    uart_port_t uart_num;         // UART 端口号（如 UART_NUM_1）
-    int         tx_pin;           // TX GPIO
-    int         rx_pin;           // RX GPIO
-    int         baud_rate;        // 波特率（如 115200）
-    int         rx_buf_size;      // UART RX 环形缓冲区大小（字节）
+    uart_port_t uart_num;        // UART 端口号（如 UART_NUM_1）
+    int tx_pin;                  // TX GPIO
+    int rx_pin;                  // RX GPIO
+    int baud_rate;               // 波特率（如 115200）
+    int rx_buf_size;             // UART RX 环形缓冲区大小（字节）
+} at_engine_uart_config_t;
 
-    /* 接收任务参数 */
-    int         rx_task_stack;    // 接收任务栈大小（字节）
-    int         rx_task_priority; // 接收任务优先级
-    int         rx_line_buf_size; // 单行最大长度（字节）
+typedef struct {
+    int rx_task_stack;           // 接收任务栈大小（字节）
+    int rx_task_priority;        // 接收任务优先级
+    int rx_line_buf_size;        // 单行最大长度（字节）
+    int cmd_default_timeout_ms;  // 默认命令超时（毫秒）
+    int max_response_lines;      // 单次响应最大行数
+} at_engine_runtime_config_t;
 
-    /* 命令响应参数 */
-    int         cmd_default_timeout_ms;  // 默认命令超时（毫秒）
-    int         max_response_lines;      // 单次响应最大行数
+typedef struct {
+    at_engine_uart_config_t uart;        // UART 硬件参数
+    at_engine_runtime_config_t runtime;  // AT 引擎运行参数
 } at_engine_config_t;
 ```
 
@@ -92,7 +95,6 @@ esp_err_t    at_engine_unregister_urc(at_engine_handle_t *me, const char *prefix
 ```c
 struct at_engine_handle {
     at_engine_config_t   config;              // 配置快照
-    uart_port_t          uart_num;            // UART 端口号
     QueueHandle_t        uart_queue;          // ESP-IDF UART 事件队列
     TaskHandle_t         rx_task;             // UART 接收任务句柄
     SemaphoreHandle_t    rx_task_done_sema;   // RX task 退出同步信号量
@@ -118,6 +120,8 @@ struct at_engine_handle {
     volatile bool        rx_task_stop_requested;
 };
 ```
+
+UART 端口号只保存在配置快照的 `config.uart.uart_num` 中，不在句柄上维护第二份字段。
 
 **关键设计决策**：
 - `cmd_mutex` 用 `xSemaphoreCreateMutex()` 创建，保证多线程调用 `send_cmd` 的串行化
@@ -171,7 +175,7 @@ if (err == ESP_OK && resp.status == AT_RESP_OK) {
 **关键设计决策**：
 - `lines` 数组由**调用方分配**，AT Engine 只填入指向实例内 `response_pool` 的字符串指针
 - 调用方不得释放或修改 `lines[i]` 指向的字符串；数据在同一 AT Engine 实例下次 `send_cmd` 前有效
-- 实际保存行数按 `min(response->max_lines, config.max_response_lines)` 截断，防止溢出
+- 实际保存行数按 `min(response->max_lines, config.runtime.max_response_lines)` 截断，防止溢出
 
 ### 1.5 `at_cmd_options_t` — 单次命令选项
 
@@ -352,7 +356,9 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_handle_t`，不直接调
 | `modem_protocol_t` | 层间 API | Core + Modem 层 | 枚举 | Modem 上报的上层协议类型，第一版用于 MQTT 数据事件 |
 | `modem_protocol_data_t` | 层间 API | Core + Modem 层 | 值对象 | Modem 上报给 Core 的协议数据事件 |
 | `modem_event_callback_t` | 层间 API | Core + Modem 层 | 回调接口 | Core 注册，Modem event task 调用 |
+| `modem_base_config_t` | 层间 API | 具体 Modem 配置结构体 | 配置结构体 | 通用硬件、时序和事件任务配置组 |
 | `modem_air780ep_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Air780EP GPIO、事件任务、默认超时等参数 |
+| `modem_ml307r_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | ML307R GPIO、事件任务、默认超时等参数 |
 | `modem_air780ep_t` | 内部 | Air780EP 实现自身 | 子类 | 继承 `modem_handle_t`，实现 Air780EP AT 指令和 URC 翻译 |
 | `air780ep_cmd_ctx_t` | 内部 | Air780EP 实现自身 | 工作上下文 | 单次 AT 命令解析的临时数据 |
 
@@ -750,29 +756,53 @@ typedef void (*modem_event_callback_t)(modem_handle_t *modem,
 
 `MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的堆内存中；`modem_post_event()` 成功后由 Modem event task 在 Core 回调返回后释放，`modem_post_event()` 失败时仍由调用者释放。Core 若要通过 `LWLTE_EVENT_PROTOCOL_DATA` 继续上报给 MQTT service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
 
-### 2.11 `modem_air780ep_config_t` — Air780EP 配置
+### 2.11 `modem_air780ep_config_t` / `modem_ml307r_config_t` — 具体模块配置
 
 **所属层**：Modem Adapter
-**可见性**：层间 API，放入 `src/modem/modem_air780ep.h`，只给 Facade 模块 factory 使用
+**可见性**：层间 API，放入 `src/modem/modem_air780ep.h` 和 `src/modem/modem_ml307r.h`，只给 Facade 模块 factory 使用
 **OOP 角色**：配置结构体
 
 ```c
 typedef struct {
     gpio_num_t en_pin;                  // EN GPIO，未使用时为 GPIO_NUM_NC
-    uint32_t   reset_pulse_ms;          // 复位脉冲(EN 拉低保持)时长
-    uint32_t   ready_timeout_ms;        // AT OK 等待总超时
-    uint32_t   default_cmd_timeout_ms;  // Air780EP 命令默认超时
-    int        event_queue_size;        // Modem 事件队列长度
-    int        event_task_stack;        // Modem event task 栈大小
-    int        event_task_priority;     // Modem event task 优先级
+} modem_hardware_config_t;
+
+typedef struct {
+    uint32_t reset_pulse_ms;            // 复位脉冲(EN 拉低保持)时长
+    uint32_t ready_timeout_ms;          // AT OK 等待总超时
+    uint32_t default_cmd_timeout_ms;    // 模块命令默认超时
+} modem_timing_config_t;
+
+typedef struct {
+    int event_queue_size;               // Modem 事件队列长度
+    int event_task_stack;               // Modem event task 栈大小
+    int event_task_priority;            // Modem event task 优先级
+} modem_event_config_t;
+
+typedef struct {
+    modem_hardware_config_t hardware;   // 硬件控制
+    modem_timing_config_t timing;       // 时序参数
+    modem_event_config_t event;         // 事件任务参数
+} modem_base_config_t;
+
+typedef struct {
+    modem_base_config_t base;           // Air780EP 通用基础配置
 } modem_air780ep_config_t;
+
+typedef struct {
+    modem_base_config_t base;           // ML307R 通用基础配置
+} modem_ml307r_config_t;
 
 modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
                                const modem_air780ep_config_t *config);
+
+modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
+                                    const modem_ml307r_config_t *config);
 ```
 
 **关键设计决策**：
 - `modem_air780ep_create()` 是具体模块工厂，只应出现在 Facade 模块 factory 装配代码中。
+- `modem_ml307r_create()` 也是具体模块工厂，和 Air780EP 一样只在对应 Facade 模块 factory 中使用。
 - Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_handle_t *`。
 - GPIO 控制属于 Modem 层职责，Air780EP 实现可以直接使用 ESP-IDF `driver/gpio.h`。
 - 硬件复位通过 EN 引脚实现：拉低 EN，等待 reset_pulse_ms，再拉高 EN；随后在 ready 总超时内轮询 `AT` 到 `OK`，再执行基础 AT 初始化命令。`air780ep_start()` 和 `air780ep_reset()` 都使用此方式。
@@ -933,17 +963,30 @@ Core Service
 
 ```c
 typedef struct {
+    esp_event_loop_handle_t loop;        // 共享事件总线，NULL 使用默认 loop
+} core_event_config_t;
+
+typedef struct {
     const char *apn;                     // APN，如 "cmnet"
-    uint8_t     primary_cid;             // 主 PDP context ID，默认 1
-    uint32_t    net_activate_timeout_ms; // 网络激活总超时（毫秒），默认 120000
-    uint32_t    reconnect_delay_ms;      // 掉线重连固定延迟（毫秒），默认 5000
-    int         fsm_queue_size;          // FSM 信号队列长度
-    int         fsm_task_stack;          // FSM 任务栈大小（字节）
-    int         fsm_task_priority;       // FSM 任务优先级
+    uint8_t primary_cid;                 // 主 PDP context ID，默认 1
+    uint32_t net_activate_timeout_ms;    // 网络激活总超时（毫秒），默认 120000
+    uint32_t reconnect_delay_ms;         // 掉线重连固定延迟（毫秒），默认 5000
+} core_network_config_t;
+
+typedef struct {
+    int queue_size;                      // FSM 信号队列长度
+    int task_stack;                      // FSM 任务栈大小（字节）
+    int task_priority;                   // FSM 任务优先级
+} core_fsm_config_t;
+
+typedef struct {
+    core_event_config_t event;           // 事件总线配置
+    core_network_config_t network;       // 网络策略配置
+    core_fsm_config_t fsm;               // FSM 资源配置
 } core_config_t;
 ```
 
-Event loop 参数不放入 config，Core 内部用默认值创建。Modem 引用在 `core_create()` 参数中单独传入。Facade factory 只注入 APN、PDP 和 FSM 参数；用户通过 `lwlte_start()` 显式提交启动请求。
+Modem 引用在 `core_create()` 参数中单独传入。Facade factory 通过 `config.event.loop` 注入共享事件总线，并通过 `config.network` 与 `config.fsm` 注入 APN、PDP 和 FSM 参数；用户通过 `lwlte_start()` 显式提交启动请求。
 
 ### 3.3 `core_handle_t` — Core 句柄
 
@@ -981,7 +1024,7 @@ esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 
 **关键内部字段类别**（非完整代码快照，实际以 `src/core/core_priv.h` 为准）：
 
-- `config`：Core 层间配置快照，保存 APN、PDP 和 FSM 参数。
+- `config`：Core 层间配置快照，保存 event/network/fsm 分组参数。
 - `modem`：Facade factory 注入的 `modem_handle_t` 句柄，Core 借用但不拥有生命周期。
 - `protocol_callback`、`protocol_closed_callback`：私有同步协议数据回调槽，由 MQTT service 注册。
 - `fsm`、`net_mgr`、`pdp_mgr`：`core_handle_t` 的组合成员，分别负责信号串行化、网络激活/重连、PDP 缓存。
@@ -990,7 +1033,7 @@ esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 **关键设计决策**：
 - Core 没有 ops 多态；它不面向多种实现，只有一个实现。
 - `modem` 句柄由 Facade 模块 factory 传入，Core 不拥有 Modem 生命周期。
-- 事件总线通过 `config.event_loop` 借用（NULL = default loop），Core 不创建自己的 loop；事件直接 post 到共享总线的 `LWLTE_EVENT` base。
+- 事件总线通过 `config.event.loop` 借用（NULL = default loop），Core 不创建自己的 loop；事件直接 post 到共享总线的 `LWLTE_EVENT` base。
 - `lock` 只保护 `state`/`destroying` 等短字段访问，FSM 线程调用 `modem_*` API 时不持锁。
 - Facade 调用的 `start`、`stop` 不执行阻塞 Modem/网络流程；`core_start()` 仅在成功投递 START 时同步标记 `STARTING`，`core_stop()` 仅在成功投递 STOP 时同步标记 `stop_pending`。
 
@@ -1368,13 +1411,20 @@ Core FSM 处理 `CORE_SIG_SERVICE_CMD` 时执行 Core-owned `core_cmd_t`，按�
 /* Facade 模块 factory — Core 不依赖具体模块型号 */
 
 core_config_t core_cfg = {
-    .apn                     = "cmnet",
-    .primary_cid             = 1,
-    .net_activate_timeout_ms = 120000,
-    .reconnect_delay_ms      = 5000,
-    .fsm_queue_size          = 16,
-    .fsm_task_stack          = 4096,
-    .fsm_task_priority       = 8,
+    .event = {
+        .loop = event_loop,
+    },
+    .network = {
+        .apn                     = "cmnet",
+        .primary_cid             = 1,
+        .net_activate_timeout_ms = 120000,
+        .reconnect_delay_ms      = 5000,
+    },
+    .fsm = {
+        .queue_size              = 16,
+        .task_stack              = 4096,
+        .task_priority           = 8,
+    },
 };
 
 core_handle_t *core = core_create(&core_cfg, modem);
@@ -1428,7 +1478,7 @@ MQTT 可以直接使用 ESP-IDF / FreeRTOS API，例如 `xTaskCreate()`、`xQueu
 
 | 类 | 可见性 | 被谁使用 | OOP 角色 | 说明 |
 |----|--------|---------|---------|------|
-| `mqtt_client_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | Broker、client_id、认证、keepalive、FSM 参数 |
+| `mqtt_client_config_t` | 层间 API | Facade 模块 factory | 配置结构体 | endpoint/auth/session/fsm/event 分组配置 |
 | `mqtt_client_handle_t` | 层间 API (opaque) | Facade | service 句柄 | MQTT Client Service 实例 |
 | `mqtt_client_transport_t` | 层间 API | Facade + MQTT 内部 | 枚举 | MQTT 传输类型，第一版只支持 Plain TCP |
 | `mqtt_client_state_t` | 层间 API | Facade + MQTT 内部 | 状态枚举 | MQTT 生命周期和连接状态 |
@@ -1458,14 +1508,35 @@ typedef struct {
     mqtt_client_transport_t transport;   // 传输类型；第一版只支持 PLAIN_TCP
     const char *host;                    // Broker 主机名
     uint16_t port;                       // Broker 端口
+} mqtt_client_endpoint_config_t;
+
+typedef struct {
     const char *client_id;               // MQTT client id
     const char *username;                // 用户名，可为 NULL
     const char *password;                // 密码，可为 NULL
+} mqtt_client_auth_config_t;
+
+typedef struct {
     uint16_t keepalive_s;                // keepalive 秒数，0 使用默认值
     bool clean_session;                  // clean session 标志
-    int fsm_queue_size;                  // MQTT FSM 队列长度
-    int fsm_task_stack;                  // MQTT FSM task 栈大小
-    int fsm_task_priority;               // MQTT FSM task 优先级
+} mqtt_client_session_config_t;
+
+typedef struct {
+    int queue_size;                      // MQTT FSM 队列长度
+    int task_stack;                      // MQTT FSM task 栈大小
+    int task_priority;                   // MQTT FSM task 优先级
+} mqtt_client_fsm_config_t;
+
+typedef struct {
+    esp_event_loop_handle_t loop;        // 共享事件总线，NULL 使用默认 loop
+} mqtt_client_event_config_t;
+
+typedef struct {
+    mqtt_client_endpoint_config_t endpoint;
+    mqtt_client_auth_config_t auth;
+    mqtt_client_session_config_t session;
+    mqtt_client_fsm_config_t fsm;
+    mqtt_client_event_config_t event;
 } mqtt_client_config_t;
 ```
 
@@ -1488,7 +1559,7 @@ typedef struct {
 } lwlte_mqtt_config_t;
 ```
 
-MQTT 生命周期分为两层：`lwlte_mqtt_init()` / `lwlte_mqtt_destroy()` 管理对象创建与销毁（init↔destroy），`lwlte_mqtt_start()` / `lwlte_mqtt_stop()` 管理连接 FSM（start↔stop）。`lwlte_mqtt_init()` 在 `lwlte_*_init()` 返回句柄之后、`lwlte_destroy()` 之前任意时刻都可调用，与 `lwlte_start()` 无先后要求；MQTT 事件通过共享事件总线 `LWLTE_MQTT_EVENT` 投递，应用层通过 `esp_event_handler_register()` 注册处理函数。`lwlte_mqtt_destroy()` 从任何 FSM 状态安全调用（下层自动 stop）。若应用层未手动调用，`lwlte_destroy()` 兜底清理。`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t` 时按空字符串处理。
+MQTT 生命周期分为两层：`lwlte_mqtt_init()` / `lwlte_mqtt_destroy()` 管理对象创建与销毁（init↔destroy），`lwlte_mqtt_start()` / `lwlte_mqtt_stop()` 管理连接 FSM（start↔stop）。`lwlte_mqtt_init()` 在 `lwlte_*_init()` 返回句柄之后、`lwlte_destroy()` 之前任意时刻都可调用，与 `lwlte_start()` 无先后要求；MQTT 事件通过共享事件总线 `LWLTE_MQTT_EVENT` 投递，应用层通过 `esp_event_handler_register()` 注册处理函数。`lwlte_mqtt_destroy()` 从任何 FSM 状态安全调用（下层自动 stop）。若应用层未手动调用，`lwlte_destroy()` 兜底清理。`host`、`port`、`client_id` 必填；`username/password` 可为 `NULL`，映射到内部 `mqtt_client_config_t.auth` 时按 NULL 可选字段保存。
 
 ### 4.3 `mqtt_client_handle_t` — MQTT 客户端句柄
 
@@ -1517,7 +1588,7 @@ esp_err_t mqtt_client_publish(mqtt_client_handle_t *me,
 ```
 
 **关键内部字段类别**：
-- `config`：配置快照，包含复制后的 host、client_id、username、password，以及借用的 `event_loop`（NULL = default loop）。
+- `config`：配置快照，包含复制后的 `endpoint.host`、`auth.client_id`、`auth.username`、`auth.password`，以及借用的 `event.loop`（NULL = default loop）。
 - `core`：Facade factory 注入的 `core_handle_t` 句柄，MQTT 借用但不拥有生命周期。
 - `fsm_task`、`fsm_queue`、`fsm_task_done_sema`：MQTT 独立状态机线程和信号队列。
 - `state`、`connect_step`、`pending_cmd`：MQTT 生命周期、连接子步骤和等待中的 Core command。

@@ -19,6 +19,8 @@ CORE_FSM_C = ROOT / "src/core/core_fsm.c"
 NET_MGR_C = ROOT / "src/core/net_mgr.c"
 LWLTE_H = ROOT / "src/include/lwlte.h"
 LWLTE_C = ROOT / "src/lwlte/lwlte.c"
+LWLTE_AIR780EP_C = ROOT / "src/lwlte/lwlte_air780ep.c"
+LWLTE_ML307R_C = ROOT / "src/lwlte/lwlte_ml307r.c"
 
 
 def function_body(source: str, signature: str) -> str:
@@ -74,6 +76,8 @@ class LwlteStartStopContractTest(unittest.TestCase):
         cls.net_mgr_c = NET_MGR_C.read_text(encoding="utf-8")
         cls.lwlte_h = LWLTE_H.read_text(encoding="utf-8")
         cls.lwlte_c = LWLTE_C.read_text(encoding="utf-8")
+        cls.lwlte_air780ep_c = LWLTE_AIR780EP_C.read_text(encoding="utf-8")
+        cls.lwlte_ml307r_c = LWLTE_ML307R_C.read_text(encoding="utf-8")
 
     # ---- Task 1: modem base ----
     def test_modem_has_off_state(self):
@@ -94,8 +98,8 @@ class LwlteStartStopContractTest(unittest.TestCase):
     # ---- Task 2: air780ep ----
     def test_air780ep_power_off_helper(self):
         body = function_body(self.air780ep_c, "static esp_err_t hardware_power_off(modem_air780ep_t *self)")
-        contains(self, body, "gpio_set_level(self->config.en_pin, 0)", "air780ep hardware_power_off")
-        absent(self, body, "gpio_set_level(self->config.en_pin, 1)", "air780ep hardware_power_off")
+        contains(self, body, "gpio_set_level(self->config.base.hardware.en_pin, 0)", "air780ep hardware_power_off")
+        absent(self, body, "gpio_set_level(self->config.base.hardware.en_pin, 1)", "air780ep hardware_power_off")
 
     def test_air780ep_stop_impl(self):
         body = function_body(self.air780ep_c, "static esp_err_t air780ep_stop(modem_handle_t *me)")
@@ -116,8 +120,28 @@ class LwlteStartStopContractTest(unittest.TestCase):
     # ---- Task 3: ml307r ----
     def test_ml307r_power_off_helper(self):
         body = function_body(self.ml307r_c, "static esp_err_t hardware_power_off(modem_ml307r_t *self)")
-        contains(self, body, "gpio_set_level(self->config.en_pin, 0)", "ml307r hardware_power_off")
-        absent(self, body, "gpio_set_level(self->config.en_pin, 1)", "ml307r hardware_power_off")
+        contains(self, body, "gpio_set_level(self->config.base.hardware.en_pin, 0)", "ml307r hardware_power_off")
+        absent(self, body, "gpio_set_level(self->config.base.hardware.en_pin, 1)", "ml307r hardware_power_off")
+
+    def test_facade_modem_initializers_use_grouped_config(self):
+        for source, label in [
+            (self.lwlte_air780ep_c, "lwlte_air780ep.c"),
+            (self.lwlte_ml307r_c, "lwlte_ml307r.c"),
+        ]:
+            for token in [
+                ".base = {",
+                ".hardware = {",
+                ".en_pin = config->base.modem.en_pin",
+                ".timing = {",
+                ".reset_pulse_ms = config->base.modem.reset_pulse_ms",
+                ".ready_timeout_ms = config->base.modem.ready_timeout_ms",
+                ".default_cmd_timeout_ms = config->base.modem.default_cmd_timeout_ms",
+                ".event = {",
+                ".event_queue_size = config->base.modem.event_queue_size",
+                ".event_task_stack = config->base.modem.event_task_stack",
+                ".event_task_priority = config->base.modem.event_task_priority",
+            ]:
+                contains(self, source, token, label)
 
     def test_ml307r_stop_impl(self):
         body = function_body(self.ml307r_c, "static esp_err_t ml307r_stop(modem_handle_t *me)")

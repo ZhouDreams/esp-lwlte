@@ -55,20 +55,22 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
     ESP_RETURN_ON_ERROR(ret, TAG, "create facade failed");
 
     const at_engine_config_t at_config = {
-        /* uart 组 */
-        .uart_num = config->base.uart.num,
-        .tx_pin = config->base.uart.tx_pin,
-        .rx_pin = config->base.uart.rx_pin,
-        .baud_rate = config->base.uart.baud_rate,
-        /* at_engine 组 */
-        .rx_buf_size = config->base.at_engine.rx_buf_size,
-        .rx_task_stack = config->base.at_engine.rx_task_stack,
-        .rx_task_priority = config->base.at_engine.rx_task_priority,
-        .rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?
-                             config->base.at_engine.rx_line_buf_size :
-                             LWLTE_ML307R_DEFAULT_AT_LINE_BUF_SIZE,
-        .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
-        .max_response_lines = config->base.at_engine.max_response_lines,
+        .uart = {
+            .uart_num = config->base.uart.num,
+            .tx_pin = config->base.uart.tx_pin,
+            .rx_pin = config->base.uart.rx_pin,
+            .baud_rate = config->base.uart.baud_rate,
+            .rx_buf_size = config->base.at_engine.rx_buf_size,
+        },
+        .runtime = {
+            .rx_task_stack = config->base.at_engine.rx_task_stack,
+            .rx_task_priority = config->base.at_engine.rx_task_priority,
+            .rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?
+                                config->base.at_engine.rx_line_buf_size :
+                                LWLTE_ML307R_DEFAULT_AT_LINE_BUF_SIZE,
+            .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
+            .max_response_lines = config->base.at_engine.max_response_lines,
+        },
     };
     me->at = at_engine_create(&at_config);
     if (!me->at) {
@@ -77,13 +79,21 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
     }
 
     const modem_ml307r_config_t modem_config = {
-        .en_pin = config->base.modem.en_pin,
-        .reset_pulse_ms = config->base.modem.reset_pulse_ms,
-        .ready_timeout_ms = config->base.modem.ready_timeout_ms,
-        .default_cmd_timeout_ms = config->base.modem.default_cmd_timeout_ms,
-        .event_queue_size = config->base.modem.event_queue_size,
-        .event_task_stack = config->base.modem.event_task_stack,
-        .event_task_priority = config->base.modem.event_task_priority,
+        .base = {
+            .hardware = {
+                .en_pin = config->base.modem.en_pin,
+            },
+            .timing = {
+                .reset_pulse_ms = config->base.modem.reset_pulse_ms,
+                .ready_timeout_ms = config->base.modem.ready_timeout_ms,
+                .default_cmd_timeout_ms = config->base.modem.default_cmd_timeout_ms,
+            },
+            .event = {
+                .event_queue_size = config->base.modem.event_queue_size,
+                .event_task_stack = config->base.modem.event_task_stack,
+                .event_task_priority = config->base.modem.event_task_priority,
+            },
+        },
     };
     me->modem = modem_ml307r_create(me->at, &modem_config);
     if (!me->modem) {
@@ -94,14 +104,20 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
     me->event_loop = config->base.event.loop;   /* NULL = use default loop */
 
     const core_config_t core_config = {
-        .apn = config->base.core.apn ? config->base.core.apn : "",
-        .primary_cid = config->base.core.primary_cid,
-        .net_activate_timeout_ms = config->base.core.net_activate_timeout_ms,
-        .reconnect_delay_ms = config->base.core.reconnect_delay_ms,
-        .fsm_queue_size = config->base.core.fsm_queue_size,
-        .fsm_task_stack = config->base.core.fsm_task_stack,
-        .fsm_task_priority = config->base.core.fsm_task_priority,
-        .event_loop = me->event_loop,
+        .event = {
+            .loop = me->event_loop,
+        },
+        .network = {
+            .apn = config->base.core.apn ? config->base.core.apn : "",
+            .primary_cid = config->base.core.primary_cid,
+            .net_activate_timeout_ms = config->base.core.net_activate_timeout_ms,
+            .reconnect_delay_ms = config->base.core.reconnect_delay_ms,
+        },
+        .fsm = {
+            .queue_size = config->base.core.fsm_queue_size,
+            .task_stack = config->base.core.fsm_task_stack,
+            .task_priority = config->base.core.fsm_task_priority,
+        },
     };
     me->core = core_create(&core_config, me->modem);
     if (!me->core) {

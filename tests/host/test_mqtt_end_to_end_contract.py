@@ -363,13 +363,13 @@ class MqttEndToEndContractTest(unittest.TestCase):
             self.mqtt_c.index("static esp_err_t begin_connect", mqtt_submit_start)
         ]
         for token in [
-            "cmd.data.mqtt_config.client_id = me->config.client_id;",
-            "cmd.data.mqtt_config.username = me->config.username;",
-            "cmd.data.mqtt_config.password = me->config.password;",
-            "cmd.data.mqtt_config.host = me->config.host;",
-            "cmd.data.mqtt_config.port = me->config.port;",
-            "cmd.data.mqtt_config.clean_session = me->config.clean_session;",
-            "cmd.data.mqtt_config.keepalive_s = me->config.keepalive_s;",
+            "cmd.data.mqtt_config.client_id = me->config.auth.client_id;",
+            "cmd.data.mqtt_config.username = me->config.auth.username;",
+            "cmd.data.mqtt_config.password = me->config.auth.password;",
+            "cmd.data.mqtt_config.host = me->config.endpoint.host;",
+            "cmd.data.mqtt_config.port = me->config.endpoint.port;",
+            "cmd.data.mqtt_config.clean_session = me->config.session.clean_session;",
+            "cmd.data.mqtt_config.keepalive_s = me->config.session.keepalive_s;",
         ]:
             self.assertIn(token, mqtt_submit_body)
 
@@ -715,12 +715,59 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIn("write_payload", self.at_engine_c)
         self.assertIn("uart_write_bytes", self.at_engine_c)
 
-    def test_at_engine_uses_config_uart_num_as_single_source(self):
+    def test_at_engine_uses_grouped_config_as_single_source(self):
         match = re.search(r"struct\s+at_engine_handle\s*\{(?P<body>[\s\S]*?)\};", self.at_engine_c)
         self.assertIsNotNone(match, "missing struct at_engine definition")
         body = match.group("body")
         self.assertNotIn("uart_port_t uart_num", body)
-        self.assertIn("me->config.uart_num", self.at_engine_c)
+        for token in [
+            "} at_engine_uart_config_t;",
+            "} at_engine_runtime_config_t;",
+            "at_engine_uart_config_t uart;",
+            "at_engine_runtime_config_t runtime;",
+            "me->config.uart.uart_num",
+            "me->config.uart.rx_buf_size",
+            "me->config.runtime.rx_task_stack",
+            "me->config.runtime.rx_line_buf_size",
+            "me->config.runtime.max_response_lines",
+        ]:
+            self.assertIn(token, self.at_engine_h + self.at_engine_c)
+
+    def test_core_uses_grouped_config_as_single_source(self):
+        for token in [
+            "} core_event_config_t;",
+            "} core_network_config_t;",
+            "} core_fsm_config_t;",
+            "core_event_config_t event;",
+            "core_network_config_t network;",
+            "core_fsm_config_t fsm;",
+            "me->config.event.loop",
+            "me->config.network.apn",
+            "me->config.network.primary_cid",
+            "me->config.fsm.queue_size",
+        ]:
+            self.assertIn(token, self.core_h + self.core_c + self.core_fsm_c)
+
+    def test_mqtt_client_uses_grouped_config_as_single_source(self):
+        for token in [
+            "} mqtt_client_endpoint_config_t;",
+            "} mqtt_client_auth_config_t;",
+            "} mqtt_client_session_config_t;",
+            "} mqtt_client_fsm_config_t;",
+            "} mqtt_client_event_config_t;",
+            "mqtt_client_endpoint_config_t endpoint;",
+            "mqtt_client_auth_config_t auth;",
+            "mqtt_client_session_config_t session;",
+            "mqtt_client_fsm_config_t fsm;",
+            "mqtt_client_event_config_t event;",
+            "config->endpoint.host",
+            "config->endpoint.port",
+            "config->auth.client_id",
+            "config->endpoint.transport",
+            "me->config.event.loop",
+            "me->config.fsm.queue_size",
+        ]:
+            self.assertIn(token, self.mqtt_h + self.mqtt_c)
 
     def test_protocol_data_path_symbols_exist(self):
         self.assertIn("MODEM_EVENT_PROTOCOL_DATA", self.air780ep_c)
@@ -753,6 +800,27 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "mqtt_client_create(&mqtt_config, core)",
         ]:
             self.assertIn(token, self.lwlte_c)
+
+        for token in [
+            ".endpoint = {",
+            ".transport = MQTT_CLIENT_TRANSPORT_PLAIN_TCP",
+            ".host = config->host",
+            ".port = config->port",
+            ".auth = {",
+            ".client_id = config->client_id",
+            ".username = config->username",
+            ".password = config->password",
+            ".session = {",
+            ".keepalive_s = config->keepalive_s",
+            ".clean_session = config->clean_session",
+            ".fsm = {",
+            ".queue_size = config->fsm_queue_size",
+            ".task_stack = config->fsm_task_stack",
+            ".task_priority = config->fsm_task_priority",
+            ".event = {",
+            ".loop = me->event_loop",
+        ]:
+            self.assertIn(token, api_body)
 
         for forbidden in [
             "core_submit_cmd",
@@ -850,13 +918,43 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "modem_air780ep_create(me->at, &modem_config)",
             "core_create(&core_config, me->modem)",
             "me->event_loop = config->base.event.loop",
-            ".event_loop = me->event_loop",
             "esp_event_handler_register_with(me->event_loop, LWLTE_EVENT,",
             "facade_ready_handler, me",
             "ping_client_create(me->core)",
             "cleanup_after_failure(me, ret)",
         ]:
             self.assertIn(token, init_body)
+
+        for token in [
+            ".uart = {",
+            ".uart_num = config->base.uart.num",
+            ".tx_pin = config->base.uart.tx_pin",
+            ".rx_pin = config->base.uart.rx_pin",
+            ".baud_rate = config->base.uart.baud_rate",
+            ".rx_buf_size = config->base.at_engine.rx_buf_size",
+            ".runtime = {",
+            ".rx_task_stack = config->base.at_engine.rx_task_stack",
+            ".rx_task_priority = config->base.at_engine.rx_task_priority",
+            ".rx_line_buf_size = config->base.at_engine.rx_line_buf_size",
+            ".cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms",
+            ".max_response_lines = config->base.at_engine.max_response_lines",
+        ]:
+            self.assertIn(token, self.lwlte_air780ep_c)
+
+        for token in [
+            ".event = {",
+            ".loop = me->event_loop",
+            ".network = {",
+            ".apn = config->base.core.apn ? config->base.core.apn : \"\"",
+            ".primary_cid = config->base.core.primary_cid",
+            ".net_activate_timeout_ms = config->base.core.net_activate_timeout_ms",
+            ".reconnect_delay_ms = config->base.core.reconnect_delay_ms",
+            ".fsm = {",
+            ".queue_size = config->base.core.fsm_queue_size",
+            ".task_stack = config->base.core.fsm_task_stack",
+            ".task_priority = config->base.core.fsm_task_priority",
+        ]:
+            self.assertIn(token, self.lwlte_air780ep_c)
 
         self.assertNotIn("core_register_event_callback", self.lwlte_air780ep_c)
         self.assertNotIn("mqtt_client_register_event_callback", self.lwlte_air780ep_c)

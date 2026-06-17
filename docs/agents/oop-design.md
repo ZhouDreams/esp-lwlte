@@ -209,9 +209,9 @@ static esp_err_t air780ep_object_init(modem_air780ep_t *me,
     me->last_reg_status = MODEM_REG_UNKNOWN;
 
     esp_err_t ret = modem_base_init(&me->base, "air780ep", at, &air780ep_ops,
-                                    config->event_queue_size,
-                                    config->event_task_stack,
-                                    config->event_task_priority);
+                                    config->base.event.event_queue_size,
+                                    config->base.event.event_task_stack,
+                                    config->base.event.event_task_priority);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -650,7 +650,7 @@ core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem)
 
     me->config = *config;
     me->modem = modem;
-    me->fsm.queue = xQueueCreate(config->fsm_queue_size, sizeof(core_fsm_sig_t));
+    me->fsm.queue = xQueueCreate(config->fsm.queue_size, sizeof(core_fsm_sig_t));
     if (!me->fsm.queue) {
         free(me);
         return NULL;
@@ -772,9 +772,9 @@ modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
     if (!self) return NULL;
 
     esp_err_t ret = modem_base_init(&self->base, "air780ep", at, &air780ep_ops,
-                                    config->event_queue_size,
-                                    config->event_task_stack,
-                                    config->event_task_priority);
+                                    config->base.event.event_queue_size,
+                                    config->base.event.event_task_stack,
+                                    config->base.event.event_task_priority);
     if (ret != ESP_OK) {
         free(self);
         return NULL;

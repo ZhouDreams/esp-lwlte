@@ -139,8 +139,14 @@ App:    业务响应（重连、告警、降级等）
 ```c
 /* Facade factory：具体模块工厂保存 AT Engine 句柄，Core 不看到具体类型。 */
 modem_air780ep_config_t modem_cfg = {
-    .default_cmd_timeout_ms = 3000,
-    .event_queue_size       = 8,
+    .base = {
+        .timing = {
+            .default_cmd_timeout_ms = 3000,
+        },
+        .event = {
+            .event_queue_size = 8,
+        },
+    },
 };
 modem_handle_t *modem = modem_air780ep_create(at, &modem_cfg);
 
@@ -172,17 +178,28 @@ AT Engine 是内部最底层，直接操作 UART 硬件。
 
 AT Engine 是一个"聪明的邮差"：会按地址送信、收信，并在没有当前命令时识别加急件（URC），但从不拆信看内容。同时它也负责维护邮路（UART 硬件）本身。
 
-AT Engine 的配置直接包含 UART 硬件参数：
+AT Engine 的配置按 UART 硬件和运行参数分组：
 
 ```c
 typedef struct {
-    uart_port_t uart_num;        // UART 端口号（如 UART_NUM_1）
-    int tx_pin;                  // TX GPIO
-    int rx_pin;                  // RX GPIO
-    int baud_rate;               // 波特率（如 115200）
-    int rx_buf_size;             // 接收缓冲区大小
-    int rx_task_stack;           // 接收任务栈大小
-    int rx_task_priority;        // 接收任务优先级
+    uart_port_t uart_num;         // UART 端口号（如 UART_NUM_1）
+    int tx_pin;                   // TX GPIO
+    int rx_pin;                   // RX GPIO
+    int baud_rate;                // 波特率（如 115200）
+    int rx_buf_size;              // UART RX 环形缓冲区大小
+} at_engine_uart_config_t;
+
+typedef struct {
+    int rx_task_stack;            // 接收任务栈大小
+    int rx_task_priority;         // 接收任务优先级
+    int rx_line_buf_size;         // 单行最大长度
+    int cmd_default_timeout_ms;   // 默认命令超时
+    int max_response_lines;       // 单次响应最大行数
+} at_engine_runtime_config_t;
+
+typedef struct {
+    at_engine_uart_config_t uart;
+    at_engine_runtime_config_t runtime;
 } at_engine_config_t;
 ```
 
@@ -377,45 +394,63 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
                               lwlte_handle_t **out_lte)
 {
     /* 1. 底：创建 AT Engine（直接传入 UART 硬件和 AT 引擎调优配置） */
-    at_engine_config_t at_cfg = {
-        .uart_num               = config->base.uart.num,
-        .tx_pin                 = config->base.uart.tx_pin,
-        .rx_pin                 = config->base.uart.rx_pin,
-        .baud_rate              = config->base.uart.baud_rate,
-        .rx_buf_size            = config->base.at_engine.rx_buf_size,
-        .rx_task_stack          = config->base.at_engine.rx_task_stack,
-        .rx_task_priority       = config->base.at_engine.rx_task_priority,
-        .rx_line_buf_size       = config->base.at_engine.rx_line_buf_size,
-        .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
-        .max_response_lines     = config->base.at_engine.max_response_lines,
+    const at_engine_config_t at_cfg = {
+        .uart = {
+            .uart_num = config->base.uart.num,
+            .tx_pin = config->base.uart.tx_pin,
+            .rx_pin = config->base.uart.rx_pin,
+            .baud_rate = config->base.uart.baud_rate,
+            .rx_buf_size = config->base.at_engine.rx_buf_size,
+        },
+        .runtime = {
+            .rx_task_stack = config->base.at_engine.rx_task_stack,
+            .rx_task_priority = config->base.at_engine.rx_task_priority,
+            .rx_line_buf_size = config->base.at_engine.rx_line_buf_size,
+            .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
+            .max_response_lines = config->base.at_engine.max_response_lines,
+        },
     };
     at_engine_handle_t *at = at_engine_create(&at_cfg);
     if (!at) return ESP_FAIL;
 
     /* 2. 模块适配（换模块只需换这一组配置和工厂） */
-    modem_air780ep_config_t modem_cfg = {
-        .en_pin                 = config->base.modem.en_pin,
-        .reset_pulse_ms         = config->base.modem.reset_pulse_ms,
-        .ready_timeout_ms       = config->base.modem.ready_timeout_ms,
-        .default_cmd_timeout_ms = config->base.modem.default_cmd_timeout_ms,
-        .event_queue_size       = config->base.modem.event_queue_size,
-        .event_task_stack       = config->base.modem.event_task_stack,
-        .event_task_priority    = config->base.modem.event_task_priority,
+    const modem_air780ep_config_t modem_cfg = {
+        .base = {
+            .hardware = {
+                .en_pin = config->base.modem.en_pin,
+            },
+            .timing = {
+                .reset_pulse_ms = config->base.modem.reset_pulse_ms,
+                .ready_timeout_ms = config->base.modem.ready_timeout_ms,
+                .default_cmd_timeout_ms = config->base.modem.default_cmd_timeout_ms,
+            },
+            .event = {
+                .event_queue_size = config->base.modem.event_queue_size,
+                .event_task_stack = config->base.modem.event_task_stack,
+                .event_task_priority = config->base.modem.event_task_priority,
+            },
+        },
     };
     modem_handle_t *modem = modem_air780ep_create(at, &modem_cfg);
     if (!modem) goto err_at;
 
     /* 3. 核心服务：启动请求由 lwlte_start() 异步提交给 Core。 */
     esp_event_loop_handle_t event_loop = config->base.event.loop;
-    core_config_t core_cfg = {
-        .apn                     = config->base.core.apn ? config->base.core.apn : "",
-        .primary_cid             = config->base.core.primary_cid,
-        .net_activate_timeout_ms = config->base.core.net_activate_timeout_ms,
-        .reconnect_delay_ms      = config->base.core.reconnect_delay_ms,
-        .fsm_queue_size          = config->base.core.fsm_queue_size,
-        .fsm_task_stack          = config->base.core.fsm_task_stack,
-        .fsm_task_priority       = config->base.core.fsm_task_priority,
-        .event_loop              = event_loop,
+    const core_config_t core_cfg = {
+        .event = {
+            .loop = event_loop,
+        },
+        .network = {
+            .apn = config->base.core.apn ? config->base.core.apn : "",
+            .primary_cid = config->base.core.primary_cid,
+            .net_activate_timeout_ms = config->base.core.net_activate_timeout_ms,
+            .reconnect_delay_ms = config->base.core.reconnect_delay_ms,
+        },
+        .fsm = {
+            .queue_size = config->base.core.fsm_queue_size,
+            .task_stack = config->base.core.fsm_task_stack,
+            .task_priority = config->base.core.fsm_task_priority,
+        },
     };
     core_handle_t *core = core_create(&core_cfg, modem);
     if (!core) goto err_modem;

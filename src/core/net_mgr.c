@@ -245,7 +245,7 @@ esp_err_t net_mgr_init(core_handle_t *me)
 
     me->net_mgr.current_step = NET_STEP_IDLE;
     me->net_mgr.step_start_time_ms = 0;
-    me->net_mgr.step_timeout_ms = me->config.net_activate_timeout_ms;
+    me->net_mgr.step_timeout_ms = me->config.network.net_activate_timeout_ms;
     me->net_mgr.retry_count = 0;
     me->net_mgr.max_retry = CORE_NET_MAX_RETRY;
     me->net_mgr.state = CORE_NET_STATE_OFFLINE;
@@ -256,7 +256,7 @@ esp_err_t net_mgr_init(core_handle_t *me)
                         "create reconnect_cb_done_sema failed");
 
     me->net_mgr.reconnect_timer = xTimerCreate("core_reconn",
-                                                pdMS_TO_TICKS(me->config.reconnect_delay_ms),
+                                                pdMS_TO_TICKS(me->config.network.reconnect_delay_ms),
                                                 pdFALSE, me, reconnect_timer_cb);
     if (!me->net_mgr.reconnect_timer) {
         vSemaphoreDelete(me->net_mgr.reconnect_cb_done_sema);
@@ -426,13 +426,13 @@ esp_err_t net_mgr_deactivate(core_handle_t *me)
     if (old_state == CORE_NET_STATE_ONLINE ||
         old_state == CORE_NET_STATE_ACTIVATING ||
         old_state == CORE_NET_STATE_ERROR) {
-        esp_err_t ret = modem_deactivate_pdp(me->modem, me->config.primary_cid);
+        esp_err_t ret = modem_deactivate_pdp(me->modem, me->config.network.primary_cid);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "deactivate PDP failed: %s", esp_err_to_name(ret));
         }
     }
 
-    pdp_mgr_set_active(&me->pdp_mgr, me->config.primary_cid, false);
+    pdp_mgr_set_active(&me->pdp_mgr, me->config.network.primary_cid, false);
     esp_err_t state_ret = net_mgr_set_state(me, CORE_NET_STATE_OFFLINE);
     if (state_ret != ESP_OK) {
         return state_ret;
@@ -489,7 +489,7 @@ esp_err_t net_mgr_handle_pdp_deactivated(core_handle_t *me,
     ESP_RETURN_ON_ERROR(ret, TAG, "get net state failed");
 
     pdp_mgr_update(&me->pdp_mgr, pdp);
-    pdp_mgr_set_active(&me->pdp_mgr, me->config.primary_cid, false);
+    pdp_mgr_set_active(&me->pdp_mgr, me->config.network.primary_cid, false);
     if (old_state == CORE_NET_STATE_OFFLINE) {
         return ESP_OK;
     }
@@ -561,7 +561,7 @@ static esp_err_t wait_timer_service_idle(void)
 static bool activation_timed_out(core_handle_t *me, uint32_t activation_start_ms)
 {
     return me &&
-           now_ms() - activation_start_ms >= me->config.net_activate_timeout_ms;
+           now_ms() - activation_start_ms >= me->config.network.net_activate_timeout_ms;
 }
 
 static esp_err_t check_activation_continue(core_handle_t *me,
@@ -746,9 +746,9 @@ static esp_err_t run_activation_step(core_handle_t *me,
     }
 
     case NET_STEP_SET_APN:
-        if (me->config.apn[0] != '\0') {
-            ret = modem_set_apn(me->modem, me->config.primary_cid,
-                                me->config.apn);
+        if (me->config.network.apn[0] != '\0') {
+            ret = modem_set_apn(me->modem, me->config.network.primary_cid,
+                                me->config.network.apn);
             continue_ret = check_activation_continue(me, activation_start_ms);
             if (continue_ret != ESP_OK) {
                 return continue_ret;
@@ -761,11 +761,11 @@ static esp_err_t run_activation_step(core_handle_t *me,
         return ESP_OK;
 
     case NET_STEP_ACTIVATE_PDP:
-        ret = modem_activate_pdp(me->modem, me->config.primary_cid);
+        ret = modem_activate_pdp(me->modem, me->config.network.primary_cid);
         continue_ret = check_activation_continue(me, activation_start_ms);
         if (continue_ret == ESP_ERR_TIMEOUT) {
             esp_err_t cleanup_ret = modem_deactivate_pdp(me->modem,
-                                                         me->config.primary_cid);
+                                                         me->config.network.primary_cid);
             if (cleanup_ret != ESP_OK) {
                 ESP_LOGW(TAG, "cleanup after PDP activation failed: %s",
                          esp_err_to_name(cleanup_ret));
@@ -781,7 +781,7 @@ static esp_err_t run_activation_step(core_handle_t *me,
         }
         if (ret != ESP_OK) {
             esp_err_t cleanup_ret = modem_deactivate_pdp(me->modem,
-                                                         me->config.primary_cid);
+                                                         me->config.network.primary_cid);
             if (cleanup_ret != ESP_OK) {
                 ESP_LOGW(TAG, "cleanup after PDP activation failed: %s",
                          esp_err_to_name(cleanup_ret));
@@ -797,7 +797,7 @@ static esp_err_t run_activation_step(core_handle_t *me,
 
     case NET_STEP_QUERY_IP: {
         modem_pdp_context_t pdp = {0};
-        ret = modem_get_pdp_context(me->modem, me->config.primary_cid, &pdp);
+        ret = modem_get_pdp_context(me->modem, me->config.network.primary_cid, &pdp);
         continue_ret = check_activation_continue(me, activation_start_ms);
         if (continue_ret != ESP_OK) {
             return continue_ret;
@@ -842,7 +842,7 @@ static esp_err_t wait_next_poll(core_handle_t *me, uint32_t activation_start_ms)
         return ret;
     }
 
-    const uint32_t timeout_ms = me->config.net_activate_timeout_ms;
+    const uint32_t timeout_ms = me->config.network.net_activate_timeout_ms;
     const uint32_t elapsed_ms = now_ms() - activation_start_ms;
     if (elapsed_ms >= timeout_ms) {
         return ESP_ERR_TIMEOUT;
@@ -979,7 +979,7 @@ static bool registration_denied(modem_reg_status_t status)
 
 static bool is_primary_pdp(core_handle_t *me, const modem_pdp_context_t *pdp)
 {
-    return me && pdp && pdp->cid == me->config.primary_cid;
+    return me && pdp && pdp->cid == me->config.network.primary_cid;
 }
 
 static void post_net_state(core_handle_t *me, lwlte_event_id_t event_id,

@@ -475,8 +475,8 @@ esp_err_t core_post_event(core_handle_t *me, lwlte_event_id_t event_id,
     }
 
     esp_err_t ret;
-    if (me->config.event_loop) {
-        ret = esp_event_post_to(me->config.event_loop, LWLTE_EVENT,
+    if (me->config.event.loop) {
+        ret = esp_event_post_to(me->config.event.loop, LWLTE_EVENT,
                                 event_id, data, sizeof(*data), 0);
     } else {
         ret = esp_event_post(LWLTE_EVENT, event_id, data, sizeof(*data), 0);
@@ -500,41 +500,41 @@ void core_free_cmd(core_cmd_t *cmd)
  **********************/
 static bool config_valid(const core_config_t *config, modem_handle_t *modem)
 {
-    return config && modem && config->apn &&
-           config->primary_cid <= CORE_MAX_PDP_CONTEXTS;
+    return config && modem && config->network.apn &&
+           config->network.primary_cid <= CORE_MAX_PDP_CONTEXTS;
 }
 
 static esp_err_t normalize_config(const core_config_t *config,
                                   core_config_t *normalized)
 {
-    ESP_RETURN_ON_FALSE(config && normalized && config->apn,
+    ESP_RETURN_ON_FALSE(config && normalized && config->network.apn,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
-    size_t apn_len = strlen(config->apn) + 1;
+    size_t apn_len = strlen(config->network.apn) + 1;
     char *apn = malloc(apn_len);
     ESP_RETURN_ON_FALSE(apn, ESP_ERR_NO_MEM, TAG, "copy APN failed");
 
-    memcpy(apn, config->apn, apn_len);
+    memcpy(apn, config->network.apn, apn_len);
     *normalized = *config;
-    normalized->apn = apn;
+    normalized->network.apn = apn;
 
-    if (normalized->primary_cid == 0) {
-        normalized->primary_cid = CORE_DEFAULT_PRIMARY_CID;
+    if (normalized->network.primary_cid == 0) {
+        normalized->network.primary_cid = CORE_DEFAULT_PRIMARY_CID;
     }
-    if (normalized->net_activate_timeout_ms == 0) {
-        normalized->net_activate_timeout_ms = CORE_DEFAULT_NET_ACTIVATE_TIMEOUT_MS;
+    if (normalized->network.net_activate_timeout_ms == 0) {
+        normalized->network.net_activate_timeout_ms = CORE_DEFAULT_NET_ACTIVATE_TIMEOUT_MS;
     }
-    if (normalized->reconnect_delay_ms == 0) {
-        normalized->reconnect_delay_ms = CORE_DEFAULT_RECONNECT_DELAY_MS;
+    if (normalized->network.reconnect_delay_ms == 0) {
+        normalized->network.reconnect_delay_ms = CORE_DEFAULT_RECONNECT_DELAY_MS;
     }
-    if (normalized->fsm_queue_size <= 0) {
-        normalized->fsm_queue_size = CORE_DEFAULT_FSM_QUEUE_SIZE;
+    if (normalized->fsm.queue_size <= 0) {
+        normalized->fsm.queue_size = CORE_DEFAULT_FSM_QUEUE_SIZE;
     }
-    if (normalized->fsm_task_stack <= 0) {
-        normalized->fsm_task_stack = CORE_DEFAULT_FSM_TASK_STACK;
+    if (normalized->fsm.task_stack <= 0) {
+        normalized->fsm.task_stack = CORE_DEFAULT_FSM_TASK_STACK;
     }
-    if (normalized->fsm_task_priority <= 0) {
-        normalized->fsm_task_priority = CORE_DEFAULT_FSM_TASK_PRIORITY;
+    if (normalized->fsm.task_priority <= 0) {
+        normalized->fsm.task_priority = CORE_DEFAULT_FSM_TASK_PRIORITY;
     }
 
     return ESP_OK;
@@ -648,7 +648,7 @@ static esp_err_t core_init(core_handle_t *me, const core_config_t *config,
         goto err;
     }
 
-    ret = pdp_mgr_init(&me->pdp_mgr, me->config.primary_cid);
+    ret = pdp_mgr_init(&me->pdp_mgr, me->config.network.primary_cid);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "init PDP manager failed: %s", esp_err_to_name(ret));
         goto err;
@@ -709,8 +709,8 @@ static esp_err_t core_deinit(core_handle_t *me)
     me->protocol_user_ctx = NULL;
     me->protocol_closed_callback = NULL;
     me->protocol_closed_user_ctx = NULL;
-    free((void *)me->config.apn);
-    me->config.apn = NULL;
+    free((void *)me->config.network.apn);
+    me->config.network.apn = NULL;
     if (me->lock) {
         vSemaphoreDelete(me->lock);
         me->lock = NULL;
@@ -729,7 +729,7 @@ static bool core_deinit_complete(const core_handle_t *me)
            !me->fsm.queue && !me->fsm.task_done_sema &&
            !me->net_mgr.reconnect_timer &&
            !me->net_mgr.reconnect_cb_done_sema &&
-           !me->lock && !me->config.apn;
+           !me->lock && !me->config.network.apn;
 }
 
 static esp_err_t core_unregister_modem_callback(core_handle_t *me)

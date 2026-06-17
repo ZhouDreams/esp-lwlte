@@ -493,8 +493,8 @@ class PingEndToEndContractTest(unittest.TestCase):
         )
         self.assertRegex(
             normalize_body,
-            r"else\s+if\s*\(\s*out->max_response_lines\s*<\s*AT_ENGINE_DEFAULT_MAX_RESP_LINES\s*\)[\s\S]*"
-            r"out->max_response_lines\s*=\s*AT_ENGINE_DEFAULT_MAX_RESP_LINES\s*;",
+            r"else\s+if\s*\(\s*out->runtime\.max_response_lines\s*<\s*AT_ENGINE_DEFAULT_MAX_RESP_LINES\s*\)[\s\S]*"
+            r"out->runtime\.max_response_lines\s*=\s*AT_ENGINE_DEFAULT_MAX_RESP_LINES\s*;",
         )
         self.assertNotRegex(
             normalize_body,

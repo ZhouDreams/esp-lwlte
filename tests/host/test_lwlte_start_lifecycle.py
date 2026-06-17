@@ -157,8 +157,29 @@ class LwlteStartLifecycleContractTest(unittest.TestCase):
             "LWLTE_EVENT_NET_ONLINE",
             "modem_start",
             "PDP",
+            "at_engine_uart_config_t",
+            "at_engine_runtime_config_t",
+            "modem_base_config_t",
+            "core_event_config_t",
+            "core_network_config_t",
+            "core_fsm_config_t",
+            "mqtt_client_endpoint_config_t",
+            "mqtt_client_auth_config_t",
+            "mqtt_client_session_config_t",
+            "config.event.loop",
         ]:
             assert_contains(self, docs, token, "docs")
+        assert_not_contains(self, docs, "Event loop 参数不放入 config", "docs")
+        at_handle_match = re.search(
+            r"struct at_engine_handle\s*\{(?P<body>.*?)\n\};",
+            self.classes_doc,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(at_handle_match, "documented at_engine_handle struct")
+        self.assertIsNone(
+            re.search(r"\buart_port_t\s+uart_num\s*;", at_handle_match.group("body")),
+            "documented at_engine_handle must use config.uart.uart_num, not a separate uart_num field",
+        )
         forbidden_patterns = [
             r"auto_connect\s*=\s*true",
             r"auto_connect\s*=\s*false",

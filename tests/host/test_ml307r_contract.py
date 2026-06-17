@@ -11,6 +11,7 @@ LWLTE_H = ROOT / "src/include/lwlte.h"
 SRC_CMAKE = ROOT / "src/CMakeLists.txt"
 ML307R_H = ROOT / "src/modem/modem_ml307r.h"
 ML307R_C = ROOT / "src/modem/modem_ml307r.c"
+MODEM_H = ROOT / "src/modem/modem.h"
 LWLTE_ML307R_C = ROOT / "src/lwlte/lwlte_ml307r.c"
 
 
@@ -52,6 +53,7 @@ class Ml307rContractTest(unittest.TestCase):
         cls.src_cmake = read_optional(SRC_CMAKE)
         cls.ml307r_h = read_optional(ML307R_H)
         cls.ml307r_c = read_optional(ML307R_C)
+        cls.modem_h = read_optional(MODEM_H)
         cls.lwlte_ml307r_c = read_optional(LWLTE_ML307R_C)
 
     def test_public_api_and_build_entries_exist(self):
@@ -73,14 +75,14 @@ class Ml307rContractTest(unittest.TestCase):
 
     def test_modem_header_declares_config_and_factory(self):
         for token in [
-            "modem_ml307r_config_t",
-            "gpio_num_t en_pin;",
-            "uint32_t reset_pulse_ms;",
-            "uint32_t ready_timeout_ms;",
-            "uint32_t default_cmd_timeout_ms;",
+            "modem_base_config_t",
+            "modem_hardware_config_t hardware;",
+            "modem_timing_config_t timing;",
+            "modem_event_config_t event;",
+            "modem_base_config_t base;",
             "modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,",
         ]:
-            self.assertIn(token, self.ml307r_h)
+            self.assertIn(token, self.modem_h + self.ml307r_h + self.ml307r_c)
 
     def test_startup_uses_at_probe_not_matready(self):
         for token in [
@@ -130,7 +132,9 @@ class Ml307rContractTest(unittest.TestCase):
             "modem_ml307r_create(me->at, &modem_config)",
             "core_create(&core_config, me->modem)",
             "me->event_loop = config->base.event.loop",
-            ".event_loop = me->event_loop",
+            ".loop = me->event_loop",
+            ".network = {",
+            ".fsm = {",
             "esp_event_handler_register_with(me->event_loop, LWLTE_EVENT,",
             "facade_ready_handler, me",
             "ping_client_create(me->core)",

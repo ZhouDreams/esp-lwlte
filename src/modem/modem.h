@@ -18,6 +18,7 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+#include "driver/gpio.h"
 #include "esp_err.h"
 
 /*********************
@@ -46,6 +47,44 @@ extern "C" {
  * @details Modem handle
  */
 typedef struct modem_handle modem_handle_t;
+
+/**
+ * @brief 调制解调器硬件配置
+ * @details Modem hardware configuration
+ */
+typedef struct {
+    gpio_num_t en_pin;                  /**< EN GPIO，GPIO_NUM_NC 表示不控制； EN GPIO, GPIO_NUM_NC disables control */
+} modem_hardware_config_t;
+
+/**
+ * @brief 调制解调器时序配置
+ * @details Modem timing configuration
+ */
+typedef struct {
+    uint32_t reset_pulse_ms;            /**< 复位脉冲时间； Reset pulse time */
+    uint32_t ready_timeout_ms;          /**< 启动 AT OK 等待总超时； Startup AT OK wait total timeout */
+    uint32_t default_cmd_timeout_ms;    /**< 默认命令超时； Default command timeout */
+} modem_timing_config_t;
+
+/**
+ * @brief 调制解调器事件任务配置
+ * @details Modem event task configuration
+ */
+typedef struct {
+    int event_queue_size;               /**< 事件队列长度； Event queue size */
+    int event_task_stack;               /**< 事件任务栈大小； Event task stack size */
+    int event_task_priority;            /**< 事件任务优先级； Event task priority */
+} modem_event_config_t;
+
+/**
+ * @brief 调制解调器公共基础配置
+ * @details Modem common base configuration
+ */
+typedef struct {
+    modem_hardware_config_t hardware;   /**< 硬件控制； Hardware control */
+    modem_timing_config_t timing;       /**< 时序参数； Timing parameters */
+    modem_event_config_t event;         /**< 事件任务； Event task */
+} modem_base_config_t;
 
 /**
  * @brief 调制解调器状态

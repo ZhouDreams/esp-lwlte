@@ -39,18 +39,42 @@ extern "C" {
 typedef struct core_handle core_handle_t;
 
 /**
+ * @brief LTE 核心服务事件配置
+ * @details LTE core service event configuration
+ */
+typedef struct {
+    esp_event_loop_handle_t loop;         /**< 共享事件总线（借用）； Shared event bus (borrowed) */
+} core_event_config_t;
+
+/**
+ * @brief LTE 核心服务网络配置
+ * @details LTE core service network configuration
+ */
+typedef struct {
+    const char *apn;                      /**< APN； APN */
+    uint8_t primary_cid;                  /**< 主 PDP 上下文 ID； Primary PDP context ID */
+    uint32_t net_activate_timeout_ms;     /**< 网络激活总超时； Network activation timeout */
+    uint32_t reconnect_delay_ms;          /**< 重连延迟； Reconnect delay */
+} core_network_config_t;
+
+/**
+ * @brief LTE 核心服务 FSM 配置
+ * @details LTE core service FSM configuration
+ */
+typedef struct {
+    int queue_size;                       /**< FSM 队列长度； FSM queue size */
+    int task_stack;                       /**< FSM 任务栈大小； FSM task stack size */
+    int task_priority;                    /**< FSM 任务优先级； FSM task priority */
+} core_fsm_config_t;
+
+/**
  * @brief LTE 核心服务配置
  * @details LTE core service configuration
  */
 typedef struct {
-    esp_event_loop_handle_t event_loop;   /**< 共享事件总线（借用）； Shared event bus (borrowed) */
-    const char *apn;                     /**< APN； APN */
-    uint8_t primary_cid;                 /**< 主 PDP 上下文 ID； Primary PDP context ID */
-    uint32_t net_activate_timeout_ms;    /**< 网络激活总超时； Network activation timeout */
-    uint32_t reconnect_delay_ms;         /**< 重连延迟； Reconnect delay */
-    int fsm_queue_size;                  /**< FSM 队列长度； FSM queue size */
-    int fsm_task_stack;                  /**< FSM 任务栈大小； FSM task stack size */
-    int fsm_task_priority;               /**< FSM 任务优先级； FSM task priority */
+    core_event_config_t event;            /**< 事件总线； Event bus */
+    core_network_config_t network;        /**< 网络策略； Network policy */
+    core_fsm_config_t fsm;                /**< FSM 资源； FSM resources */
 } core_config_t;
 
 /**

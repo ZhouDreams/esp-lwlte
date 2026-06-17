@@ -430,18 +430,28 @@ esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config)
     }
 
     const mqtt_client_config_t mqtt_config = {
-        .transport         = MQTT_CLIENT_TRANSPORT_PLAIN_TCP,
-        .host              = config->host,
-        .port              = config->port,
-        .client_id         = config->client_id,
-        .username          = config->username,
-        .password          = config->password,
-        .keepalive_s       = config->keepalive_s,
-        .clean_session     = config->clean_session,
-        .fsm_queue_size    = config->fsm_queue_size,
-        .fsm_task_stack    = config->fsm_task_stack,
-        .fsm_task_priority = config->fsm_task_priority,
-        .event_loop        = me->event_loop,
+        .endpoint = {
+            .transport = MQTT_CLIENT_TRANSPORT_PLAIN_TCP,
+            .host = config->host,
+            .port = config->port,
+        },
+        .auth = {
+            .client_id = config->client_id,
+            .username = config->username,
+            .password = config->password,
+        },
+        .session = {
+            .keepalive_s = config->keepalive_s,
+            .clean_session = config->clean_session,
+        },
+        .fsm = {
+            .queue_size = config->fsm_queue_size,
+            .task_stack = config->fsm_task_stack,
+            .task_priority = config->fsm_task_priority,
+        },
+        .event = {
+            .loop = me->event_loop,
+        },
     };
     mqtt_client_handle_t *mqtt = mqtt_client_create(&mqtt_config, core);
     if (!mqtt) {

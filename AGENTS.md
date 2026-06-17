@@ -20,7 +20,6 @@ esp-lwlte is a self-developed ESP-IDF component library that encapsulates AT com
 | Coding Style & Templates | [docs/agents/coding-style.md](docs/agents/coding-style.md) |
 | C OOP Design Guidelines | [docs/agents/oop-design.md](docs/agents/oop-design.md) |
 | Error Handling | [docs/agents/err.md](docs/agents/err.md) |
-| AT Command Reference | [docs/references/sys_at_cmd.md](docs/references/sys_at_cmd.md) |
 | Air780EP AT Commands & URCs | [docs/agents/at_cmd_air780ep.md](docs/agents/at_cmd_air780ep.md) |
 | ML307R AT Commands & URCs | [docs/agents/at_cmd_ml307r.md](docs/agents/at_cmd_ml307r.md) |
 | Air780EP CME ERROR Codes | [docs/agents/cme_error_air780ep.md](docs/agents/cme_error_air780ep.md) |
