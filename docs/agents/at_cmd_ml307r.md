@@ -12,7 +12,7 @@
 - 串口、回显、错误结果码和配置保存
 - SIM 状态、信号质量、网络注册状态和 ML307R 网络诊断
 - 标准分组域、PDP 上下文、鉴权和 ML307R 应用层拨号
-- TCP/UDP Socket、DNS、PING、缓存收发、透传、SSL socket 和 TCP ACK/保活
+- TCP/UDP Socket、DNS、PING、NTP、缓存收发、透传、SSL socket 和 TCP ACK/保活
 - HTTP/HTTPS 实例、请求、响应读取、文件下载和 HTTP URC
 - SSL context、证书/私钥写入、证书检查和密码套件查询
 - MQTT 连接参数、连接、发布、订阅、缓存读取、状态和 MQTT URC
@@ -21,7 +21,7 @@
 
 本轮不包含：
 
-- FTP、NTP、短信、语音、GNSS、GPIO/ADC/PWM、文件系统等未进入当前联网实现优先级的业务功能
+- FTP、短信、语音、GNSS、GPIO/ADC/PWM、文件系统等未进入当前联网实现优先级的业务功能
 - 固件升级、锁频、制式优先级、上位机拨号、USB 网卡等非 MCU AT Socket 主路径功能
 - 旧项目或其他厂商模块的专有 TCPIP/MQTT 流程
 
@@ -112,27 +112,33 @@
 | `+MIPCALL: <cid>,1,"<ipv4>"[,"<ipv6>"]` | 应用层拨号成功 | `MODEM_EVENT_PDP_ACTIVATED`，缓存 IP | 可能是命令后的异步结果，也可能来自自动拨号 |
 | `+MIPCALL:<cid>,0` / `+MIPCALL: <cid>,0` | 应用层网络连接断开 | `MODEM_EVENT_PDP_DEACTIVATED` 或网络恢复入口 | 冒号后空格格式可能随手册示例/固件输出变化；不等价于 PDP 已去激活，`AT+CFUN=4` 会逐路上报断开 |
 
-## TCPIP 连接层与 PING
+## TCP/IP 连接层、DNS、PING 与 NTP
+
+本节按 `TCP_IP用户手册_5.1.2-R - Pictures_Version` 图片版第 3 章校对。该手册同时覆盖 TCP/UDP Socket、DNS、PING、透传退出、TCP/IP URC、NTP 和 TCP/UDP 相关错误码；ML307R 与通用 4G/Cat1 描述不一致处以 ML307R 注脚为准。
 
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
-| 连接配置 | `AT+MIPCFG="cid",<connect_id>,<cid>` | `OK` 或 `+MIPCFG: "cid",...` | `connect_id=0..5`；`cid` 需已激活 | 9s | socket 创建前绑定 PDP | 不指定时使用默认 PDP；本次启动周期有效 |
-| 数据编码 | `AT+MIPCFG="encoding",<connect_id>,<send_format>,<recv_format>` | `OK` 或 `+MIPCFG: "encoding",...` | `0` 原始 ASCII；`1` HEX；`2` 转义字符串；接收 `0/1` | 9s | socket send/recv 编码配置 | 影响 `MIPSEND` 命令内数据和 `MIPURC/MIPRD` 输出 |
-| 发送超时 | `AT+MIPCFG="timeout",<connect_id>,<send_timeout>` | `OK` | ML307R 范围 `1..120s` | 9s | prompt 输入超时 | 仅 `>` 数据输入模式相关 |
-| 资源释放 | `AT+MIPCFG="autofree",<connect_id>,<free_mode>` | `OK` | `0` 异常断开自动释放；`1` 手动释放 | 9s | socket close 策略 | `free_mode=1` 断链后需 `MIPCLOSE` |
-| ACK 上报 | `AT+MIPCFG="ackmode",<connect_id>,<ack_mode>` | `OK` | `0` 不上报；`1` ACK 时上报 | 9s | 可选发送确认 | TCP 有效，UDP 无效 |
-| SSL socket | `AT+MIPCFG="ssl",<connect_id>,<ssl_enable>,<ssl_id>` | `OK` | `ssl_enable=0/1`；`ssl_id` 参见 SSL context | 9s | TLS socket 连接前配置 | 需先用 `AT+MSSLCFG` 配置证书/认证 |
-| TCP Keepalive | `AT+MIPTKA=<connect_id>[,<keepalive>[,<keepidle>[,<keepinterval>[,<keepcount>]]]]` | `+MIPTKA: <connect_id>,...` + `OK` 或 `OK` | `keepalive=0/1`；`keepidle=30..7200s`；`keepinterval=30..600s`；`keepcount=1..9` | 9s | 长连接保活配置 | UDP 不可设置 |
-| 建立 TCP/UDP | `AT+MIPOPEN=<connect_id>,"<proto_type>","<address>",<remote_port>[,<timeout>[,<access_mode>[,<local_port>]]]` | 立即 `OK`，随后 `+MIPOPEN: <connect_id>,<result>`；透传成功为 `CONNECT` | `proto_type="TCP"/"UDP"`；`timeout=1..180s`；`access_mode=0..3` | 命令 9s；连接结果按业务预算等待 | `modem_socket_connect()` | `result=0` 成功；缓存模式下用 `MIPRD` 读取 |
-| 关闭 TCP/UDP | `AT+MIPCLOSE=<connect_id>[,<mode>]` | `OK`，随后 `+MIPCLOSE: <connect_id>[,<ret_code>]` | ML307R 不支持配置 `mode`，等待缓存发送完再关闭 | 命令 9s；关闭结果按业务预算等待 | `modem_socket_close()` | `ret_code=0` 正常，`1` 超时，`2` 其他原因 |
-| 发送数据 | `AT+MIPSEND=<connect_id>[,<send_length>[,<data>[,<rai>[,<seq>[,<pri_flag>]]]]]` | `>` 输入后 `OK`，或 `+MIPSEND: <connect_id>,<send_length>` + `OK` | 命令内数据 `0..1460`；数据模式 `1..8192` | prompt 9s；发送完成按业务预算 | `modem_socket_send()` | `+MIPSEND` 表示进入协议栈缓存，不代表对端已收到 |
-| 读取缓存 | `AT+MIPRD=<connect_id>[,<read_len>|<pack_count>]` | `+MIPRD: <connect_id>,<unread>,<data_len>,<data>` + `OK` | TCP 用字节长度；UDP 用包数量 | 9s 或按长度预算 | `modem_socket_recv()` | 缓存模式下使用；按长度解析数据，避免按行截断 |
-| 切换数据模式 | `AT+MIPMODE=<connect_id>,<access_mode>[,<packet_size>[,<waittm>]]` | `OK` 或 `CONNECT` | `access_mode=0` 普通；`1` 透传；`2/3` 缓存 | 9s | 透传/缓存模式控制 | 第一版建议普通或缓存模式，避免透传复杂度 |
-| 查询连接状态 | `AT+MIPSTATE=<connect_id>` 或 `AT+MIPSTATE?` | `+MIPSTATE: <connect_id>,...` + `OK` | 连接状态、本地/远端地址等 | 9s | socket 状态诊断与恢复 | 用于断链后决定是否释放资源 |
-| 查询发送 ACK | `AT+MIPSACK=<connect_id>` | `+MIPSACK: <connect_id>,<txlen>,<acklen>,<nacklen>` + `OK` | 已发、已 ACK、未 ACK 字节数 | 9s | 可选发送可靠性诊断 | 需配合 TCP ACK 模式理解 |
-| DNS 配置 | `AT+MDNSCFG=<cid>,"<address1>"[,"<address2>"]` | `OK` 或查询返回 DNS | `address1/address2` DNS IP | 9s | DNS 配置 API 或诊断 | 使用前确保对应 `cid` 已拨号 |
-| 域名解析 | `AT+MDNSGIP=<cid>,"<domainname>"` | `OK`，随后 `+MDNSGIP: <cid>,<result>,...` | 域名、地址、错误码 | 命令 9s；解析结果按业务预算 | `modem_dns_lookup()` | 结果异步上报，不能只等首个 `OK` |
+| 连接配置 | `AT+MIPCFG="cid",<connect_id>,<cid>` | `OK` 或 `+MIPCFG: "cid",...` | `connect_id=0..5`；`cid` 范围同 `CGDCONT`，需已激活 | 9s | socket 创建前绑定 PDP | 不指定时使用默认 PDP；配置仅当前启动周期有效 |
+| 数据编码 | `AT+MIPCFG="encoding",<connect_id>,<send_format>,<recv_format>` | `OK` 或 `+MIPCFG: "encoding",...` | `send_format=0` ASCII/raw，`1` HEX，`2` 转义字符串；`recv_format=0` raw，`1` HEX | 9s | socket send/recv 编码配置 | `send_format` 影响命令内 `<data>`；`recv_format` 影响普通模式 `MIPURC` 和缓存模式 `MIPRD` 输出 |
+| 发送超时 | `AT+MIPCFG="timeout",<connect_id>,<send_timeout>` | `OK` 或 `+MIPCFG: "timeout",...` | ML307R 范围 `1..120s`；默认 10s | 9s | prompt 输入超时 | 仅 `>` 数据输入模式相关 |
+| 资源释放 | `AT+MIPCFG="autofree",<connect_id>,<free_mode>` | `OK` 或 `+MIPCFG: "autofree",...` | `0` 异常断开自动释放；`1` 手动释放 | 9s | socket close 策略 | `free_mode=1` 收到断链 URC 后需执行 `MIPCLOSE` 释放资源 |
+| 发送缓存 | `AT+MIPCFG="sndbuf",<connect_id>,<send_buffer>` | `OK` 或 `+MIPCFG: "sndbuf",...` | 通用范围 `1..8192`，默认 1460 | 9s | 不建议映射 | TCP/IP 手册列出该项，但 ML307R 不支持设置发送缓存 |
+| 接收缓存 | `AT+MIPCFG="rcvbuf",<connect_id>,<recv_buffer>` | `OK` 或 `+MIPCFG: "rcvbuf",...` | UDP 可配 `1460..65535`；TCP 接收窗口默认 64240 | 9s | UDP 缓存调优/诊断 | ML307R TCP 接收缓存配置无效；UDP 默认 64K |
+| ACK 上报 | `AT+MIPCFG="ackmode",<connect_id>,<ack_mode>` | `OK` 或 `+MIPCFG: "ackmode",...` | `0` 不上报；`1` ACK 时上报 | 9s | 可选发送确认 | TCP 有效，UDP 无效 |
+| SSL socket | `AT+MIPCFG="ssl",<connect_id>,<ssl_enable>,<ssl_id>` | `OK` 或 `+MIPCFG: "ssl",...` | `ssl_enable=0/1`；`ssl_id` 参见 SSL context | 9s | TLS socket 连接前配置 | 需先用 `AT+MSSLCFG` 配置证书/认证；ML307R SSL 流缓存模式需先读完当前缓存再接收后续数据 |
+| TCP Keepalive | `AT+MIPTKA=<connect_id>[,<keepalive>[,<keepidle>[,<keepinterval>[,<keepcount>]]]]` | `+MIPTKA: <connect_id>,...` + `OK` 或 `OK` | `keepalive=0/1`；`keepidle=30..7200s`，默认 90；`keepinterval=30..600s`，默认 75；`keepcount=1..9`，默认 3 | 9s | 长连接保活配置 | UDP 不可设置 |
+| 建立 TCP/UDP | `AT+MIPOPEN=<connect_id>,"<proto_type>","<address>",<remote_port>[,<timeout>[,<access_mode>[,<local_port>]]]` | 立即 `OK`，随后 `+MIPOPEN: <connect_id>,<result>`；透传成功为 `CONNECT` | `proto_type="TCP"/"UDP"`；`timeout=1..180s`，默认 60；`access_mode=0` 普通，`1` 透传，`2` TCP 流缓存，`3` UDP 包缓存；`local_port=0` 自动分配 | 命令 9s；连接结果按业务预算等待 | `modem_socket_connect()` | `result=0` 成功；`local_port` 建议避开协议默认端口 |
+| 关闭 TCP/UDP | `AT+MIPCLOSE=<connect_id>[,<mode>]` | `OK`，随后 `+MIPCLOSE: <connect_id>[,<ret_code>]` | ML307R 不支持配置 `mode`，等待缓存发送完再关闭 | 命令 9s；关闭结果按业务预算等待 | `modem_socket_close()` | `ret_code=0` 正常，`1` 服务器无响应/超时，`2` RST/传输超时等其他原因 |
+| 发送数据 | `AT+MIPSEND=<connect_id>[,<send_length>[,<data>[,<rai>[,<seq>[,<pri_flag>]]]]]` | `>` 输入后 `OK`，或 `+MIPSEND: <connect_id>,<send_length>` + `OK` | 命令内数据 `0..1460`；数据模式 `1..8192`；`CTRL+Z` 发送，`ESC` 取消 | prompt 9s；发送完成按业务预算 | `modem_socket_send()` | `+MIPSEND` 表示进入协议栈缓存，不代表对端收到；4G/Cat1 不支持 RAI/SEQ，`pri_flag` 暂不支持；ML307R `send_length=0` 不是 UDP 空包发送 |
+| 读取缓存 | `AT+MIPRD=<connect_id>[,<read_len>|<pack_count>]` | `+MIPRD: <connect_id>,<unread>,<data_len>,<data>` + `OK` 或仅 `OK` | TCP `read_len=0..4096`，`0` 或超过缓存表示读全部；UDP 用包数量；ML307R UDP 缓存 256 包 | 9s 或按长度预算 | `modem_socket_recv()` | 仅缓存模式使用；无可读数据时仅返回 `OK`；按长度解析数据，避免按行截断 |
+| 切换数据模式 | `AT+MIPMODE=<connect_id>[,<access_mode>[,<packet_size>,<waittm>]]` | `+MIPMODE: <connect_id>,<access_mode>` + `OK`、`OK` 或 `CONNECT` | `access_mode=0` 普通；`1` 透传；`2` TCP 流缓存；`3` UDP 包缓存 | 9s | 透传/缓存模式控制 | 仅连接建立后使用；ML307R 不支持配置 `packet_size/waittm`；缓存切普通且有未读缓存时会自动按 `MIPRD` 格式上报缓存数据 |
+| 查询连接状态 | `AT+MIPSTATE=<connect_id>` 或 `AT+MIPSTATE?` | `+MIPSTATE: <connect_id>,<service_type>,<address>,<remote_port>,<state>` + `OK` | `state="INITIAL"/"CONNECTING"/"CONNECTED"/"CLOSING"/"CLOSED"` | 9s | socket 状态诊断与恢复 | `INITIAL` 条目可能存在空的 service/address/port 字段 |
+| 查询发送 ACK | `AT+MIPSACK=<connect_id>` | `+MIPSACK: <sent>,<acked>,<nack>,<received>` + `OK` | 已发、对端已确认、本地未确认、本地已接收字节数 | 9s | 可选发送可靠性诊断 | 仅已建立连接有效；UDP 无对端确认，`acked=0`，已发数据计入 `nack` |
+| DNS 配置 | `AT+MDNSCFG="priority"[,<priority>]`；通用手册还列 `"ip"/"ipv6"/"cached"/"timeout"` | `+MDNSCFG: "priority",<priority>` + `OK` 或 `OK` | `priority=0` IPv4 优先；`1` IPv6 优先，默认 1 | 9s | DNS 优先级配置/诊断 | ML307R 仅支持 `priority` 设置且不保存 NV；不要把通用 `ip/ipv6/cached/timeout` 当作 ML307R 可用配置 |
+| 域名解析 | `AT+MDNSGIP="<domainname>"[,<cid>]` | 立即 `OK`，随后 `+MDNSGIP: "<domainname>"[,"<ip>"[, ...]]` | 域名最大 255 字节；最多返回 4 个 IP；4G 默认 `cid=1` | 命令 9s；解析结果按业务预算 | `modem_dns_lookup()` | 结果异步上报；DNS 异常时可能仅返回原域名 |
 | PING | `AT+MPING="<host>"[,<timeout>[,<ping_num>[,<packet_len>[,<cid>]]]]` | `OK`，随后 `+MPING: <result>[,"<ip>",<packet_len>,<time>,<ttl>]`；多包末尾 `+MPING: "statistics",<sent>,<lost>,<rtt_min>,<rtt_max>,<rtt_avg>` | `timeout=1..60s`，默认 10s；`ping_num=1..65535`，默认 4；`packet_len=1..1400`，默认 16；4G 默认 `cid=1`；`time/rtt_*` 单位 ms | 命令 9s；结果按 `timeout * ping_num` 预算 | `modem_ping()` / 联网自检 | `result=0` 成功；`1` DNS 失败；`2` DNS 超时；`3` 响应错误；`4` 响应超时；`5` 其他错误；执行前需 `MIPCALL` 成功 |
+| 退出透传 | `+++` | `OK` | 仅透传模式有效 | 按透传 guard 时间 | data mode escape | `+++` 前后需与数据发送保持时间间隔并独立输入；失败时可能作为 payload 发出 |
+| 网络时间同步 | `AT+MNTP[="<server>"[,<port>,[<sync>,[<timeout>]]]]` | 立即 `OK`，随后 `+MNTP: <result>[,"<time>"]` | `server` 默认 `ntp1.aliyun.com`；`port=0..65535` 默认 123；`sync=0/1` 默认 1；`timeout=1..300s`，ML307R 默认 30s；时间格式同 `CCLK` | 命令 9s；结果按 timeout 预算 | 可选网络校时/诊断 | `result=0` 成功；`1` DNS 错误；`2` 超时；`3` 同步失败 |
 
 ### TCP/IP URC 与错误
 
@@ -143,12 +149,44 @@
 | `CONNECT` | 透传模式连接成功 | data mode connected | 仅透传模式使用 |
 | `+MIPCLOSE: <connect_id>[,<ret_code>]` | 连接关闭完成 | socket closed；释放本地连接对象 | `ret_code=0` 正常关闭；`1` 服务器端未响应、超时关闭；`2` RST/传输超时等其他原因关闭；无 `ret_code` 时按关闭完成处理 |
 | `+MIPSEND: <connect_id>,<send_length>` | 数据进入协议栈缓存 | send accepted | 不代表远端 ACK |
-| `+MIPURC: "rtcp",...` / `+MIPURC: "rudp",...` | 普通模式收到 TCP/UDP 数据 | socket RX event | 按长度字段读取 payload |
-| `+MIPURC: "rbuf",<connect_id>,...` | 缓存模式收到数据提示 | 触发 `AT+MIPRD` | 避免 payload 直接混入 AT 流 |
-| `+MIPURC: "ack",...` | TCP ACK 包上报 | send ACK event | 需 `ackmode=1` |
-| `+MIPURC: "closed",...` | 远端关闭、网络异常或协议栈关闭连接 | socket closed；若业务仍需要连接则进入重连 | `autofree=0` 时模块自动释放资源；`autofree=1` 时实现应补发 `AT+MIPCLOSE` 释放资源 |
-| `+MIPURC: "error",...` 或含错误码的 `+MIPURC` | 连接层错误 | socket error；按错误码归类为网络、参数、状态或内存错误 | 手册不同版本的错误 URC 字段可能变化，第一版应保留整行并触发连接恢复 |
-| `+MDNSGIP: ...` | DNS 解析完成 | DNS result | `MDNSGIP` 命令先返回 `OK`，结果随后上报 |
+| `+MIPURC: "rtcp",<connect_id>,<recv_length>,<data>` | 普通模式收到 TCP 数据 | socket RX event | `<data>` 受 `recv_format` 影响；按 `<recv_length>` 读取 payload |
+| `+MIPURC: "rtcp",<connect_id>,<recv_length>,<total_length>` | TCP 流缓存模式收到数据提示 | 触发 `AT+MIPRD` | `<total_length>` 为当前缓存总字节数 |
+| `+MIPURC: "rudp",<connect_id>,<recv_length>,<data>` | 普通模式收到 UDP 数据 | socket RX event | `<data>` 受 `recv_format` 影响；按 `<recv_length>` 读取 payload |
+| `+MIPURC: "rudp",<connect_id>,<recv_count>` | UDP 包缓存模式收到数据提示 | 触发 `AT+MIPRD` | `<recv_count>` 为当前缓存包数量；ML307R/Cat1 最大 256 包 |
+| `+MIPURC: "disconn",<connect_id>,<connect_state>` | 服务器关闭、连接异常或 PDP 去激活 | socket closed/recovery | `connect_state=1` 服务器关闭；`2` 连接异常；`3` PDP 去激活；`autofree=1` 时需 `MIPCLOSE`，`0` 时自动释放 |
+| `+MIPURC: "ack",<connect_id>,<length>` | TCP ACK 包上报 | send ACK event | 需 `ackmode=1`；`length=1..1460` |
+| `+MIPURC: "drop",<connect_id>,<drop_length>` | 接收缓存溢出 | RX overflow/drop event | 溢出数据被丢弃；缓存包数到上限后需先读取缓存才能继续接收新包 |
+| `+MIPURC: "seq",<connect_id>,<seq>,<result>` | UDP 空口回传序号提示 | 第一版不要依赖 | ML307R 不支持 UDP 空口回传；手册 UDP 示例里的 `seq` 不适用于 ML307R |
+| `+MDNSGIP: "<domainname>"[,"<ip>"[, ...]]` | DNS 解析完成 | DNS result | `MDNSGIP` 命令先返回 `OK`，结果随后上报；最多 4 个 IP；异常时可能仅返回域名 |
+| `+MPING: ...` / `+MPING: "statistics",...` | PING 单包结果和统计 | ping result | `result=0..5`；手册示例对 `3/4` 的超时说明存在不一致，按参数表 `4` 为响应超时 |
+| `+MNTP: <result>[,"<time>"]` | NTP 校时完成 | time sync result | `result=0` 成功；`1` DNS 错误；`2` 超时；`3` 同步失败 |
+
+### TCP/UDP `+CME ERROR` 码
+
+| 错误码 | 含义 | 映射建议 |
+|--------|------|----------|
+| `550` | TCP/IP 未知错误 | `ESP_FAIL`，保留原始码 |
+| `551` | TCP/IP 未被使用 | `ESP_ERR_INVALID_STATE` |
+| `552` | TCP/IP 已被使用 | `ESP_ERR_INVALID_STATE` |
+| `553` | TCP/IP 未连接 | `ESP_ERR_INVALID_STATE` |
+| `554` | SOCKET 创建失败 | `ESP_FAIL` |
+| `555` | SOCKET 绑定失败 | `ESP_FAIL` 或端口/本地地址错误 |
+| `556` | SOCKET 监听失败 | `ESP_FAIL` |
+| `557` | SOCKET 连接被拒绝 | 连接失败，可重试或上报对端拒绝 |
+| `558` | SOCKET 连接超时 | `ESP_ERR_TIMEOUT` |
+| `559` | SOCKET 连接失败，其他异常 | `ESP_FAIL` |
+| `560` | SOCKET 写入异常 | send failed |
+| `561` | SOCKET 读取异常 | recv failed |
+| `562` | SOCKET 接受异常 | server/accept 相关，客户端主路径通常只记录 |
+| `570` | PDP 未激活 | 重新检查 `MIPCALL`/PDP 状态 |
+| `571` | PDP 激活失败 | PDP activate failed |
+| `572` | PDP 去激活失败 | PDP deactivate failed |
+| `575` | APN 未配置 | 检查 `CGDCONT` |
+| `576` | 端口忙碌 | 换端口或释放连接实例 |
+| `577` | 不支持的 IPv4/IPv6 | 检查 PDP type、DNS 和地址族 |
+| `580` | DNS 解析失败或 IP 格式错误 | DNS/address error |
+| `581` | DNS 忙碌 | DNS busy，稍后重试 |
+| `582` | PING 忙碌 | ping busy，稍后重试 |
 
 ## HTTP/HTTPS 相关指令
 
@@ -285,8 +323,10 @@ MQTT 命令错误以 `+CME ERROR:<err>` 上报（需 `AT+CMEE=1`），手册定�
 | `CONNECT` | TCP/UDP socket | 透传模式连接成功 | data mode connected | 第一版尽量避免透传主路径 |
 | `+MIPCLOSE:` | TCP/UDP socket | 连接关闭完成 | socket closed | 可能含关闭返回码 |
 | `+MIPSEND:` | TCP/UDP socket | 数据进入协议栈缓存 | send accepted | 不代表对端收到 |
-| `+MIPURC:` | TCP/UDP socket | 收到数据、ACK、异常关闭等 | socket RX/ACK/closed/error | 按第一个字符串参数区分 `rtcp/rudp/rbuf/ack/closed` 等 |
+| `+MIPURC:` | TCP/UDP socket | 收到数据、ACK、缓存溢出、异常断开等 | socket RX/cache/ACK/drop/disconnected | 按第一个字符串参数区分 `rtcp/rudp/disconn/ack/drop/seq`；ML307R 不支持 UDP `seq` |
 | `+MDNSGIP:` | DNS | 域名解析完成 | DNS result | 异步结果 |
+| `+MPING:` | PING | 单包结果和统计结果 | ping result/statistics | 按 `result` 区分成功、DNS 错误、超时等 |
+| `+MNTP:` | NTP | 网络时间同步完成 | time sync result | `result=0` 成功 |
 | `+MHTTPURC:` | HTTP/HTTPS | 请求完成、响应头/体、chunked 输入、下载或关闭 | HTTP response/data/closed/download | 具体事件由字符串参数区分 |
 | `+MQTTURC:` | MQTT | 连接状态、消息、ACK、超时、drop、ping | MQTT event | MQTT 连接层集中处理 |
 
