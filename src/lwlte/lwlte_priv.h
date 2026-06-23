@@ -27,6 +27,7 @@ extern "C" {
 #include "modem.h"
 #include "mqtt_client.h"
 #include "ping_client.h"
+#include "tcp_client.h"
 
 /*********************
  *      DEFINES
@@ -41,6 +42,7 @@ struct lwlte_handle {
     modem_handle_t *modem;
     core_handle_t *core;
     mqtt_client_handle_t *mqtt;
+    tcp_client_handle_t *tcp;
     ping_client_handle_t *ping;
     SemaphoreHandle_t lock;
     SemaphoreHandle_t ready_sema;

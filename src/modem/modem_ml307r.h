@@ -33,6 +33,7 @@ extern "C" {
  */
 typedef struct {
     modem_base_config_t base;           /**< 公共基础配置； Common base configuration */
+    int at_rx_line_buf_size;            /**< AT 单行缓冲大小； AT line buffer size */
 } modem_ml307r_config_t;
 
 /**********************

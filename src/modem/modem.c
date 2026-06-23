@@ -645,6 +645,65 @@ esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status)
     return me->ops->mqtt_get_status(me, status);
 }
 
+esp_err_t modem_socket_open(modem_handle_t *me,
+                            const modem_socket_open_t *open)
+{
+    ESP_RETURN_ON_FALSE(me && open && open->proto == MODEM_SOCKET_PROTO_TCP &&
+                        open->host && open->host[0] && open->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket open args");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->socket_open,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "socket_open not supported");
+
+    return me->ops->socket_open(me, open);
+}
+
+esp_err_t modem_socket_send(modem_handle_t *me,
+                            const modem_socket_send_t *send)
+{
+    ESP_RETURN_ON_FALSE(me && send && send->data && send->len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket send args");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->socket_send,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "socket_send not supported");
+
+    return me->ops->socket_send(me, send);
+}
+
+esp_err_t modem_socket_recv(modem_handle_t *me,
+                            const modem_socket_recv_t *recv,
+                            modem_socket_recv_result_t *result)
+{
+    ESP_RETURN_ON_FALSE(me && recv && result && recv->max_len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket recv args");
+
+    memset(result, 0, sizeof(*result));
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->socket_recv,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "socket_recv not supported");
+
+    return me->ops->socket_recv(me, recv, result);
+}
+
+esp_err_t modem_socket_close(modem_handle_t *me,
+                             const modem_socket_close_t *close)
+{
+    ESP_RETURN_ON_FALSE(me && close, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid socket close args");
+
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->socket_close,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "socket_close not supported");
+
+    return me->ops->socket_close(me, close);
+}
+
 esp_err_t modem_ping(modem_handle_t *me,
                      const modem_ping_request_t *request,
                      modem_ping_reply_t *replies,

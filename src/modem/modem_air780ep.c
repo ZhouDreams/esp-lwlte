@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,6 +60,12 @@
 #define AIR780EP_MQTT_CMD_TIMEOUT_MS     9000
 #define AIR780EP_MQTT_CONNECT_TIMEOUT_MS 60000
 #define AIR780EP_MQTT_PAYLOAD_PROMPT     ">"
+#define AIR780EP_TCP_CONN_ID                 0
+#define AIR780EP_TCP_MAX_HEX_READ_BYTES      730
+#define AIR780EP_TCP_PAYLOAD_PROMPT          ">"
+#define AIR780EP_CIPRXGET_READY_PREFIX       "+CIPRXGET: 1"
+#define AIR780EP_CIPRXGET_READY_COMPACT_PREFIX "+CIPRXGET:1"
+#define AIR780EP_TCP_ERROR_PREFIX            "TCP ERROR:"
 #define AIR780EP_CIPPING_PREFIX         "+CIPPING:"
 #define AIR780EP_CIPPING_MAX_COUNT      100
 #define AIR780EP_CIPPING_CMD_OVERHEAD_MS 5000U
@@ -94,6 +101,10 @@ typedef struct {
     at_urc_handler_t pdp_deact_handler;
     at_urc_handler_t pdp_colon_deact_handler;
     at_urc_handler_t msub_handler;
+    at_urc_handler_t tcp_readable_handler;
+    at_urc_handler_t tcp_readable_compact_handler;
+    at_urc_handler_t tcp_closed_handler;
+    at_urc_handler_t tcp_error_handler;
     modem_info_t cached_info;
     modem_sim_status_t last_sim_status;
     modem_reg_status_t last_reg_status;
@@ -270,7 +281,113 @@ static esp_err_t air780ep_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
 static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
-                                            modem_pdp_context_t *pdp);
+                                             modem_pdp_context_t *pdp);
+
+/**
+ * @brief 打开 Air780EP TCP Socket
+ * @details Open Air780EP TCP socket
+ * @param[in] me 调制解调器句柄
+ * @param[in] open Socket 打开参数
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_socket_open(modem_handle_t *me,
+                                      const modem_socket_open_t *open);
+
+/**
+ * @brief 发送 Air780EP TCP Socket 数据
+ * @details Send Air780EP TCP socket data
+ * @param[in] me 调制解调器句柄
+ * @param[in] send Socket 发送参数
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_socket_send(modem_handle_t *me,
+                                      const modem_socket_send_t *send);
+
+/**
+ * @brief 接收 Air780EP TCP Socket 数据
+ * @details Receive Air780EP TCP socket data
+ * @param[in] me 调制解调器句柄
+ * @param[in] recv Socket 接收参数
+ * @param[out] result Socket 接收结果
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_socket_recv(modem_handle_t *me,
+                                      const modem_socket_recv_t *recv,
+                                      modem_socket_recv_result_t *result);
+
+/**
+ * @brief 关闭 Air780EP TCP Socket
+ * @details Close Air780EP TCP socket
+ * @param[in] me 调制解调器句柄
+ * @param[in] close Socket 关闭参数
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_socket_close(modem_handle_t *me,
+                                       const modem_socket_close_t *close);
+
+/**
+ * @brief 准备 Air780EP TCP Socket 模式
+ * @details Prepare Air780EP TCP socket mode
+ * @param[in] self Air780EP 调制解调器实例
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_socket_prepare(modem_air780ep_t *self);
+
+/**
+ * @brief 投递 TCP 可读事件
+ * @details Post TCP readable event
+ * @param[in] self Air780EP 调制解调器实例
+ */
+static void air780ep_post_tcp_readable(modem_air780ep_t *self);
+
+/**
+ * @brief 投递 TCP 关闭事件
+ * @details Post TCP closed event
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] reason 关闭原因
+ * @param[in] modem_error_code 模块错误码
+ */
+static void air780ep_post_tcp_closed(modem_air780ep_t *self, int reason,
+                                     int modem_error_code);
+
+/**
+ * @brief 解码十六进制负载
+ * @details Decode hex payload into heap buffer
+ * @param[in] hex 十六进制字符串
+ * @param[out] out_payload 堆负载输出
+ * @param[out] out_len 负载长度输出
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t decode_hex_payload(const char *hex, uint8_t **out_payload,
+                                    size_t *out_len);
+
+/**
+ * @brief 检查响应是否包含文本
+ * @details Check whether response contains text
+ * @param[in] response AT 响应
+ * @param[in] needle 查找文本
+ * @return true: 包含； false: 不包含
+ */
+static bool response_contains(const at_response_t *response, const char *needle);
+
+/**
+ * @brief 查找 +CIPRXGET 十六进制数据行
+ * @details Find +CIPRXGET hex payload line
+ * @param[in] response AT 响应
+ * @param[out] out_remaining_len 剩余长度输出
+ * @return 十六进制负载字符串或 NULL
+ */
+static const char *find_ciprxget_hex_line(const at_response_t *response,
+                                          size_t *out_remaining_len);
+
+/**
+ * @brief 解析十六进制半字节
+ * @details Parse hex nibble
+ * @param[in] c 十六进制字符
+ * @return 0-15 表示成功，-1 表示无效
+ */
+static int hex_nibble(char c);
+
 /**
  * @brief 深拷贝 MQTT 配置
  * @details Deep-copy MQTT config; frees any existing dst fields
@@ -1009,6 +1126,33 @@ static void cgev_urc_handler(const char *prefix, const char *line, void *user_ct
 static void pdp_deact_urc_handler(const char *prefix, const char *line,
                                   void *user_ctx);
 /**
+ * @brief 处理 TCP 可读 URC
+ * @details Handle TCP readable URC
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
+static void tcp_readable_urc_handler(const char *prefix, const char *line,
+                                     void *user_ctx);
+/**
+ * @brief 处理 TCP 关闭 URC
+ * @details Handle TCP closed URC
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
+static void tcp_closed_urc_handler(const char *prefix, const char *line,
+                                   void *user_ctx);
+/**
+ * @brief 处理 TCP 错误 URC
+ * @details Handle TCP error URC
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
+static void tcp_error_urc_handler(const char *prefix, const char *line,
+                                  void *user_ctx);
+/**
  * @brief 处理 +MSUB URC
  * @details Handle +MSUB URC: parse direct-mode MQTT message and post data event
  * @param[in] prefix URC 前缀
@@ -1072,6 +1216,10 @@ static const modem_ops_t s_air780ep_ops = {
     .activate_pdp = air780ep_activate_pdp,
     .deactivate_pdp = air780ep_deactivate_pdp,
     .get_pdp_context = air780ep_get_pdp_context,
+    .socket_open = air780ep_socket_open,
+    .socket_send = air780ep_socket_send,
+    .socket_recv = air780ep_socket_recv,
+    .socket_close = air780ep_socket_close,
     .mqtt_configure = air780ep_mqtt_configure,
     .mqtt_tcp_connect = air780ep_mqtt_tcp_connect,
     .mqtt_connect = air780ep_mqtt_connect,
@@ -1270,6 +1418,178 @@ static const char *find_line_with_prefix(const at_response_t *response,
 static const char *first_data_line(const at_response_t *response)
 {
     return find_line_with_prefix(response, "");
+}
+
+static bool response_contains(const at_response_t *response, const char *needle)
+{
+    if (!response || !response->lines || !needle) {
+        return false;
+    }
+
+    int count = response->line_count;
+    if (count > response->max_lines) {
+        count = response->max_lines;
+    }
+
+    for (int i = 0; i < count; i++) {
+        const char *line = response->lines[i];
+        if (line && strstr(line, needle)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static const char *find_ciprxget_hex_line(const at_response_t *response,
+                                          size_t *out_remaining_len)
+{
+    if (!response || !response->lines || !out_remaining_len) {
+        return NULL;
+    }
+
+    int count = response->line_count;
+    if (count > response->max_lines) {
+        count = response->max_lines;
+    }
+
+    for (int i = 0; i < count; i++) {
+        const char *line = response->lines[i];
+        const char *cursor = skip_prefix_value(line, "+CIPRXGET:");
+        if (!cursor) {
+            continue;
+        }
+
+        errno = 0;
+        char *end = NULL;
+        unsigned long mode = strtoul(cursor, &end, 10);
+        if (end == cursor || errno == ERANGE || mode != 3UL) {
+            continue;
+        }
+        cursor = end;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (*cursor != ',') {
+            continue;
+        }
+        cursor++;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+
+        errno = 0;
+        unsigned long read_len = strtoul(cursor, &end, 10);
+        if (end == cursor || errno == ERANGE || read_len > SIZE_MAX) {
+            continue;
+        }
+        cursor = end;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (*cursor != ',') {
+            continue;
+        }
+        cursor++;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+
+        errno = 0;
+        unsigned long remaining_len = strtoul(cursor, &end, 10);
+        if (end == cursor || errno == ERANGE || remaining_len > SIZE_MAX) {
+            continue;
+        }
+        cursor = end;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+
+        const char *hex_line = NULL;
+        if (*cursor == ',') {
+            cursor++;
+            while (isspace((unsigned char)*cursor)) {
+                cursor++;
+            }
+            hex_line = cursor;
+        } else if (*cursor == '\0' && i + 1 < count) {
+            hex_line = response->lines[i + 1];
+        } else {
+            continue;
+        }
+
+        if (!hex_line) {
+            continue;
+        }
+        size_t hex_len = strlen(hex_line);
+        if ((hex_len % 2U) != 0 || hex_len / 2U != (size_t)read_len) {
+            continue;
+        }
+        bool valid_hex = true;
+        for (size_t j = 0; j < hex_len; j++) {
+            if (hex_nibble(hex_line[j]) < 0) {
+                valid_hex = false;
+                break;
+            }
+        }
+        if (!valid_hex) {
+            continue;
+        }
+
+        *out_remaining_len = (size_t)remaining_len;
+        return hex_line;
+    }
+
+    return NULL;
+}
+
+static esp_err_t decode_hex_payload(const char *hex, uint8_t **out_payload,
+                                    size_t *out_len)
+{
+    ESP_RETURN_ON_FALSE(hex && out_payload && out_len, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+
+    *out_payload = NULL;
+    *out_len = 0;
+
+    size_t hex_len = strlen(hex);
+    if ((hex_len % 2U) != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    size_t payload_len = hex_len / 2U;
+    uint8_t *payload = malloc(payload_len ? payload_len : 1U);
+    if (!payload) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    for (size_t i = 0; i < payload_len; i++) {
+        int hi = hex_nibble(hex[i * 2U]);
+        int lo = hex_nibble(hex[i * 2U + 1U]);
+        if (hi < 0 || lo < 0) {
+            free(payload);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        payload[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    *out_payload = payload;
+    *out_len = payload_len;
+    return ESP_OK;
+}
+
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
 }
 
 static esp_err_t copy_str_field(char *dst, size_t dst_size, const char *src)
@@ -2388,6 +2708,13 @@ static esp_err_t register_urcs(modem_air780ep_t *self)
         { AIR780EP_URC_PDP_COLON_DEACT, &self->pdp_colon_deact_handler,
           pdp_deact_urc_handler },
         { AIR780EP_URC_MSUB, &self->msub_handler, handle_msub_urc },
+        { AIR780EP_CIPRXGET_READY_PREFIX, &self->tcp_readable_handler,
+          tcp_readable_urc_handler },
+        { AIR780EP_CIPRXGET_READY_COMPACT_PREFIX, &self->tcp_readable_compact_handler,
+          tcp_readable_urc_handler },
+        { "CLOSED", &self->tcp_closed_handler, tcp_closed_urc_handler },
+        { AIR780EP_TCP_ERROR_PREFIX, &self->tcp_error_handler,
+          tcp_error_urc_handler },
     };
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3115,7 +3442,7 @@ static esp_err_t air780ep_deactivate_pdp(modem_handle_t *me, uint8_t cid)
 }
 
 static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
-                                           modem_pdp_context_t *pdp)
+                                            modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(cid_valid(cid), ESP_ERR_INVALID_ARG, TAG,
@@ -3184,6 +3511,231 @@ static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
     *pdp = *cached;
     xSemaphoreGive(self->base.lock);
     return ESP_OK;
+}
+
+static esp_err_t air780ep_socket_prepare(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    const char *cmds[] = {
+        "AT+CIPMUX=0",
+        "AT+CIPMODE=0",
+        "AT+CIPQSEND=1",
+        "AT+CIPRXF=1",
+        "AT+CIPRXGET=5",
+    };
+
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        air780ep_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, cmds[i], &ctx, 3000);
+        ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cmds[i]);
+
+        ret = ensure_at_ok(&ctx.response, cmds[i]);
+        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed", cmds[i]);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t air780ep_socket_open(modem_handle_t *me,
+                                      const modem_socket_open_t *open)
+{
+    ESP_RETURN_ON_FALSE(me && open && open->host && open->host[0] &&
+                        open->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket open args");
+    ESP_RETURN_ON_FALSE(open->conn_id == AIR780EP_TCP_CONN_ID &&
+                        open->proto == MODEM_SOCKET_PROTO_TCP,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    esp_err_t ret = air780ep_socket_prepare(self);
+    ESP_RETURN_ON_ERROR(ret, TAG, "prepare Air780EP TCP socket failed");
+
+    char *host = escape_at_string(open->host);
+    ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape socket host failed");
+
+    /* AT command shape: AT+CIPSTART="TCP","%s",%u. */
+    int needed = snprintf(NULL, 0, "AT+CIPSTART=\"TCP\",\"%s\",%u",
+                          host, (unsigned int)open->port);
+    if (needed < 0) {
+        free(host);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t cmd_size = (size_t)needed + 1U;
+    char *cmd = malloc(cmd_size);
+    if (!cmd) {
+        free(host);
+        return ESP_ERR_NO_MEM;
+    }
+    int written = snprintf(cmd, cmd_size, "AT+CIPSTART=\"TCP\",\"%s\",%u",
+                           host, (unsigned int)open->port);
+    if (written < 0 || (size_t)written >= cmd_size) {
+        free(cmd);
+        free(host);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const at_cmd_success_match_t matches[] = {
+        { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "CONNECT OK" },
+        { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "ALREADY CONNECT" },
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = open->timeout_ms,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = matches,
+        .success_match_count = sizeof(matches) / sizeof(matches[0]),
+    };
+
+    air780ep_cmd_ctx_t ctx;
+    ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK &&
+        (response_contains(&ctx.response, "CONNECT OK") ||
+         response_contains(&ctx.response, "ALREADY CONNECT"))) {
+        ret = ESP_OK;
+    } else if (ret == ESP_OK) {
+        ret = ESP_ERR_INVALID_RESPONSE;
+    }
+
+    free(cmd);
+    free(host);
+    return ret;
+}
+
+static esp_err_t air780ep_socket_send(modem_handle_t *me,
+                                      const modem_socket_send_t *send)
+{
+    ESP_RETURN_ON_FALSE(me && send && send->data && send->len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket send args");
+    ESP_RETURN_ON_FALSE(send->conn_id == AIR780EP_TCP_CONN_ID,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+    ESP_RETURN_ON_FALSE(send->len <= UINT_MAX, ESP_ERR_INVALID_ARG,
+                        TAG, "socket payload too large");
+    if (send->modem_error_code) {
+        *send->modem_error_code = 0;
+    }
+
+    char cmd[32];
+    int written = snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%u",
+                           (unsigned int)send->len);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+CIPSEND command truncated");
+
+    const at_cmd_success_match_t matches[] = {
+        { .type = AT_CMD_SUCCESS_MATCH_PREFIX, .value = "DATAACCEPT" },
+        { .type = AT_CMD_SUCCESS_MATCH_PREFIX, .value = "DATA ACCEPT" },
+        { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "SEND OK" },
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = send->timeout_ms,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = matches,
+        .success_match_count = sizeof(matches) / sizeof(matches[0]),
+    };
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    init_cmd_ctx(&ctx);
+    esp_err_t ret = at_engine_send_cmd_with_payload(self->base.at, cmd,
+                                                    send->data, send->len,
+                                                    AIR780EP_TCP_PAYLOAD_PROMPT,
+                                                    &ctx.response, &options);
+    if (ret == ESP_OK &&
+        (response_contains(&ctx.response, "DATAACCEPT") ||
+          response_contains(&ctx.response, "DATA ACCEPT") ||
+          response_contains(&ctx.response, "SEND OK"))) {
+        return ESP_OK;
+    }
+    if (send->modem_error_code) {
+        *send->modem_error_code = ctx.response.error_code;
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return ESP_ERR_INVALID_RESPONSE;
+}
+
+static esp_err_t air780ep_socket_recv(modem_handle_t *me,
+                                      const modem_socket_recv_t *recv,
+                                      modem_socket_recv_result_t *result)
+{
+    ESP_RETURN_ON_FALSE(me && recv && result && recv->max_len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket recv args");
+    ESP_RETURN_ON_FALSE(recv->conn_id == AIR780EP_TCP_CONN_ID,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+
+    size_t read_len = recv->max_len;
+    if (read_len > AIR780EP_TCP_MAX_HEX_READ_BYTES) {
+        read_len = AIR780EP_TCP_MAX_HEX_READ_BYTES;
+    }
+
+    char cmd[32];
+    int written = snprintf(cmd, sizeof(cmd), "AT+CIPRXGET=3,%u",
+                           (unsigned int)read_len);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+CIPRXGET command truncated");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, 0);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+CIPRXGET failed");
+
+    ret = ensure_at_ok(&ctx.response, "AT+CIPRXGET");
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+CIPRXGET failed");
+
+    size_t remaining_len = 0;
+    const char *hex = find_ciprxget_hex_line(&ctx.response, &remaining_len);
+    ESP_RETURN_ON_FALSE(hex, ESP_ERR_INVALID_RESPONSE, TAG,
+                        "invalid AT+CIPRXGET response");
+
+    uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    ret = decode_hex_payload(hex, &payload, &payload_len);
+    ESP_RETURN_ON_ERROR(ret, TAG, "decode AT+CIPRXGET payload failed");
+
+    result->conn_id = AIR780EP_TCP_CONN_ID;
+    result->payload = payload;
+    result->payload_len = payload_len;
+    result->remaining_len = remaining_len;
+    result->modem_error_code = 0;
+    return ESP_OK;
+}
+
+static esp_err_t air780ep_socket_close(modem_handle_t *me,
+                                       const modem_socket_close_t *close)
+{
+    ESP_RETURN_ON_FALSE(me && close, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid socket close args");
+    ESP_RETURN_ON_FALSE(close->conn_id == AIR780EP_TCP_CONN_ID,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+    if (close->modem_error_code) {
+        *close->modem_error_code = 0;
+    }
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_EXACT,
+        .value = "CLOSE OK",
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = close->timeout_ms,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    modem_air780ep_t *self = to_air780ep(me);
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd_with_options(self, "AT+CIPCLOSE", &ctx, &options);
+    if (ret == ESP_OK && response_contains(&ctx.response, "CLOSE OK")) {
+        return ESP_OK;
+    }
+    if (close->modem_error_code) {
+        *close->modem_error_code = ctx.response.error_code;
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return ESP_ERR_INVALID_RESPONSE;
 }
 
 static esp_err_t reset_mqtt_modes(modem_air780ep_t *self)
@@ -4137,6 +4689,11 @@ static esp_err_t air780ep_unregister_urcs(modem_air780ep_t *self)
         { AIR780EP_URC_PDP_DEACT, &self->pdp_deact_handler },
         { AIR780EP_URC_PDP_COLON_DEACT, &self->pdp_colon_deact_handler },
         { AIR780EP_URC_MSUB, &self->msub_handler },
+        { AIR780EP_CIPRXGET_READY_PREFIX, &self->tcp_readable_handler },
+        { AIR780EP_CIPRXGET_READY_COMPACT_PREFIX,
+          &self->tcp_readable_compact_handler },
+        { "CLOSED", &self->tcp_closed_handler },
+        { AIR780EP_TCP_ERROR_PREFIX, &self->tcp_error_handler },
     };
 
     esp_err_t ret = ESP_OK;
@@ -4323,6 +4880,98 @@ static void pdp_deact_urc_handler(const char *prefix, const char *line,
 
     set_state_nonblocking(self, MODEM_STATE_READY);
     post_pdp_deactivated_events(self, affected, affected_count);
+}
+
+static void air780ep_post_tcp_readable(modem_air780ep_t *self)
+{
+    if (!self) {
+        return;
+    }
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_PROTOCOL_DATA,
+        .data.protocol_data = {
+            .protocol = MODEM_PROTOCOL_TCP,
+            .conn_id = AIR780EP_TCP_CONN_ID,
+        },
+    };
+    esp_err_t ret = modem_post_event(&self->base, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post TCP readable event failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void air780ep_post_tcp_closed(modem_air780ep_t *self, int reason,
+                                     int modem_error_code)
+{
+    if (!self) {
+        return;
+    }
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_PROTOCOL_CLOSED,
+        .data.protocol_data = {
+            .protocol = MODEM_PROTOCOL_TCP,
+            .conn_id = AIR780EP_TCP_CONN_ID,
+            .reason = reason,
+            .modem_error_code = modem_error_code,
+        },
+    };
+    esp_err_t ret = modem_post_event(&self->base, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post TCP closed event failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void tcp_readable_urc_handler(const char *prefix, const char *line,
+                                     void *user_ctx)
+{
+    (void)prefix;
+    (void)line;
+
+    if (!user_ctx) {
+        return;
+    }
+
+    air780ep_post_tcp_readable((modem_air780ep_t *)user_ctx);
+}
+
+static void tcp_closed_urc_handler(const char *prefix, const char *line,
+                                   void *user_ctx)
+{
+    (void)prefix;
+    (void)line;
+
+    if (!user_ctx) {
+        return;
+    }
+
+    air780ep_post_tcp_closed((modem_air780ep_t *)user_ctx, 0, 0);
+}
+
+static void tcp_error_urc_handler(const char *prefix, const char *line,
+                                  void *user_ctx)
+{
+    (void)prefix;
+
+    if (!user_ctx) {
+        return;
+    }
+
+    int error_code = 0;
+    if (line) {
+        const char *value = skip_prefix_value(line, AIR780EP_TCP_ERROR_PREFIX);
+        if (value) {
+            errno = 0;
+            char *end = NULL;
+            long parsed = strtol(value, &end, 10);
+            if (end != value && errno != ERANGE && parsed >= INT_MIN && parsed <= INT_MAX) {
+                error_code = (int)parsed;
+            }
+        }
+    }
+
+    air780ep_post_tcp_closed((modem_air780ep_t *)user_ctx, ESP_FAIL, error_code);
 }
 
 static void handle_msub_urc(const char *prefix, const char *line, void *user_ctx)

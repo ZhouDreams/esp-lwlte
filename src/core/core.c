@@ -145,6 +145,10 @@ static bool core_deinit_complete(const core_handle_t *me);
  *         - other: Modem 错误码
  */
 static esp_err_t core_unregister_modem_callback(core_handle_t *me);
+static esp_err_t wait_protocol_callback_idle(core_handle_t *me,
+                                             core_protocol_t protocol);
+static esp_err_t wait_protocol_closed_callback_idle(core_handle_t *me,
+                                                    core_protocol_t protocol);
 static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd);
 static void free_core_cmd(core_cmd_t *cmd);
 static char *clone_optional_string(const char *value);
@@ -310,37 +314,96 @@ esp_err_t core_stop(core_handle_t *me)
 }
 
 esp_err_t core_register_protocol_callback(core_handle_t *me,
-                                          core_protocol_callback_t callback,
-                                          void *user_ctx)
+                                           core_protocol_t protocol,
+                                           core_protocol_callback_t callback,
+                                           void *user_ctx)
 {
-    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
-                        "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && me->protocol_callback_reg_lock &&
+                        protocol >= CORE_PROTOCOL_MQTT &&
+                        protocol < CORE_PROTOCOL_MAX,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid protocol callback args");
+    ESP_RETURN_ON_FALSE(!core_fsm_is_task(me), ESP_ERR_INVALID_STATE, TAG,
+                        "register protocol callback from FSM task is not allowed");
+
+    xSemaphoreTake(me->protocol_callback_reg_lock, portMAX_DELAY);
+
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying || me->state == CORE_STATE_DESTROYING) {
-        xSemaphoreGive(me->lock);
+    bool destroying = me->destroying || me->state == CORE_STATE_DESTROYING;
+    if (!destroying) {
+        me->protocol_callbacks[protocol] = NULL;
+        me->protocol_user_ctxs[protocol] = NULL;
+    }
+    xSemaphoreGive(me->lock);
+
+    if (destroying) {
+        xSemaphoreGive(me->protocol_callback_reg_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    me->protocol_callback = callback;
-    me->protocol_user_ctx = callback ? user_ctx : NULL;
+
+    esp_err_t ret = wait_protocol_callback_idle(me, protocol);
+    if (ret != ESP_OK || !callback) {
+        xSemaphoreGive(me->protocol_callback_reg_lock);
+        return ret;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    destroying = me->destroying || me->state == CORE_STATE_DESTROYING;
+    if (!destroying) {
+        me->protocol_callbacks[protocol] = callback;
+        me->protocol_user_ctxs[protocol] = user_ctx;
+    }
     xSemaphoreGive(me->lock);
-    return ESP_OK;
+
+    xSemaphoreGive(me->protocol_callback_reg_lock);
+
+    return destroying ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
 esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
-                                                 core_protocol_closed_callback_t callback,
-                                                 void *user_ctx)
+                                                  core_protocol_t protocol,
+                                                  core_protocol_closed_callback_t callback,
+                                                  void *user_ctx)
 {
-    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
-                        "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && me->protocol_closed_callback_reg_lock &&
+                        protocol >= CORE_PROTOCOL_MQTT &&
+                        protocol < CORE_PROTOCOL_MAX,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "invalid protocol closed callback args");
+    ESP_RETURN_ON_FALSE(!core_fsm_is_task(me), ESP_ERR_INVALID_STATE, TAG,
+                        "register protocol closed callback from FSM task is not allowed");
+
+    xSemaphoreTake(me->protocol_closed_callback_reg_lock, portMAX_DELAY);
+
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    if (me->destroying || me->state == CORE_STATE_DESTROYING) {
-        xSemaphoreGive(me->lock);
+    bool destroying = me->destroying || me->state == CORE_STATE_DESTROYING;
+    if (!destroying) {
+        me->protocol_closed_callbacks[protocol] = NULL;
+        me->protocol_closed_user_ctxs[protocol] = NULL;
+    }
+    xSemaphoreGive(me->lock);
+
+    if (destroying) {
+        xSemaphoreGive(me->protocol_closed_callback_reg_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    me->protocol_closed_callback = callback;
-    me->protocol_closed_user_ctx = callback ? user_ctx : NULL;
+
+    esp_err_t ret = wait_protocol_closed_callback_idle(me, protocol);
+    if (ret != ESP_OK || !callback) {
+        xSemaphoreGive(me->protocol_closed_callback_reg_lock);
+        return ret;
+    }
+
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    destroying = me->destroying || me->state == CORE_STATE_DESTROYING;
+    if (!destroying) {
+        me->protocol_closed_callbacks[protocol] = callback;
+        me->protocol_closed_user_ctxs[protocol] = user_ctx;
+    }
     xSemaphoreGive(me->lock);
-    return ESP_OK;
+
+    xSemaphoreGive(me->protocol_closed_callback_reg_lock);
+
+    return destroying ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
 esp_err_t core_get_state(core_handle_t *me, core_state_t *state)
@@ -636,14 +699,52 @@ static esp_err_t core_init(core_handle_t *me, const core_config_t *config,
     me->state = CORE_STATE_STOPPED;
     me->destroying = false;
     me->destroy_in_progress = false;
-    me->protocol_callback = NULL;
-    me->protocol_user_ctx = NULL;
-    me->protocol_closed_callback = NULL;
-    me->protocol_closed_user_ctx = NULL;
+    memset(me->protocol_callbacks, 0, sizeof(me->protocol_callbacks));
+    memset(me->protocol_user_ctxs, 0, sizeof(me->protocol_user_ctxs));
+    memset(me->protocol_callback_active, 0,
+           sizeof(me->protocol_callback_active));
+    me->protocol_callback_reg_lock = NULL;
+    me->protocol_callback_done_sema = NULL;
+    memset(me->protocol_closed_callbacks, 0,
+           sizeof(me->protocol_closed_callbacks));
+    memset(me->protocol_closed_user_ctxs, 0,
+           sizeof(me->protocol_closed_user_ctxs));
+    memset(me->protocol_closed_callback_active, 0,
+           sizeof(me->protocol_closed_callback_active));
+    me->protocol_closed_callback_reg_lock = NULL;
+    me->protocol_closed_callback_done_sema = NULL;
 
     me->lock = xSemaphoreCreateMutex();
     if (!me->lock) {
         ESP_LOGE(TAG, "create lock failed");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
+
+    me->protocol_callback_reg_lock = xSemaphoreCreateMutex();
+    if (!me->protocol_callback_reg_lock) {
+        ESP_LOGE(TAG, "create protocol_callback_reg_lock failed");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
+
+    me->protocol_closed_callback_reg_lock = xSemaphoreCreateMutex();
+    if (!me->protocol_closed_callback_reg_lock) {
+        ESP_LOGE(TAG, "create protocol_closed_callback_reg_lock failed");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
+
+    me->protocol_callback_done_sema = xSemaphoreCreateBinary();
+    if (!me->protocol_callback_done_sema) {
+        ESP_LOGE(TAG, "create protocol_callback_done_sema failed");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
+
+    me->protocol_closed_callback_done_sema = xSemaphoreCreateBinary();
+    if (!me->protocol_closed_callback_done_sema) {
+        ESP_LOGE(TAG, "create protocol_closed_callback_done_sema failed");
         ret = ESP_ERR_NO_MEM;
         goto err;
     }
@@ -705,12 +806,34 @@ static esp_err_t core_deinit(core_handle_t *me)
         ESP_LOGW(TAG, "core FSM deinit failed: %s", esp_err_to_name(ret));
         return ret;
     }
-    me->protocol_callback = NULL;
-    me->protocol_user_ctx = NULL;
-    me->protocol_closed_callback = NULL;
-    me->protocol_closed_user_ctx = NULL;
+    memset(me->protocol_callbacks, 0, sizeof(me->protocol_callbacks));
+    memset(me->protocol_user_ctxs, 0, sizeof(me->protocol_user_ctxs));
+    memset(me->protocol_callback_active, 0,
+           sizeof(me->protocol_callback_active));
+    memset(me->protocol_closed_callbacks, 0,
+           sizeof(me->protocol_closed_callbacks));
+    memset(me->protocol_closed_user_ctxs, 0,
+           sizeof(me->protocol_closed_user_ctxs));
+    memset(me->protocol_closed_callback_active, 0,
+           sizeof(me->protocol_closed_callback_active));
     free((void *)me->config.network.apn);
     me->config.network.apn = NULL;
+    if (me->protocol_callback_done_sema) {
+        vSemaphoreDelete(me->protocol_callback_done_sema);
+        me->protocol_callback_done_sema = NULL;
+    }
+    if (me->protocol_callback_reg_lock) {
+        vSemaphoreDelete(me->protocol_callback_reg_lock);
+        me->protocol_callback_reg_lock = NULL;
+    }
+    if (me->protocol_closed_callback_done_sema) {
+        vSemaphoreDelete(me->protocol_closed_callback_done_sema);
+        me->protocol_closed_callback_done_sema = NULL;
+    }
+    if (me->protocol_closed_callback_reg_lock) {
+        vSemaphoreDelete(me->protocol_closed_callback_reg_lock);
+        me->protocol_closed_callback_reg_lock = NULL;
+    }
     if (me->lock) {
         vSemaphoreDelete(me->lock);
         me->lock = NULL;
@@ -726,10 +849,14 @@ static bool core_deinit_complete(const core_handle_t *me)
     }
 
     return !me->modem && !me->fsm.task &&
-           !me->fsm.queue && !me->fsm.task_done_sema &&
-           !me->net_mgr.reconnect_timer &&
-           !me->net_mgr.reconnect_cb_done_sema &&
-           !me->lock && !me->config.network.apn;
+            !me->fsm.queue && !me->fsm.task_done_sema &&
+            !me->net_mgr.reconnect_timer &&
+            !me->net_mgr.reconnect_cb_done_sema &&
+            !me->protocol_callback_reg_lock &&
+            !me->protocol_callback_done_sema &&
+            !me->protocol_closed_callback_reg_lock &&
+            !me->protocol_closed_callback_done_sema &&
+            !me->lock && !me->config.network.apn;
 }
 
 static esp_err_t core_unregister_modem_callback(core_handle_t *me)
@@ -746,6 +873,52 @@ static esp_err_t core_unregister_modem_callback(core_handle_t *me)
     }
 
     return ret;
+}
+
+static esp_err_t wait_protocol_callback_idle(core_handle_t *me,
+                                             core_protocol_t protocol)
+{
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    int active = me->protocol_callback_active[protocol];
+    SemaphoreHandle_t done_sema = me->protocol_callback_done_sema;
+    xSemaphoreGive(me->lock);
+
+    while (active > 0) {
+        if (!done_sema) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        xSemaphoreTake(done_sema, portMAX_DELAY);
+
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        active = me->protocol_callback_active[protocol];
+        done_sema = me->protocol_callback_done_sema;
+        xSemaphoreGive(me->lock);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t wait_protocol_closed_callback_idle(core_handle_t *me,
+                                                    core_protocol_t protocol)
+{
+    xSemaphoreTake(me->lock, portMAX_DELAY);
+    int active = me->protocol_closed_callback_active[protocol];
+    SemaphoreHandle_t done_sema = me->protocol_closed_callback_done_sema;
+    xSemaphoreGive(me->lock);
+
+    while (active > 0) {
+        if (!done_sema) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        xSemaphoreTake(done_sema, portMAX_DELAY);
+
+        xSemaphoreTake(me->lock, portMAX_DELAY);
+        active = me->protocol_closed_callback_active[protocol];
+        done_sema = me->protocol_closed_callback_done_sema;
+        xSemaphoreGive(me->lock);
+    }
+
+    return ESP_OK;
 }
 
 static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
@@ -807,6 +980,24 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
             return NULL;
         }
         break;
+    case CORE_CMD_SOCKET_OPEN:
+        clone->data.socket_open.host = clone_optional_string(cmd->data.socket_open.host);
+        if (!clone->data.socket_open.host) {
+            free_core_cmd(clone);
+            return NULL;
+        }
+        break;
+    case CORE_CMD_SOCKET_SEND:
+        clone->data.socket_send.data = clone_payload(cmd->data.socket_send.data,
+                                                     cmd->data.socket_send.len);
+        if (!clone->data.socket_send.data) {
+            free_core_cmd(clone);
+            return NULL;
+        }
+        break;
+    case CORE_CMD_SOCKET_RECV:
+    case CORE_CMD_SOCKET_CLOSE:
+        break;
     case CORE_CMD_MQTT_CONNECT:
     case CORE_CMD_MQTT_DISCONNECT:
     case CORE_CMD_MQTT_TCP_CONNECT:
@@ -845,6 +1036,12 @@ static void free_core_cmd(core_cmd_t *cmd)
     case CORE_CMD_MQTT_PUBLISH:
         free((void *)cmd->data.mqtt_publish.topic);
         free((void *)cmd->data.mqtt_publish.payload);
+        break;
+    case CORE_CMD_SOCKET_OPEN:
+        free((void *)cmd->data.socket_open.host);
+        break;
+    case CORE_CMD_SOCKET_SEND:
+        free((void *)cmd->data.socket_send.data);
         break;
     default:
         break;
@@ -885,12 +1082,15 @@ static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len)
 
 static bool core_cmd_type_valid(core_cmd_type_t type)
 {
-    return type >= CORE_CMD_MQTT_CONFIGURE && type <= CORE_CMD_PING;
+    return type >= CORE_CMD_MQTT_CONFIGURE && type <= CORE_CMD_SOCKET_CLOSE;
 }
 
 static bool core_cmd_valid(const core_cmd_t *cmd)
 {
     if (!cmd || !core_cmd_type_valid(cmd->type)) {
+        return false;
+    }
+    if (cmd->type == CORE_CMD_SOCKET_RECV && !cmd->done_cb) {
         return false;
     }
 
@@ -925,6 +1125,17 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
                cmd->data.mqtt_publish.payload != NULL &&
                cmd->data.mqtt_publish.payload_len > 0 &&
                cmd->data.mqtt_publish.qos <= 2;
+    case CORE_CMD_SOCKET_OPEN:
+        return cmd->data.socket_open.proto == CORE_SOCKET_PROTO_TCP &&
+               cmd->data.socket_open.host &&
+               cmd->data.socket_open.host[0] != '\0' &&
+               cmd->data.socket_open.port > 0;
+    case CORE_CMD_SOCKET_SEND:
+        return cmd->data.socket_send.data && cmd->data.socket_send.len > 0;
+    case CORE_CMD_SOCKET_RECV:
+        return cmd->data.socket_recv.max_len > 0;
+    case CORE_CMD_SOCKET_CLOSE:
+        return true;
     default:
         return false;
     }

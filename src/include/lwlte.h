@@ -38,6 +38,12 @@ extern "C" {
 typedef struct lwlte_handle lwlte_handle_t;
 
 /**
+ * @brief LTE TCP 连接句柄
+ * @details LTE TCP connection handle
+ */
+typedef struct lwlte_tcp_conn lwlte_tcp_conn_t;
+
+/**
  * @brief LTE 门面状态
  * @details LTE facade state
  */
@@ -74,6 +80,19 @@ typedef enum {
     LWLTE_MQTT_STATE_DISCONNECTING,  /**< 断开中； Disconnecting */
     LWLTE_MQTT_STATE_ERROR,          /**< 错误； Error */
 } lwlte_mqtt_state_t;
+
+/**
+ * @brief LTE TCP 连接状态
+ * @details LTE TCP connection state
+ */
+typedef enum {
+    LWLTE_TCP_CONN_STATE_CREATED = 0,     /**< 已创建； Created */
+    LWLTE_TCP_CONN_STATE_CONNECTING,      /**< 连接中； Connecting */
+    LWLTE_TCP_CONN_STATE_CONNECTED,       /**< 已连接； Connected */
+    LWLTE_TCP_CONN_STATE_CLOSING,         /**< 关闭中； Closing */
+    LWLTE_TCP_CONN_STATE_CLOSED,          /**< 已关闭； Closed */
+    LWLTE_TCP_CONN_STATE_ERROR,           /**< 错误； Error */
+} lwlte_tcp_conn_state_t;
 
 /**
  * @brief LTE MQTT 消息
@@ -137,6 +156,12 @@ ESP_EVENT_DECLARE_BASE(LWLTE_EVENT);
 ESP_EVENT_DECLARE_BASE(LWLTE_MQTT_EVENT);
 
 /**
+ * @brief LTE TCP 用户事件 base
+ * @details LTE TCP user event base (esp_event_base_t string identifier)
+ */
+ESP_EVENT_DECLARE_BASE(LWLTE_TCP_EVENT);
+
+/**
  * @brief LTE 用户事件 ID
  * @details LTE user event ID
  * @note 投递到共享事件总线 LWLTE_EVENT。
@@ -171,6 +196,21 @@ typedef enum {
 } lwlte_mqtt_event_id_t;
 
 /**
+ * @brief LTE TCP 用户事件 ID
+ * @details LTE TCP user event ID
+ * @note 投递到共享事件总线 LWLTE_TCP_EVENT。
+ */
+typedef enum {
+    LWLTE_TCP_EVENT_STARTED = 0,          /**< TCP 服务已启动； TCP service started */
+    LWLTE_TCP_EVENT_STOPPED,              /**< TCP 服务已停止； TCP service stopped */
+    LWLTE_TCP_EVENT_CONNECTED,            /**< TCP 已连接； TCP connected */
+    LWLTE_TCP_EVENT_DISCONNECTED,         /**< TCP 已断开； TCP disconnected */
+    LWLTE_TCP_EVENT_SENT,                 /**< TCP 数据已送入模块协议栈； TCP data accepted by module stack */
+    LWLTE_TCP_EVENT_DATA,                 /**< TCP 数据； TCP data */
+    LWLTE_TCP_EVENT_ERROR,                /**< TCP 错误； TCP error */
+} lwlte_tcp_event_id_t;
+
+/**
  * @brief LTE 用户事件数据
  * @details LTE user event data
  */
@@ -189,6 +229,52 @@ typedef struct {
     lwlte_mqtt_msg_t msg;           /**< MQTT 消息，仅 LWLTE_MQTT_EVENT_DATA 有效 */
     bool owns_payload;              /**< DATA 事件为 true，其余为 false */
 } lwlte_mqtt_event_data_t;
+
+/**
+ * @brief TCP 客户端配置
+ * @details TCP client configuration
+ * @note 0 值使用默认值。v1 仅支持 max_conns 为 0 或 1；大于 1 返回 ESP_ERR_NOT_SUPPORTED。
+ */
+typedef struct {
+    uint8_t max_conns;                    /**< 最大连接数，0 使用默认值 1； Maximum connections, 0 uses default 1 */
+    int send_queue_size;                  /**< 发送队列长度，0 使用默认值； Send queue size, 0 uses default */
+    size_t max_tx_len;                    /**< 单次发送最大长度，0 使用默认值； Maximum TX length, 0 uses default */
+    size_t max_rx_event_len;              /**< 单个 DATA 事件最大 RX 长度，0 使用默认值； Maximum RX event length, 0 uses default */
+    uint32_t open_timeout_ms;             /**< 打开超时，0 使用默认值； Open timeout, 0 uses default */
+    uint32_t send_timeout_ms;             /**< 发送超时，0 使用默认值； Send timeout, 0 uses default */
+    uint32_t close_timeout_ms;            /**< 关闭超时，0 使用默认值； Close timeout, 0 uses default */
+    int fsm_queue_size;                   /**< TCP FSM 队列长度，0 使用默认值； TCP FSM queue size, 0 uses default */
+    int fsm_task_stack;                   /**< TCP FSM 任务栈大小，0 使用默认值； TCP FSM task stack, 0 uses default */
+    int fsm_task_priority;                /**< TCP FSM 任务优先级，0 使用默认值； TCP FSM task priority, 0 uses default */
+} lwlte_tcp_config_t;
+
+/**
+ * @brief TCP 打开连接配置
+ * @details TCP open connection configuration
+ */
+typedef struct {
+    const char *host;                     /**< 目标主机或 IP； Target host or IP */
+    uint16_t port;                        /**< 目标端口； Target port */
+    void *user_ctx;                       /**< 用户上下文，事件中原样返回； User context returned in events */
+} lwlte_tcp_open_config_t;
+
+/**
+ * @brief LTE TCP 用户事件数据
+ * @details LTE TCP user event data
+ */
+typedef struct {
+    lwlte_tcp_conn_t *conn;               /**< TCP 连接句柄； TCP connection handle */
+    void *user_ctx;                       /**< 用户上下文； User context */
+    lwlte_tcp_conn_state_t conn_state;    /**< 连接状态； Connection state */
+    esp_err_t error_code;                 /**< ESP 错误码； ESP error code */
+    int modem_error_code;                 /**< 模块原始错误码； Raw modem error code */
+    int reason;                           /**< 断开或错误原因； Disconnect or error reason */
+    size_t sent_len;                      /**< SENT 事件已接受长度； Accepted length for SENT event */
+    const uint8_t *payload;               /**< DATA 事件负载； DATA event payload */
+    size_t payload_len;                   /**< DATA 事件负载长度； DATA event payload length */
+    bool owns_payload;                    /**< DATA 事件为 true，其余为 false； True for DATA events */
+    bool owns_event;                      /**< 事件引用待释放； Event reference to release */
+} lwlte_tcp_event_data_t;
 
 /**
  * @brief MQTT 客户端配置
@@ -457,6 +543,126 @@ esp_err_t lwlte_ping(lwlte_handle_t *me,
  * @param[in] data 事件数据指针，可为 NULL
  */
 void lwlte_mqtt_event_data_release(lwlte_mqtt_event_data_t *data);
+
+/**
+ * @brief 释放 TCP 事件资源
+ * @details Release resources carried by LWLTE_TCP_EVENT
+ * @note 处理 LWLTE_TCP_EVENT 的 handler 必须在返回前调用。
+ * @note 当 owns_payload 为 true 时释放 payload；当 owns_event 为 true 时释放事件连接引用。
+ * @note 如果注册了多个 LWLTE_TCP_EVENT handler，建议单消费者模式；额外观察者应自行拷贝数据。
+ * @param[in] data 事件数据指针，可为 NULL
+ */
+void lwlte_tcp_event_data_release(lwlte_tcp_event_data_t *data);
+
+/**
+ * @brief 初始化 TCP 客户端服务
+ * @details Initialize TCP client service
+ * @note 该函数只创建 TCP 客户端服务对象，不打开 TCP 连接；连接由 lwlte_tcp_open() 触发。
+ * @note 须在 lwlte_air780ep_init()/lwlte_ml307r_init() 返回句柄之后、lwlte_destroy() 之前调用。
+ * @note 同一句柄只能初始化一次，重复调用返回 ESP_ERR_INVALID_STATE；要更换配置须先 lwlte_tcp_destroy()。
+ * @note config 由调用方拥有，仅在该函数执行期间被借用；函数返回后调用方可释放或复用。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] config TCP 客户端配置
+ * @return
+ *         - ESP_OK: 初始化成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 已初始化或门面正在销毁
+ *         - ESP_ERR_NOT_SUPPORTED: 配置包含 v1 不支持的能力
+ *         - ESP_FAIL: 下层创建失败
+ */
+esp_err_t lwlte_tcp_init(lwlte_handle_t *me, const lwlte_tcp_config_t *config);
+
+/**
+ * @brief 销毁 TCP 客户端服务
+ * @details Destroy TCP client service
+ * @note 未初始化时返回 ESP_ERR_INVALID_STATE。
+ * @note v1 中仍存在 CONNECTING、CONNECTED 或 CLOSING 连接对象时返回 ESP_ERR_INVALID_STATE；应用应先关闭并销毁连接。
+ * @param[in] me LTE 用户门面句柄
+ * @return
+ *         - ESP_OK: 销毁成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 未初始化、门面正在销毁或仍有活动连接
+ *         - 其他 esp_err_t: 下层销毁错误
+ */
+esp_err_t lwlte_tcp_destroy(lwlte_handle_t *me);
+
+/**
+ * @brief 异步打开 TCP 连接
+ * @details Open TCP connection asynchronously
+ * @note 调用前 TCP 服务必须已初始化且 LTE 网络必须 online。
+ * @note ESP_OK 返回时 *out_conn 为新建连接句柄，所有权转移给调用方；连接结果通过 LWLTE_TCP_EVENT_CONNECTED 或 LWLTE_TCP_EVENT_ERROR 上报。
+ * @note user_ctx 从 config 捕获，并在该连接后续所有 TCP 事件中原样返回。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] config TCP 打开连接配置
+ * @param[out] out_conn TCP 连接句柄输出指针
+ * @return
+ *         - ESP_OK: 打开请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: TCP 服务未初始化、网络未 online 或已有连接
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_FAIL: 请求提交失败
+ */
+esp_err_t lwlte_tcp_open(lwlte_handle_t *me,
+                         const lwlte_tcp_open_config_t *config,
+                         lwlte_tcp_conn_t **out_conn);
+
+/**
+ * @brief 异步发送 TCP 数据
+ * @details Send TCP data asynchronously
+ * @note data 会在函数返回前复制到 TCP 服务内部 FIFO；调用方可在返回后立即复用或释放原缓冲。
+ * @note v1 仅在连接状态为 CONNECTED 时接受发送；发送完成通过 LWLTE_TCP_EVENT_SENT 上报。
+ * @param[in] conn TCP 连接句柄
+ * @param[in] data 发送数据指针
+ * @param[in] len 发送长度，必须大于 0 且不超过配置 max_tx_len
+ * @return
+ *         - ESP_OK: 发送请求已入队
+ *         - ESP_ERR_INVALID_ARG: 参数无效或长度无效
+ *         - ESP_ERR_INVALID_STATE: 连接未处于 CONNECTED 状态
+ *         - ESP_ERR_TIMEOUT: 发送 FIFO 已满
+ *         - ESP_ERR_NO_MEM: 内存不足
+ */
+esp_err_t lwlte_tcp_send(lwlte_tcp_conn_t *conn,
+                         const uint8_t *data,
+                         size_t len);
+
+/**
+ * @brief 异步关闭 TCP 连接
+ * @details Close TCP connection asynchronously
+ * @note v1 接受 CONNECTED 或 ERROR 状态下关闭；完成后通过 LWLTE_TCP_EVENT_DISCONNECTED 或 LWLTE_TCP_EVENT_ERROR 上报。
+ * @note 关闭完成不会自动释放连接对象；应用仍需调用 lwlte_tcp_conn_destroy()。
+ * @param[in] conn TCP 连接句柄
+ * @return
+ *         - ESP_OK: 关闭请求已提交
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 当前连接状态不允许关闭
+ *         - ESP_FAIL: 请求提交失败
+ */
+esp_err_t lwlte_tcp_close(lwlte_tcp_conn_t *conn);
+
+/**
+ * @brief 获取 TCP 连接状态
+ * @details Get TCP connection state
+ * @param[in] conn TCP 连接句柄
+ * @param[out] state TCP 连接状态输出指针
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ */
+esp_err_t lwlte_tcp_conn_get_state(lwlte_tcp_conn_t *conn,
+                                   lwlte_tcp_conn_state_t *state);
+
+/**
+ * @brief 销毁 TCP 连接对象
+ * @details Destroy TCP connection object
+ * @note 仅 CLOSED 或 ERROR 状态可销毁；CONNECTING、CONNECTED 或 CLOSING 状态返回 ESP_ERR_INVALID_STATE。
+ * @note 销毁后 conn 失效，调用方不得继续使用该指针。
+ * @param[in] conn TCP 连接句柄
+ * @return
+ *         - ESP_OK: 销毁成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 当前连接状态不允许销毁
+ */
+esp_err_t lwlte_tcp_conn_destroy(lwlte_tcp_conn_t *conn);
 
 /**
  * @brief 初始化 MQTT 客户端

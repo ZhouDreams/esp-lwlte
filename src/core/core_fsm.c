@@ -78,6 +78,7 @@ static void handle_stop(core_handle_t *me);
 static void handle_modem_event(core_handle_t *me, const modem_event_t *event);
 static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd);
 static void handle_ping_cmd(core_handle_t *me, core_cmd_t *cmd);
+static esp_err_t ensure_net_online(core_handle_t *me);
 static void copy_core_ping_replies(core_ping_reply_t *dst,
                                    const modem_ping_reply_t *src,
                                    size_t count);
@@ -479,33 +480,80 @@ static void handle_modem_event(core_handle_t *me, const modem_event_t *event)
         handle_core_error(me, event->data.error_code);
         break;
     case MODEM_EVENT_PROTOCOL_DATA: {
+        core_protocol_t protocol = (core_protocol_t)event->data.protocol_data.protocol;
+        if (protocol < CORE_PROTOCOL_MQTT || protocol >= CORE_PROTOCOL_MAX) {
+            break;
+        }
         core_protocol_data_t pd = {
-            .protocol    = (core_protocol_t)event->data.protocol_data.protocol,
-            .topic       = event->data.protocol_data.topic,
-            .topic_len   = event->data.protocol_data.topic_len,
-            .payload     = event->data.protocol_data.payload,
-            .payload_len = event->data.protocol_data.payload_len,
+            .protocol         = protocol,
+            .conn_id          = event->data.protocol_data.conn_id,
+            .topic            = event->data.protocol_data.topic,
+            .topic_len        = event->data.protocol_data.topic_len,
+            .payload          = event->data.protocol_data.payload,
+            .payload_len      = event->data.protocol_data.payload_len,
+            .reason           = event->data.protocol_data.reason,
+            .modem_error_code = event->data.protocol_data.modem_error_code,
         };
         core_protocol_callback_t cb = NULL;
         void *ctx = NULL;
         xSemaphoreTake(me->lock, portMAX_DELAY);
-        cb = me->protocol_callback;
-        ctx = me->protocol_user_ctx;
+        cb = me->protocol_callbacks[protocol];
+        ctx = me->protocol_user_ctxs[protocol];
+        if (cb) {
+            me->protocol_callback_active[protocol]++;
+        }
         xSemaphoreGive(me->lock);
         if (cb) {
             cb(me, &pd, ctx);
+
+            xSemaphoreTake(me->lock, portMAX_DELAY);
+            if (me->protocol_callback_active[protocol] > 0) {
+                me->protocol_callback_active[protocol]--;
+            }
+            bool cb_done = me->protocol_callback_active[protocol] == 0;
+            SemaphoreHandle_t done_sema = me->protocol_callback_done_sema;
+            xSemaphoreGive(me->lock);
+
+            if (cb_done && done_sema) {
+                xSemaphoreGive(done_sema);
+            }
         }
         break;
     }
     case MODEM_EVENT_PROTOCOL_CLOSED: {
+        core_protocol_t protocol = (core_protocol_t)event->data.protocol_data.protocol;
+        if (protocol < CORE_PROTOCOL_MQTT || protocol >= CORE_PROTOCOL_MAX) {
+            break;
+        }
         core_protocol_closed_callback_t cb = NULL;
         void *ctx = NULL;
         xSemaphoreTake(me->lock, portMAX_DELAY);
-        cb = me->protocol_closed_callback;
-        ctx = me->protocol_closed_user_ctx;
+        cb = me->protocol_closed_callbacks[protocol];
+        ctx = me->protocol_closed_user_ctxs[protocol];
+        if (cb) {
+            me->protocol_closed_callback_active[protocol]++;
+        }
         xSemaphoreGive(me->lock);
         if (cb) {
-            cb(me, CORE_PROTOCOL_MQTT, ctx);
+            core_protocol_data_t pd = {
+                .protocol         = protocol,
+                .conn_id          = event->data.protocol_data.conn_id,
+                .reason           = event->data.protocol_data.reason,
+                .modem_error_code = event->data.protocol_data.modem_error_code,
+            };
+            cb(me, protocol, &pd, ctx);
+
+            xSemaphoreTake(me->lock, portMAX_DELAY);
+            if (me->protocol_closed_callback_active[protocol] > 0) {
+                me->protocol_closed_callback_active[protocol]--;
+            }
+            bool cb_done = me->protocol_closed_callback_active[protocol] == 0;
+            SemaphoreHandle_t done_sema = me->protocol_closed_callback_done_sema;
+            xSemaphoreGive(me->lock);
+
+            if (cb_done && done_sema) {
+                xSemaphoreGive(done_sema);
+            }
         }
         break;
     }
@@ -567,11 +615,19 @@ static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
         cmd_state == CORE_STATE_ERROR ||
         cmd_state == CORE_STATE_DESTROYING) {
         esp_err_t invalid_state = ESP_ERR_INVALID_STATE;
-        finish_service_cmd(me, cmd, CORE_CMD_RESULT_ERROR, &invalid_state);
+        const core_socket_result_t socket_result = {
+            .error_code = invalid_state,
+        };
+        bool socket_cmd = cmd->type >= CORE_CMD_SOCKET_OPEN &&
+                          cmd->type <= CORE_CMD_SOCKET_CLOSE;
+        const void *result_data = socket_cmd ? (const void *)&socket_result :
+                                               (const void *)&invalid_state;
+        finish_service_cmd(me, cmd, CORE_CMD_RESULT_ERROR, result_data);
         return;
     }
 
     esp_err_t ret = ESP_ERR_INVALID_ARG;
+    int modem_error_code = 0;
     switch (cmd->type) {
     case CORE_CMD_MQTT_CONFIGURE: {
         modem_mqtt_config_t config = {
@@ -628,12 +684,97 @@ static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
     case CORE_CMD_PING:
         handle_ping_cmd(me, cmd);
         return;
+    case CORE_CMD_SOCKET_OPEN: {
+        ret = ensure_net_online(me);
+        if (ret == ESP_OK) {
+            modem_socket_open_t request = {
+                .proto = MODEM_SOCKET_PROTO_TCP,
+                .conn_id = cmd->data.socket_open.conn_id,
+                .host = cmd->data.socket_open.host,
+                .port = cmd->data.socket_open.port,
+                .timeout_ms = cmd->data.socket_open.timeout_ms,
+                .modem_error_code = &modem_error_code,
+            };
+            ret = modem_socket_open(me->modem, &request);
+        }
+        break;
+    }
+    case CORE_CMD_SOCKET_SEND: {
+        ret = ensure_net_online(me);
+        if (ret == ESP_OK) {
+            modem_socket_send_t request = {
+                .conn_id = cmd->data.socket_send.conn_id,
+                .data = cmd->data.socket_send.data,
+                .len = cmd->data.socket_send.len,
+                .timeout_ms = cmd->data.socket_send.timeout_ms,
+                .modem_error_code = &modem_error_code,
+            };
+            ret = modem_socket_send(me->modem, &request);
+        }
+        break;
+    }
+    case CORE_CMD_SOCKET_RECV: {
+        core_socket_recv_result_t recv_result = {0};
+        ret = ensure_net_online(me);
+        if (ret == ESP_OK) {
+            modem_socket_recv_t request = {
+                .conn_id = cmd->data.socket_recv.conn_id,
+                .max_len = cmd->data.socket_recv.max_len,
+            };
+            modem_socket_recv_result_t modem_result = {0};
+            ret = modem_socket_recv(me->modem, &request, &modem_result);
+            recv_result.conn_id = modem_result.conn_id;
+            recv_result.payload = modem_result.payload;
+            recv_result.payload_len = modem_result.payload_len;
+            recv_result.remaining_len = modem_result.remaining_len;
+            recv_result.modem_error_code = modem_result.modem_error_code;
+        }
+        const core_socket_result_t result = {
+            .error_code = ret,
+            .modem_error_code = recv_result.modem_error_code,
+        };
+        const void *result_data = ret == ESP_OK ? (const void *)&recv_result :
+                                                  (const void *)&result;
+        finish_service_cmd(me, cmd, result_from_esp_err(ret),
+                           result_data);
+        if (ret != ESP_OK) {
+            free(recv_result.payload);
+        }
+        return;
+    }
+    case CORE_CMD_SOCKET_CLOSE: {
+        modem_socket_close_t request = {
+            .conn_id = cmd->data.socket_close.conn_id,
+            .timeout_ms = cmd->data.socket_close.timeout_ms,
+            .modem_error_code = &modem_error_code,
+        };
+        ret = modem_socket_close(me->modem, &request);
+        break;
+    }
     default:
         ret = ESP_ERR_INVALID_ARG;
         break;
     }
 
-    finish_service_cmd(me, cmd, result_from_esp_err(ret), NULL);
+    const core_socket_result_t result = {
+        .error_code = ret,
+        .modem_error_code = modem_error_code,
+    };
+    bool socket_cmd = cmd->type >= CORE_CMD_SOCKET_OPEN &&
+                      cmd->type <= CORE_CMD_SOCKET_CLOSE;
+    finish_service_cmd(me, cmd, result_from_esp_err(ret),
+                       socket_cmd && ret != ESP_OK ? &result : NULL);
+}
+
+static esp_err_t ensure_net_online(core_handle_t *me)
+{
+    core_net_state_t state = CORE_NET_STATE_OFFLINE;
+    esp_err_t ret = core_get_net_state(me, &state);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    return state == CORE_NET_STATE_ONLINE ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 static void handle_ping_cmd(core_handle_t *me, core_cmd_t *cmd)

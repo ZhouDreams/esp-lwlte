@@ -14,6 +14,8 @@ Available selections:
 | `EXAMPLE_AIR780EP_MQTT_CLIENT` | Air780EP ThingsBoard MQTT publish/subscribe example |
 | `EXAMPLE_ML307R_BASIC_CONNECT` | ML307R LTE basic connect and ping example |
 | `EXAMPLE_ML307R_MQTT_CLIENT` | ML307R ThingsBoard MQTT publish/subscribe example |
+| `EXAMPLE_AIR780EP_TCP_CLIENT` | Air780EP TCP client echo example |
+| `EXAMPLE_ML307R_TCP_CLIENT` | ML307R TCP client echo example |
 
 ## Build
 
@@ -141,3 +143,9 @@ Topics used by the example:
 | Subscribe | `v1/devices/me/attributes` | Downlink/shared attribute updates from ThingsBoard |
 
 The ML307R MQTT example intentionally keeps downlink handling simple: received MQTT data is printed in the event callback. It does not implement RPC response logic.
+
+## TCP Client Examples
+
+Configure `EXAMPLE_TCP_HOST`, `EXAMPLE_TCP_PORT`, and either `EXAMPLE_TCP_PAYLOAD` or `EXAMPLE_TCP_PAYLOAD_HEX`. The TCP examples set `base.at_engine.rx_line_buf_size = 2048` because the socket RX path reads printable HEX payload lines from the modem.
+
+`EXAMPLE_AIR780EP_TCP_CLIENT` and `EXAMPLE_ML307R_TCP_CLIENT` open one plain TCP connection after `LWLTE_EVENT_NET_ONLINE`, send the configured payload, print the first DATA event length, close the connection, and destroy the connection handle on disconnect or error.

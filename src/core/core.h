@@ -108,6 +108,8 @@ typedef enum {
  */
 typedef enum {
     CORE_PROTOCOL_MQTT = 0,              /**< MQTT 协议； MQTT protocol */
+    CORE_PROTOCOL_TCP,                   /**< TCP 协议； TCP protocol */
+    CORE_PROTOCOL_MAX,                   /**< 协议数量； Protocol count */
 } core_protocol_t;
 
 /**
@@ -118,10 +120,13 @@ typedef enum {
  */
 typedef struct {
     core_protocol_t protocol;            /**< 协议类型； Protocol type */
-    const char *topic;                   /**< 主题； Topic */
+    uint8_t conn_id;                     /**< 连接 ID； Connection ID */
+    const char *topic;                   /**< 主题，MQTT 使用； Topic, used by MQTT */
     size_t topic_len;                    /**< 主题长度； Topic length */
     const uint8_t *payload;              /**< 负载； Payload */
     size_t payload_len;                  /**< 负载长度； Payload length */
+    int reason;                          /**< 事件原因； Event reason */
+    int modem_error_code;                /**< 模块原始错误码； Raw modem error code */
 } core_protocol_data_t;
 
 /**
@@ -139,6 +144,7 @@ typedef void (*core_protocol_callback_t)(core_handle_t *me,
  */
 typedef void (*core_protocol_closed_callback_t)(core_handle_t *me,
                                                 core_protocol_t protocol,
+                                                const core_protocol_data_t *data,
                                                 void *user_ctx);
 
 /**
@@ -146,8 +152,9 @@ typedef void (*core_protocol_closed_callback_t)(core_handle_t *me,
  * @details Register Core protocol data callback
  * @note 回调在 Core FSM 任务上同步执行，必须非阻塞；只做轻量操作（入队、memcpy）。
  * @note callback 为 NULL 时注销当前回调；user_ctx 不被 Core 拥有，注册期间须由调用方保持有效。
- * @note Core 仅保存一个回调槽位，重复调用会覆盖之前的回调和用户上下文。
+ * @note Core 按协议保存回调槽位，重复注册同一协议会覆盖之前的回调和用户上下文。
  * @param[in] me LTE 核心服务句柄
+ * @param[in] protocol 协议类型
  * @param[in] callback 协议数据回调，NULL 表示注销
  * @param[in] user_ctx 用户上下文，原样传回回调
  * @return
@@ -156,6 +163,7 @@ typedef void (*core_protocol_closed_callback_t)(core_handle_t *me,
  *         - ESP_ERR_INVALID_STATE: Core 正在销毁
  */
 esp_err_t core_register_protocol_callback(core_handle_t *me,
+                                          core_protocol_t protocol,
                                           core_protocol_callback_t callback,
                                           void *user_ctx);
 
@@ -164,8 +172,9 @@ esp_err_t core_register_protocol_callback(core_handle_t *me,
  * @details Register Core protocol closed callback
  * @note 回调在 Core FSM 任务上同步执行，必须非阻塞。
  * @note callback 为 NULL 时注销当前回调；user_ctx 不被 Core 拥有，注册期间须由调用方保持有效。
- * @note Core 仅保存一个回调槽位，重复调用会覆盖之前的回调和用户上下文。
+ * @note Core 按协议保存回调槽位，重复注册同一协议会覆盖之前的回调和用户上下文。
  * @param[in] me LTE 核心服务句柄
+ * @param[in] protocol 协议类型
  * @param[in] callback 协议通道关闭回调，NULL 表示注销
  * @param[in] user_ctx 用户上下文，原样传回回调
  * @return
@@ -174,8 +183,51 @@ esp_err_t core_register_protocol_callback(core_handle_t *me,
  *         - ESP_ERR_INVALID_STATE: Core 正在销毁
  */
 esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
+                                                 core_protocol_t protocol,
                                                  core_protocol_closed_callback_t callback,
                                                  void *user_ctx);
+
+typedef enum {
+    CORE_SOCKET_PROTO_TCP = 0,           /**< TCP socket； TCP socket */
+} core_socket_proto_t;
+
+typedef struct {
+    core_socket_proto_t proto;           /**< Socket 协议； Socket protocol */
+    uint8_t conn_id;                     /**< 连接 ID； Connection ID */
+    const char *host;                    /**< 主机； Host */
+    uint16_t port;                       /**< 端口； Port */
+    uint32_t timeout_ms;                 /**< 打开超时； Open timeout */
+} core_socket_open_t;
+
+typedef struct {
+    uint8_t conn_id;                     /**< 连接 ID； Connection ID */
+    const uint8_t *data;                 /**< 发送数据； Send data */
+    size_t len;                          /**< 发送长度； Send length */
+    uint32_t timeout_ms;                 /**< 发送超时； Send timeout */
+} core_socket_send_t;
+
+typedef struct {
+    uint8_t conn_id;                     /**< 连接 ID； Connection ID */
+    size_t max_len;                      /**< 最大读取长度； Maximum read length */
+} core_socket_recv_t;
+
+typedef struct {
+    uint8_t conn_id;                     /**< 连接 ID； Connection ID */
+    uint8_t *payload;                    /**< 堆负载，接收方拥有； Heap payload, receiver owns */
+    size_t payload_len;                  /**< 负载长度； Payload length */
+    size_t remaining_len;                /**< 模块缓存剩余长度； Remaining cached length */
+    int modem_error_code;                /**< 模块错误码； Modem error code */
+} core_socket_recv_result_t;
+
+typedef struct {
+    uint8_t conn_id;                     /**< 连接 ID； Connection ID */
+    uint32_t timeout_ms;                 /**< 关闭超时； Close timeout */
+} core_socket_close_t;
+
+typedef struct {
+    esp_err_t error_code;                /**< ESP 错误码； ESP error code */
+    int modem_error_code;                /**< 模块原始错误码； Raw modem error code */
+} core_socket_result_t;
 
 /**
  * @brief Core 服务命令类型
@@ -191,6 +243,10 @@ typedef enum {
     CORE_CMD_MQTT_UNSUBSCRIBE,           /**< 退订 MQTT 主题； Unsubscribe MQTT topic */
     CORE_CMD_MQTT_PUBLISH,               /**< 发布 MQTT 消息； Publish MQTT message */
     CORE_CMD_PING,                       /**< 执行 Ping 诊断； Perform Ping diagnostic */
+    CORE_CMD_SOCKET_OPEN,                /**< 打开 socket； Open socket */
+    CORE_CMD_SOCKET_SEND,                /**< 发送 socket 数据； Send socket data */
+    CORE_CMD_SOCKET_RECV,                /**< 接收 socket 数据； Receive socket data */
+    CORE_CMD_SOCKET_CLOSE,               /**< 关闭 socket； Close socket */
 } core_cmd_type_t;
 
 /**
@@ -274,6 +330,10 @@ typedef struct {
             size_t max_replies;          /**< 响应数组容量； Reply array capacity */
             core_ping_summary_t *summary; /**< 可选汇总输出； Optional summary output */
         } ping;                          /**< Ping 参数； Ping args */
+        core_socket_open_t socket_open;  /**< Socket 打开参数； Socket open args */
+        core_socket_send_t socket_send;  /**< Socket 发送参数； Socket send args */
+        core_socket_recv_t socket_recv;  /**< Socket 接收参数； Socket receive args */
+        core_socket_close_t socket_close; /**< Socket 关闭参数； Socket close args */
     } data;                              /**< 命令数据； Command data */
 } core_cmd_t;
 

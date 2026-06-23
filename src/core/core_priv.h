@@ -110,10 +110,16 @@ struct core_handle {
     bool destroy_in_progress;
     bool stop_pending;
     SemaphoreHandle_t lock;
-    core_protocol_callback_t protocol_callback;
-    void *protocol_user_ctx;
-    core_protocol_closed_callback_t protocol_closed_callback;
-    void *protocol_closed_user_ctx;
+    core_protocol_callback_t protocol_callbacks[CORE_PROTOCOL_MAX];
+    void *protocol_user_ctxs[CORE_PROTOCOL_MAX];
+    int protocol_callback_active[CORE_PROTOCOL_MAX];
+    SemaphoreHandle_t protocol_callback_reg_lock;
+    SemaphoreHandle_t protocol_callback_done_sema;
+    core_protocol_closed_callback_t protocol_closed_callbacks[CORE_PROTOCOL_MAX];
+    void *protocol_closed_user_ctxs[CORE_PROTOCOL_MAX];
+    int protocol_closed_callback_active[CORE_PROTOCOL_MAX];
+    SemaphoreHandle_t protocol_closed_callback_reg_lock;
+    SemaphoreHandle_t protocol_closed_callback_done_sema;
 };
 
 /**********************

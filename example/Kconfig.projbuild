@@ -23,3 +23,46 @@ config EXAMPLE_MQTT_KEEPALIVE_S
     default 120
 
 endmenu
+
+menu "Example TCP Settings"
+
+config EXAMPLE_TCP_HOST
+    string "TCP server host"
+    default "tcpbin.com"
+
+config EXAMPLE_TCP_PORT
+    int "TCP server port"
+    range 1 65535
+    default 4242
+
+config EXAMPLE_TCP_PAYLOAD
+    string "TCP payload text"
+    default "hello from esp-lwlte tcp"
+
+config EXAMPLE_TCP_PAYLOAD_HEX
+    string "TCP payload HEX bytes"
+    default ""
+    help
+        When non-empty, decode this HEX string and send the bytes instead of EXAMPLE_TCP_PAYLOAD.
+
+config EXAMPLE_TCP_OPEN_TIMEOUT_MS
+    int "TCP open timeout milliseconds"
+    range 1000 180000
+    default 75000
+
+config EXAMPLE_TCP_SEND_QUEUE_SIZE
+    int "TCP send queue size"
+    range 1 16
+    default 4
+
+config EXAMPLE_TCP_MAX_TX_LEN
+    int "TCP max TX length"
+    range 1 1460
+    default 1460
+
+config EXAMPLE_TCP_MAX_RX_EVENT_LEN
+    int "TCP max RX event length"
+    range 1 730
+    default 730
+
+endmenu

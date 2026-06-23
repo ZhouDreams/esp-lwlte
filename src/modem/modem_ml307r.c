@@ -33,6 +33,10 @@
 #define ML307R_MAX_PDP_CONTEXTS          1
 #define ML307R_PRIMARY_CID               1
 #define ML307R_MQTT_CONNECT_ID           0
+#define ML307R_TCP_CONN_ID               0
+#define ML307R_TCP_PAYLOAD_PROMPT        ">"
+#define ML307R_TCP_MAX_HEX_READ_BYTES    730U
+#define ML307R_TCP_MIPRD_LINE_OVERHEAD   48U
 #define ML307R_MAX_RESPONSE_LINES        101
 #define ML307R_DEFAULT_CMD_TIMEOUT_MS    9000
 #define ML307R_DEFAULT_READY_TIMEOUT_MS  30000
@@ -53,6 +57,8 @@
 #define ML307R_URC_CGREG                 "+CGREG:"
 #define ML307R_URC_MIPCALL               "+MIPCALL:"
 #define ML307R_URC_MQTTURC               "+MQTTURC:"
+#define ML307R_MIPURC_RTCP_PREFIX        "+MIPURC: \"rtcp\""
+#define ML307R_MIPURC_DISCONN_PREFIX     "+MIPURC: \"disconn\""
 
 _Static_assert(ML307R_MAX_RESPONSE_LINES >= ML307R_MPING_MAX_COUNT + 1,
                "ML307R MPING response storage must hold replies plus final status");
@@ -83,6 +89,8 @@ typedef struct {
     at_urc_handler_t cgreg_handler;
     at_urc_handler_t mipcall_handler;
     at_urc_handler_t mqtturc_handler;
+    at_urc_handler_t tcp_readable_handler;
+    at_urc_handler_t tcp_disconn_handler;
     modem_info_t cached_info;
     modem_sim_status_t last_sim_status;
     modem_reg_status_t last_reg_status;
@@ -258,7 +266,80 @@ static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  *         - 其他: AT 命令错误
  */
 static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
-                                         modem_pdp_context_t *pdp);
+                                          modem_pdp_context_t *pdp);
+/**
+ * @brief 打开 ML307R TCP Socket
+ * @details Open ML307R TCP socket
+ * @param[in] me 调制解调器句柄
+ * @param[in] open Socket 打开参数
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_socket_open(modem_handle_t *me,
+                                    const modem_socket_open_t *open);
+/**
+ * @brief 发送 ML307R TCP Socket 数据
+ * @details Send ML307R TCP socket data
+ * @param[in] me 调制解调器句柄
+ * @param[in] send Socket 发送参数
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_socket_send(modem_handle_t *me,
+                                    const modem_socket_send_t *send);
+/**
+ * @brief 接收 ML307R TCP Socket 数据
+ * @details Receive ML307R TCP socket data
+ * @param[in] me 调制解调器句柄
+ * @param[in] recv Socket 接收参数
+ * @param[out] result Socket 接收结果
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_socket_recv(modem_handle_t *me,
+                                    const modem_socket_recv_t *recv,
+                                    modem_socket_recv_result_t *result);
+/**
+ * @brief 关闭 ML307R TCP Socket
+ * @details Close ML307R TCP socket
+ * @param[in] me 调制解调器句柄
+ * @param[in] close Socket 关闭参数
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_socket_close(modem_handle_t *me,
+                                     const modem_socket_close_t *close);
+/**
+ * @brief 准备 ML307R TCP Socket 模式
+ * @details Prepare ML307R TCP socket mode
+ * @param[in] self ML307R 调制解调器实例
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_socket_prepare(modem_ml307r_t *self);
+/**
+ * @brief 投递 TCP 可读事件
+ * @details Post TCP readable event
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] recv_len 本次可读长度
+ * @param[in] total_len 模块缓存总长度
+ */
+static void ml307r_post_tcp_readable(modem_ml307r_t *self, size_t recv_len,
+                                     size_t total_len);
+/**
+ * @brief 投递 TCP 关闭事件
+ * @details Post TCP closed event
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] reason 关闭原因
+ * @param[in] modem_error_code 模块错误码
+ */
+static void ml307r_post_tcp_closed(modem_ml307r_t *self, int reason,
+                                   int modem_error_code);
+/**
+ * @brief 解码十六进制负载
+ * @details Decode hex payload into heap buffer
+ * @param[in] hex 十六进制字符串
+ * @param[out] out_payload 堆负载输出
+ * @param[out] out_len 负载长度输出
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t decode_hex_payload(const char *hex, uint8_t **out_payload,
+                                    size_t *out_len);
 /**
  * @brief 配置 ML307R MQTT
  * @details Configure MQTT via AT+MQTTCFG for version/cid/encoding/keepalive/
@@ -471,7 +552,85 @@ static esp_err_t ensure_at_ok(const at_response_t *response, const char *cmd);
  * @return 匹配的响应行或 NULL
  */
 static const char *find_line_with_prefix(const at_response_t *response,
-                                         const char *prefix);
+                                          const char *prefix);
+
+/**
+ * @brief 检查响应是否包含文本
+ * @details Check whether response contains text
+ * @param[in] response AT 响应
+ * @param[in] needle 查找文本
+ * @return true: 包含； false: 不包含
+ */
+static bool response_contains(const at_response_t *response, const char *needle);
+
+/**
+ * @brief Parse +MIPOPEN response
+ * @details Parse +MIPOPEN: <conn_id>,<result>
+ * @param[in] response AT response
+ * @param[out] conn_id Parsed connection ID
+ * @param[out] result Parsed open result
+ * @return ESP_OK on success, otherwise an error code
+ */
+static esp_err_t parse_mipopen_response(const at_response_t *response,
+                                        uint8_t *conn_id,
+                                        int *result);
+
+/**
+ * @brief Map ML307R MIPOPEN result to ESP error
+ * @details Map module TCP/IP result codes to ESP errors
+ * @param[in] result ML307R MIPOPEN result code
+ * @return ESP_OK when result is 0, otherwise mapped error
+ */
+static esp_err_t ml307r_map_mipopen_result(int result);
+
+/**
+ * @brief Parse +MIPSEND response
+ * @details Parse +MIPSEND: <conn_id>,<sent_len>
+ * @param[in] response AT response
+ * @param[out] conn_id Parsed connection ID
+ * @param[out] sent_len Parsed send length
+ * @return ESP_OK on success, otherwise an error code
+ */
+static esp_err_t parse_mipsend_response(const at_response_t *response,
+                                        uint8_t *conn_id,
+                                        size_t *sent_len);
+
+/**
+ * @brief 计算 AT 行缓冲安全的 MIPRD 读取长度
+ * @details Calculate AT line-buffer-safe MIPRD read length
+ * @param[in] rx_line_buf_size AT 单行缓冲大小
+ * @param[out] out_read_len 安全读取长度
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_tcp_read_len_for_line_buf(int rx_line_buf_size,
+                                                  size_t *out_read_len);
+
+/**
+ * @brief Dispatch TCP URCs collected inside an active command response
+ * @details Dispatch TCP URCs collected inside an active command response
+ * @param[in] self ML307R modem instance
+ * @param[in] response AT response
+ */
+static void dispatch_tcp_urcs_from_response(modem_ml307r_t *self,
+                                            const at_response_t *response);
+
+/**
+ * @brief 查找 +MIPRD 十六进制数据行
+ * @details Find +MIPRD hex payload line
+ * @param[in] response AT 响应
+ * @param[out] out_remaining_len 剩余长度输出
+ * @return 十六进制负载字符串或 NULL
+ */
+static const char *find_miprd_hex_line(const at_response_t *response,
+                                       size_t *out_remaining_len);
+
+/**
+ * @brief 解析十六进制半字节
+ * @details Parse hex nibble
+ * @param[in] c 十六进制字符
+ * @return 0-15 表示成功，-1 表示无效
+ */
+static int hex_nibble(char c);
 
 /**
  * @brief 获取首个数据行
@@ -978,6 +1137,46 @@ static void mipcall_urc_handler(const char *prefix, const char *line, void *user
 static void mqtturc_urc_handler(const char *prefix, const char *line, void *user_ctx);
 
 /**
+ * @brief 处理 TCP 可读 URC
+ * @details Handle TCP readable URC
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
+static void tcp_readable_urc_handler(const char *prefix, const char *line,
+                                     void *user_ctx);
+
+/**
+ * @brief 处理 TCP 断连 URC
+ * @details Handle TCP disconnection URC
+ * @param[in] prefix URC 前缀
+ * @param[in] line URC 完整行
+ * @param[in] user_ctx 用户上下文
+ */
+static void tcp_disconn_urc_handler(const char *prefix, const char *line,
+                                    void *user_ctx);
+
+/**
+ * @brief 解析 TCP 可读 URC
+ * @details Parse +MIPURC: "rtcp",0,<recv_len>,<total_len>
+ * @param[in] line URC 完整行
+ * @param[out] recv_len 本次可读长度
+ * @param[out] total_len 模块缓存总长度
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t parse_tcp_rtcp_urc(const char *line, size_t *recv_len,
+                                    size_t *total_len);
+
+/**
+ * @brief 解析 TCP 断连 URC
+ * @details Parse +MIPURC: "disconn",0,<connect_state>
+ * @param[in] line URC 完整行
+ * @param[out] connect_state 连接状态
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t parse_tcp_disconn_urc(const char *line, int *connect_state);
+
+/**
  * @brief 查询 ML307R PDP 上下文
  * @details Send AT+MIPCALL? and parse the +MIPCALL line matching the given cid,
  *          then refresh the cached PDP context. Only ML307R_PRIMARY_CID is
@@ -1163,6 +1362,10 @@ static const modem_ops_t s_ml307r_ops = {
     .activate_pdp = ml307r_activate_pdp,
     .deactivate_pdp = ml307r_deactivate_pdp,
     .get_pdp_context = ml307r_get_pdp_context,
+    .socket_open = ml307r_socket_open,
+    .socket_send = ml307r_socket_send,
+    .socket_recv = ml307r_socket_recv,
+    .socket_close = ml307r_socket_close,
     .mqtt_configure = ml307r_mqtt_configure,
     .mqtt_tcp_connect = ml307r_mqtt_tcp_connect,
     .mqtt_connect = ml307r_mqtt_connect,
@@ -1271,7 +1474,10 @@ static esp_err_t send_cmd_with_options(modem_ml307r_t *self, const char *cmd,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     init_cmd_ctx(ctx);
-    return at_engine_send_cmd_with_options(self->base.at, cmd, &ctx->response, options);
+    esp_err_t ret = at_engine_send_cmd_with_options(self->base.at, cmd,
+                                                    &ctx->response, options);
+    dispatch_tcp_urcs_from_response(self, &ctx->response);
+    return ret;
 }
 
 static esp_err_t ensure_at_ok(const at_response_t *response, const char *cmd)
@@ -1331,6 +1537,281 @@ static const char *find_line_with_prefix(const at_response_t *response,
 static const char *first_data_line(const at_response_t *response)
 {
     return find_line_with_prefix(response, "");
+}
+
+static bool response_contains(const at_response_t *response, const char *needle)
+{
+    if (!response || !response->lines || !needle) {
+        return false;
+    }
+
+    int count = response->line_count;
+    if (count > response->max_lines) {
+        count = response->max_lines;
+    }
+
+    for (int i = 0; i < count; i++) {
+        const char *line = response->lines[i];
+        if (line && strstr(line, needle)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static esp_err_t parse_mipsend_response(const at_response_t *response,
+                                        uint8_t *conn_id,
+                                        size_t *sent_len)
+{
+    ESP_RETURN_ON_FALSE(response && conn_id && sent_len,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const char *line = find_line_with_prefix(response, "+MIPSEND:");
+    if (!line) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = skip_prefix_value(line, "+MIPSEND:");
+    if (!cursor) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    unsigned long parsed_conn_id = 0;
+    unsigned long parsed_sent_len = 0;
+    unsigned long size_max = (unsigned long)SIZE_MAX;
+    if (!parse_mqtt_uint_field(&cursor, UINT8_MAX, &parsed_conn_id) ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, size_max, &parsed_sent_len)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *conn_id = (uint8_t)parsed_conn_id;
+    *sent_len = (size_t)parsed_sent_len;
+    return ESP_OK;
+}
+
+static esp_err_t parse_mipopen_response(const at_response_t *response,
+                                        uint8_t *conn_id,
+                                        int *result)
+{
+    ESP_RETURN_ON_FALSE(response && conn_id && result,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    const char *line = find_line_with_prefix(response, "+MIPOPEN:");
+    if (!line) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const char *cursor = skip_prefix_value(line, "+MIPOPEN:");
+    if (!cursor) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    unsigned long parsed_conn_id = 0;
+    unsigned long parsed_result = 0;
+    if (!parse_mqtt_uint_field(&cursor, UINT8_MAX, &parsed_conn_id) ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, INT_MAX, &parsed_result)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *conn_id = (uint8_t)parsed_conn_id;
+    *result = (int)parsed_result;
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_map_mipopen_result(int result)
+{
+    switch (result) {
+    case 0:
+        return ESP_OK;
+    case 558:
+        return ESP_ERR_TIMEOUT;
+    case 551:
+    case 552:
+    case 553:
+    case 570:
+        return ESP_ERR_INVALID_STATE;
+    case 580:
+        return ESP_ERR_INVALID_ARG;
+    default:
+        return ESP_FAIL;
+    }
+}
+
+static esp_err_t ml307r_tcp_read_len_for_line_buf(int rx_line_buf_size,
+                                                  size_t *out_read_len)
+{
+    ESP_RETURN_ON_FALSE(out_read_len, ESP_ERR_INVALID_ARG, TAG,
+                        "out_read_len is NULL");
+    ESP_RETURN_ON_FALSE(rx_line_buf_size > 0, ESP_ERR_INVALID_STATE, TAG,
+                        "invalid AT line buffer size");
+
+    if ((size_t)rx_line_buf_size <= ML307R_TCP_MIPRD_LINE_OVERHEAD + 2U) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    size_t hex_chars = (size_t)rx_line_buf_size - ML307R_TCP_MIPRD_LINE_OVERHEAD - 1U;
+    size_t line_cap = hex_chars / 2U;
+    if (line_cap == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (line_cap > ML307R_TCP_MAX_HEX_READ_BYTES) {
+        line_cap = ML307R_TCP_MAX_HEX_READ_BYTES;
+    }
+    *out_read_len = (size_t)line_cap;
+    return ESP_OK;
+}
+
+static void dispatch_tcp_urcs_from_response(modem_ml307r_t *self,
+                                            const at_response_t *response)
+{
+    if (!self || !response || !response->lines) {
+        return;
+    }
+
+    int count = response->line_count;
+    if (count > response->max_lines) {
+        count = response->max_lines;
+    }
+
+    size_t rtcp_prefix_len = strlen(ML307R_MIPURC_RTCP_PREFIX);
+    size_t disconn_prefix_len = strlen(ML307R_MIPURC_DISCONN_PREFIX);
+    for (int i = 0; i < count; i++) {
+        const char *line = response->lines[i];
+        if (!line) {
+            continue;
+        }
+
+        bool line_dispatched = false;
+        if (strncmp(line, ML307R_MIPURC_RTCP_PREFIX, rtcp_prefix_len) == 0) {
+            tcp_readable_urc_handler(ML307R_MIPURC_RTCP_PREFIX, line, self);
+            line_dispatched = true;
+        }
+        if (!line_dispatched &&
+            strncmp(line, ML307R_MIPURC_DISCONN_PREFIX, disconn_prefix_len) == 0) {
+            tcp_disconn_urc_handler(ML307R_MIPURC_DISCONN_PREFIX, line, self);
+        }
+    }
+}
+
+static const char *find_miprd_hex_line(const at_response_t *response,
+                                       size_t *out_remaining_len)
+{
+    if (!response || !response->lines || !out_remaining_len) {
+        return NULL;
+    }
+
+    int count = response->line_count;
+    if (count > response->max_lines) {
+        count = response->max_lines;
+    }
+
+    for (int i = 0; i < count; i++) {
+        const char *line = response->lines[i];
+        const char *cursor = skip_prefix_value(line, "+MIPRD:");
+        if (!cursor) {
+            continue;
+        }
+
+        unsigned long conn_id = 0;
+        unsigned long remaining_len = 0;
+        unsigned long data_len = 0;
+        unsigned long size_max = (unsigned long)SIZE_MAX;
+        if (!parse_mqtt_uint_field(&cursor, UINT_MAX, &conn_id) ||
+            conn_id != ML307R_TCP_CONN_ID ||
+            !parse_mqtt_comma(&cursor) ||
+            !parse_mqtt_uint_field(&cursor, size_max, &remaining_len) ||
+            !parse_mqtt_comma(&cursor) ||
+            !parse_mqtt_uint_field(&cursor, size_max, &data_len) ||
+            !parse_mqtt_comma(&cursor)) {
+            continue;
+        }
+
+        const char *hex_line = cursor;
+        size_t hex_len = strlen(hex_line);
+        if ((hex_len % 2U) != 0 || hex_len / 2U != (size_t)data_len) {
+            continue;
+        }
+        bool valid_hex = true;
+        for (size_t j = 0; j < hex_len; j++) {
+            if (hex_nibble(hex_line[j]) < 0) {
+                valid_hex = false;
+                break;
+            }
+        }
+        if (!valid_hex) {
+            continue;
+        }
+
+        *out_remaining_len = (size_t)remaining_len;
+        return hex_line;
+    }
+
+    return NULL;
+}
+
+static esp_err_t decode_hex_payload(const char *hex, uint8_t **out_payload,
+                                    size_t *out_len)
+{
+    ESP_RETURN_ON_FALSE(hex && out_payload && out_len, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+
+    *out_payload = NULL;
+    *out_len = 0;
+
+    size_t hex_len = strlen(hex);
+    if ((hex_len % 2U) != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    size_t payload_len = hex_len / 2U;
+    uint8_t *payload = malloc(payload_len ? payload_len : 1U);
+    if (!payload) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    for (size_t i = 0; i < payload_len; i++) {
+        int hi = hex_nibble(hex[i * 2U]);
+        int lo = hex_nibble(hex[i * 2U + 1U]);
+        if (hi < 0 || lo < 0) {
+            free(payload);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        payload[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    *out_payload = payload;
+    *out_len = payload_len;
+    return ESP_OK;
+}
+
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
 }
 
 static esp_err_t copy_str_field(char *dst, size_t dst_size, const char *src)
@@ -2332,6 +2813,10 @@ static esp_err_t register_urcs(modem_ml307r_t *self)
         { ML307R_URC_CGREG, &self->cgreg_handler, reg_urc_handler },
         { ML307R_URC_MIPCALL, &self->mipcall_handler, mipcall_urc_handler },
         { ML307R_URC_MQTTURC, &self->mqtturc_handler, mqtturc_urc_handler },
+        { ML307R_MIPURC_RTCP_PREFIX, &self->tcp_readable_handler,
+          tcp_readable_urc_handler },
+        { ML307R_MIPURC_DISCONN_PREFIX, &self->tcp_disconn_handler,
+          tcp_disconn_urc_handler },
     };
 
     size_t urc_count = sizeof(urcs) / sizeof(urcs[0]);
@@ -2401,6 +2886,8 @@ static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self)
         { ML307R_URC_CGREG, &self->cgreg_handler },
         { ML307R_URC_MIPCALL, &self->mipcall_handler },
         { ML307R_URC_MQTTURC, &self->mqtturc_handler },
+        { ML307R_MIPURC_RTCP_PREFIX, &self->tcp_readable_handler },
+        { ML307R_MIPURC_DISCONN_PREFIX, &self->tcp_disconn_handler },
     };
 
     esp_err_t ret = ESP_OK;
@@ -3067,7 +3554,7 @@ static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid)
 }
 
 static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
-                                         modem_pdp_context_t *pdp)
+                                          modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
@@ -3094,6 +3581,258 @@ static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
     xSemaphoreGive(self->base.lock);
 
     return ESP_OK;
+}
+
+static esp_err_t ml307r_socket_prepare(modem_ml307r_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    char cid_cmd[32];
+    int written = snprintf(cid_cmd, sizeof(cid_cmd), "AT+MIPCFG=\"cid\",0,%u",
+                           (unsigned int)ML307R_PRIMARY_CID);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cid_cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MIPCFG cid command truncated");
+
+    /* AT command shapes: AT+MIPCFG="cid",0,%u;
+     * AT+MIPCFG="encoding",0,0,1; AT+MIPCFG="autofree",0,0. */
+    const char *cmds[] = {
+        cid_cmd,
+        "AT+MIPCFG=\"encoding\",0,0,1",
+        "AT+MIPCFG=\"autofree\",0,0",
+    };
+
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        ml307r_cmd_ctx_t ctx;
+        esp_err_t ret = send_cmd(self, cmds[i], &ctx, 0);
+        ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cmds[i]);
+
+        ret = ensure_at_ok(&ctx.response, cmds[i]);
+        ESP_RETURN_ON_ERROR(ret, TAG, "%s failed", cmds[i]);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_socket_open(modem_handle_t *me,
+                                    const modem_socket_open_t *open)
+{
+    ESP_RETURN_ON_FALSE(me && open && open->host && open->host[0] &&
+                        open->port > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket open args");
+    ESP_RETURN_ON_FALSE(open->conn_id == ML307R_TCP_CONN_ID &&
+                        open->proto == MODEM_SOCKET_PROTO_TCP,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    esp_err_t ret = ml307r_socket_prepare(self);
+    ESP_RETURN_ON_ERROR(ret, TAG, "prepare ML307R TCP socket failed");
+
+    char *host = escape_at_string(open->host);
+    ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape socket host failed");
+
+    uint32_t timeout_s = 75U;
+    if (open->timeout_ms > 0) {
+        timeout_s = (open->timeout_ms / 1000U) +
+                    ((open->timeout_ms % 1000U) ? 1U : 0U);
+    }
+
+    /* AT command shape: AT+MIPOPEN=0,"TCP","%s",%u,%u,2. */
+    int needed = snprintf(NULL, 0, "AT+MIPOPEN=0,\"TCP\",\"%s\",%u,%u,2",
+                          host, (unsigned int)open->port,
+                          (unsigned int)timeout_s);
+    if (needed < 0) {
+        free(host);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char *cmd = malloc((size_t)needed + 1U);
+    if (!cmd) {
+        free(host);
+        return ESP_ERR_NO_MEM;
+    }
+    int written = snprintf(cmd, (size_t)needed + 1U,
+                           "AT+MIPOPEN=0,\"TCP\",\"%s\",%u,%u,2",
+                           host, (unsigned int)open->port,
+                           (unsigned int)timeout_s);
+    if (written < 0 || (size_t)written > (size_t)needed) {
+        free(cmd);
+        free(host);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_PREFIX,
+        .value = "+MIPOPEN:",
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = open->timeout_ms ? open->timeout_ms : 75000U,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    ml307r_cmd_ctx_t ctx;
+    ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    if (ret == ESP_OK) {
+        uint8_t open_conn_id = 0;
+        int open_result = 0;
+        ret = parse_mipopen_response(&ctx.response, &open_conn_id, &open_result);
+        if (ret == ESP_OK) {
+            if (open->modem_error_code) {
+                *open->modem_error_code = open_result;
+            }
+        }
+        if (ret == ESP_OK && open_conn_id != ML307R_TCP_CONN_ID) {
+            ret = ESP_ERR_INVALID_RESPONSE;
+        } else if (ret == ESP_OK && open_result == 0) {
+            ret = ESP_OK;
+        } else if (ret == ESP_OK) {
+            ret = ml307r_map_mipopen_result(open_result);
+        }
+    }
+
+    free(cmd);
+    free(host);
+    return ret;
+}
+
+static esp_err_t ml307r_socket_send(modem_handle_t *me,
+                                    const modem_socket_send_t *send)
+{
+    ESP_RETURN_ON_FALSE(me && send && send->data && send->len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket send args");
+    ESP_RETURN_ON_FALSE(send->conn_id == ML307R_TCP_CONN_ID,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+    ESP_RETURN_ON_FALSE(send->len <= UINT_MAX, ESP_ERR_INVALID_ARG,
+                        TAG, "socket payload too large");
+
+    char cmd[32];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MIPSEND=0,%u",
+                           (unsigned int)send->len);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MIPSEND command truncated");
+
+    const at_cmd_options_t options = {
+        .timeout_ms = send->timeout_ms,
+        .flags = 0,
+        .success_matches = NULL,
+        .success_match_count = 0,
+    };
+
+    modem_ml307r_t *self = to_ml307r(me);
+    ml307r_cmd_ctx_t ctx;
+    init_cmd_ctx(&ctx);
+    esp_err_t ret = at_engine_send_cmd_with_payload(self->base.at, cmd,
+                                                     send->data, send->len,
+                                                     ML307R_TCP_PAYLOAD_PROMPT,
+                                                     &ctx.response, &options);
+    dispatch_tcp_urcs_from_response(self, &ctx.response);
+    uint8_t sent_conn_id = 0;
+    size_t sent_len = 0;
+    if (ret == ESP_OK &&
+        parse_mipsend_response(&ctx.response, &sent_conn_id, &sent_len) == ESP_OK &&
+        sent_conn_id == ML307R_TCP_CONN_ID && sent_len == send->len) {
+        return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return ESP_ERR_INVALID_RESPONSE;
+}
+
+static esp_err_t ml307r_socket_recv(modem_handle_t *me,
+                                    const modem_socket_recv_t *recv,
+                                    modem_socket_recv_result_t *result)
+{
+    ESP_RETURN_ON_FALSE(me && recv && result && recv->max_len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid socket recv args");
+    ESP_RETURN_ON_FALSE(recv->conn_id == ML307R_TCP_CONN_ID,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+    ESP_RETURN_ON_FALSE(recv->max_len <= UINT_MAX, ESP_ERR_INVALID_ARG,
+                        TAG, "socket recv length too large");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    size_t line_cap = 0;
+    esp_err_t ret = ml307r_tcp_read_len_for_line_buf(self->config.at_rx_line_buf_size, &line_cap);
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT line buffer too small for AT+MIPRD");
+
+    size_t read_len = recv->max_len;
+    if (read_len > ML307R_TCP_MAX_HEX_READ_BYTES) {
+        read_len = ML307R_TCP_MAX_HEX_READ_BYTES;
+    }
+    if (read_len > line_cap) {
+        read_len = line_cap;
+    }
+
+    char cmd[32];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MIPRD=0,%u",
+                           (unsigned int)read_len);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MIPRD command truncated");
+
+    ml307r_cmd_ctx_t ctx;
+    ret = send_cmd(self, cmd, &ctx, 0);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+MIPRD failed");
+
+    ret = ensure_at_ok(&ctx.response, "AT+MIPRD");
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+MIPRD failed");
+
+    size_t remaining_len = 0;
+    const char *hex = find_miprd_hex_line(&ctx.response, &remaining_len);
+    if (!hex) {
+        if (find_line_with_prefix(&ctx.response, "+MIPRD:")) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        result->conn_id = ML307R_TCP_CONN_ID;
+        result->payload = NULL;
+        result->payload_len = 0;
+        result->remaining_len = 0;
+        result->modem_error_code = 0;
+        return ESP_OK;
+    }
+
+    uint8_t *payload = NULL;
+    size_t payload_len = 0;
+    ret = decode_hex_payload(hex, &payload, &payload_len);
+    ESP_RETURN_ON_ERROR(ret, TAG, "decode AT+MIPRD payload failed");
+
+    result->conn_id = ML307R_TCP_CONN_ID;
+    result->payload = payload;
+    result->payload_len = payload_len;
+    result->remaining_len = remaining_len;
+    result->modem_error_code = 0;
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_socket_close(modem_handle_t *me,
+                                     const modem_socket_close_t *close)
+{
+    ESP_RETURN_ON_FALSE(me && close, ESP_ERR_INVALID_ARG, TAG,
+                        "invalid socket close args");
+    ESP_RETURN_ON_FALSE(close->conn_id == ML307R_TCP_CONN_ID,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
+
+    const at_cmd_success_match_t match = {
+        .type = AT_CMD_SUCCESS_MATCH_PREFIX,
+        .value = "+MIPCLOSE:",
+    };
+    const at_cmd_options_t options = {
+        .timeout_ms = close->timeout_ms,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &match,
+        .success_match_count = 1,
+    };
+
+    modem_ml307r_t *self = to_ml307r(me);
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd_with_options(self, "AT+MIPCLOSE=0", &ctx, &options);
+    if (ret == ESP_OK && response_contains(&ctx.response, "+MIPCLOSE: 0")) {
+        return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return ESP_ERR_INVALID_RESPONSE;
 }
 
 static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
@@ -3859,6 +4598,161 @@ static void mqtturc_urc_handler(const char *prefix, const char *line, void *user
     }
 
     handle_mqtturc((modem_ml307r_t *)user_ctx, line);
+}
+
+static void ml307r_post_tcp_readable(modem_ml307r_t *self, size_t recv_len,
+                                     size_t total_len)
+{
+    if (!self) {
+        return;
+    }
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_PROTOCOL_DATA,
+        .data.protocol_data = {
+            .protocol = MODEM_PROTOCOL_TCP,
+            .conn_id = ML307R_TCP_CONN_ID,
+            .payload_len = recv_len,
+            .reason = (int)total_len,
+        },
+    };
+    esp_err_t ret = post_event_nonblocking(self, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post TCP readable event failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void ml307r_post_tcp_closed(modem_ml307r_t *self, int reason,
+                                   int modem_error_code)
+{
+    if (!self) {
+        return;
+    }
+
+    const modem_event_t event = {
+        .id = MODEM_EVENT_PROTOCOL_CLOSED,
+        .data.protocol_data = {
+            .protocol = MODEM_PROTOCOL_TCP,
+            .conn_id = ML307R_TCP_CONN_ID,
+            .reason = reason,
+            .modem_error_code = modem_error_code,
+        },
+    };
+    esp_err_t ret = post_event_nonblocking(self, &event);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "post TCP closed event failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void tcp_readable_urc_handler(const char *prefix, const char *line,
+                                     void *user_ctx)
+{
+    (void)prefix;
+
+    if (!user_ctx || !line) {
+        return;
+    }
+
+    size_t recv_len = 0;
+    size_t total_len = 0;
+    esp_err_t ret = parse_tcp_rtcp_urc(line, &recv_len, &total_len);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "parse TCP readable URC failed: %s", line);
+        return;
+    }
+
+    ml307r_post_tcp_readable((modem_ml307r_t *)user_ctx, recv_len, total_len);
+}
+
+static void tcp_disconn_urc_handler(const char *prefix, const char *line,
+                                    void *user_ctx)
+{
+    (void)prefix;
+
+    if (!user_ctx || !line) {
+        return;
+    }
+
+    int connect_state = 0;
+    esp_err_t ret = parse_tcp_disconn_urc(line, &connect_state);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "parse TCP disconn URC failed: %s", line);
+        return;
+    }
+
+    ml307r_post_tcp_closed((modem_ml307r_t *)user_ctx, connect_state, 0);
+}
+
+static esp_err_t parse_tcp_rtcp_urc(const char *line, size_t *recv_len,
+                                    size_t *total_len)
+{
+    ESP_RETURN_ON_FALSE(recv_len && total_len, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+
+    /* URC shape: +MIPURC: "rtcp",0,<recv_len>,<total_len>. */
+    const char *cursor = skip_prefix_value(line, ML307R_MIPURC_RTCP_PREFIX);
+    if (!cursor) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (!parse_mqtt_comma(&cursor)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    unsigned long conn_id = 0;
+    unsigned long parsed_recv_len = 0;
+    unsigned long parsed_total_len = 0;
+    unsigned long size_max = (unsigned long)((size_t)-1);
+    if (!parse_mqtt_uint_field(&cursor, UINT_MAX, &conn_id) ||
+        conn_id != ML307R_TCP_CONN_ID ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, size_max, &parsed_recv_len) ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, size_max, &parsed_total_len)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *recv_len = (size_t)parsed_recv_len;
+    *total_len = (size_t)parsed_total_len;
+    return ESP_OK;
+}
+
+static esp_err_t parse_tcp_disconn_urc(const char *line, int *connect_state)
+{
+    ESP_RETURN_ON_FALSE(connect_state, ESP_ERR_INVALID_ARG, TAG,
+                        "connect_state is NULL");
+
+    /* URC shape: +MIPURC: "disconn",0,<connect_state>. */
+    const char *cursor = skip_prefix_value(line, ML307R_MIPURC_DISCONN_PREFIX);
+    if (!cursor) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (!parse_mqtt_comma(&cursor)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    unsigned long conn_id = 0;
+    unsigned long parsed_state = 0;
+    if (!parse_mqtt_uint_field(&cursor, UINT_MAX, &conn_id) ||
+        conn_id != ML307R_TCP_CONN_ID ||
+        !parse_mqtt_comma(&cursor) ||
+        !parse_mqtt_uint_field(&cursor, INT_MAX, &parsed_state)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *connect_state = (int)parsed_state;
+    return ESP_OK;
 }
 
 static esp_err_t query_mipcall(modem_ml307r_t *self, uint8_t cid,

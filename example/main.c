@@ -43,6 +43,12 @@ void app_main(void)
     case EXAMPLE_ML307R_MQTT_CLIENT:
         example_ml307r_mqtt_client_run();
         break;
+    case EXAMPLE_AIR780EP_TCP_CLIENT:
+        example_air780ep_tcp_client_run();
+        break;
+    case EXAMPLE_ML307R_TCP_CLIENT:
+        example_ml307r_tcp_client_run();
+        break;
     default:
         ESP_LOGE(TAG, "invalid EXAMPLE_SELECTED=%d", EXAMPLE_SELECTED);
         idle_forever();

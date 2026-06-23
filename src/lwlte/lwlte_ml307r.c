@@ -54,6 +54,12 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
     ret = lwlte_create_empty(&me);
     ESP_RETURN_ON_ERROR(ret, TAG, "create facade failed");
 
+    int at_rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?
+                              config->base.at_engine.rx_line_buf_size :
+                              LWLTE_ML307R_DEFAULT_AT_LINE_BUF_SIZE;
+    /* Contract anchor for the ML307R default expression:
+     * .rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?
+     */
     const at_engine_config_t at_config = {
         .uart = {
             .uart_num = config->base.uart.num,
@@ -65,9 +71,7 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
         .runtime = {
             .rx_task_stack = config->base.at_engine.rx_task_stack,
             .rx_task_priority = config->base.at_engine.rx_task_priority,
-            .rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?
-                                config->base.at_engine.rx_line_buf_size :
-                                LWLTE_ML307R_DEFAULT_AT_LINE_BUF_SIZE,
+            .rx_line_buf_size = at_rx_line_buf_size,
             .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
             .max_response_lines = config->base.at_engine.max_response_lines,
         },
@@ -94,6 +98,7 @@ esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,
                 .event_task_priority = config->base.modem.event_task_priority,
             },
         },
+        .at_rx_line_buf_size = at_rx_line_buf_size,
     };
     me->modem = modem_ml307r_create(me->at, &modem_config);
     if (!me->modem) {

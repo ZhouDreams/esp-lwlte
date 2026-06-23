@@ -116,6 +116,8 @@
 
 本节按 `TCP_IP用户手册_5.1.2-R - Pictures_Version` 图片版第 3 章校对。该手册同时覆盖 TCP/UDP Socket、DNS、PING、透传退出、TCP/IP URC、NTP 和 TCP/UDP 相关错误码；ML307R 与通用 4G/Cat1 描述不一致处以 ML307R 注脚为准。
 
+实现注记：TCP client v1 uses `AT+MIPCFG="cid"`, `AT+MIPCFG="encoding",0,0,1`, `AT+MIPOPEN`, `AT+MIPSEND`, `AT+MIPRD`, and `AT+MIPCLOSE`. RX cache notifications use `+MIPURC: "rtcp"`; disconnect notifications use `+MIPURC: "disconn"`.
+
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
 | 连接配置 | `AT+MIPCFG="cid",<connect_id>,<cid>` | `OK` 或 `+MIPCFG: "cid",...` | `connect_id=0..5`；`cid` 范围同 `CGDCONT`，需已激活 | 9s | socket 创建前绑定 PDP | 不指定时使用默认 PDP；配置仅当前启动周期有效 |
@@ -127,7 +129,7 @@
 | ACK 上报 | `AT+MIPCFG="ackmode",<connect_id>,<ack_mode>` | `OK` 或 `+MIPCFG: "ackmode",...` | `0` 不上报；`1` ACK 时上报 | 9s | 可选发送确认 | TCP 有效，UDP 无效 |
 | SSL socket | `AT+MIPCFG="ssl",<connect_id>,<ssl_enable>,<ssl_id>` | `OK` 或 `+MIPCFG: "ssl",...` | `ssl_enable=0/1`；`ssl_id` 参见 SSL context | 9s | TLS socket 连接前配置 | 需先用 `AT+MSSLCFG` 配置证书/认证；ML307R SSL 流缓存模式需先读完当前缓存再接收后续数据 |
 | TCP Keepalive | `AT+MIPTKA=<connect_id>[,<keepalive>[,<keepidle>[,<keepinterval>[,<keepcount>]]]]` | `+MIPTKA: <connect_id>,...` + `OK` 或 `OK` | `keepalive=0/1`；`keepidle=30..7200s`，默认 90；`keepinterval=30..600s`，默认 75；`keepcount=1..9`，默认 3 | 9s | 长连接保活配置 | UDP 不可设置 |
-| 建立 TCP/UDP | `AT+MIPOPEN=<connect_id>,"<proto_type>","<address>",<remote_port>[,<timeout>[,<access_mode>[,<local_port>]]]` | 立即 `OK`，随后 `+MIPOPEN: <connect_id>,<result>`；透传成功为 `CONNECT` | `proto_type="TCP"/"UDP"`；`timeout=1..180s`，默认 60；`access_mode=0` 普通，`1` 透传，`2` TCP 流缓存，`3` UDP 包缓存；`local_port=0` 自动分配 | 命令 9s；连接结果按业务预算等待 | `modem_socket_connect()` | `result=0` 成功；`local_port` 建议避开协议默认端口 |
+| 建立 TCP/UDP | `AT+MIPOPEN=<connect_id>,"<proto_type>","<address>",<remote_port>[,<timeout>[,<access_mode>[,<local_port>]]]` | 立即 `OK`，随后 `+MIPOPEN: <connect_id>,<result>`；透传成功为 `CONNECT` | `proto_type="TCP"/"UDP"`；`timeout=1..180s`，默认 60；`access_mode=0` 普通，`1` 透传，`2` TCP 流缓存，`3` UDP 包缓存；`local_port=0` 自动分配 | 命令 9s；连接结果按业务预算等待 | `modem_socket_open()` | `result=0` 成功；`local_port` 建议避开协议默认端口 |
 | 关闭 TCP/UDP | `AT+MIPCLOSE=<connect_id>[,<mode>]` | `OK`，随后 `+MIPCLOSE: <connect_id>[,<ret_code>]` | ML307R 不支持配置 `mode`，等待缓存发送完再关闭 | 命令 9s；关闭结果按业务预算等待 | `modem_socket_close()` | `ret_code=0` 正常，`1` 服务器无响应/超时，`2` RST/传输超时等其他原因 |
 | 发送数据 | `AT+MIPSEND=<connect_id>[,<send_length>[,<data>[,<rai>[,<seq>[,<pri_flag>]]]]]` | `>` 输入后 `OK`，或 `+MIPSEND: <connect_id>,<send_length>` + `OK` | 命令内数据 `0..1460`；数据模式 `1..8192`；`CTRL+Z` 发送，`ESC` 取消 | prompt 9s；发送完成按业务预算 | `modem_socket_send()` | `+MIPSEND` 表示进入协议栈缓存，不代表对端收到；4G/Cat1 不支持 RAI/SEQ，`pri_flag` 暂不支持；ML307R `send_length=0` 不是 UDP 空包发送 |
 | 读取缓存 | `AT+MIPRD=<connect_id>[,<read_len>|<pack_count>]` | `+MIPRD: <connect_id>,<unread>,<data_len>,<data>` + `OK` 或仅 `OK` | TCP `read_len=0..4096`，`0` 或超过缓存表示读全部；UDP 用包数量；ML307R UDP 缓存 256 包 | 9s 或按长度预算 | `modem_socket_recv()` | 仅缓存模式使用；无可读数据时仅返回 `OK`；按长度解析数据，避免按行截断 |
@@ -359,17 +361,17 @@ PDP 与应用层拨号：
 5. 可选 `AT+MPING="<host>",10,4,32,1` 执行基础连通性检查，解析每行 `+MPING: <result>,"<ip>",<packet_len>,<time>,<ttl>` 和末尾 `+MPING: "statistics",<sent>,<lost>,<rtt_min>,<rtt_max>,<rtt_avg>`。
 6. 仅断开应用层网络时执行 `AT+MIPCALL=0,1`；需要去激活 PDP 时执行 `AT+CFUN=4`。
 
-TCP Socket 非透传推荐流程：
+TCP Socket 非透传推荐流程（TCP client v1）：
 
 1. 完成 `MIPCALL` 应用层拨号并缓存本地 IP。
 2. `AT+MIPCFG="cid",0,1` 绑定连接实例到 `cid=1`。
-3. `AT+MIPCFG="encoding",0,0,0` 使用原始数据输入输出；二进制可改为 HEX 或缓存模式。
+3. `AT+MIPCFG="encoding",0,0,1` 使用 raw 输入 + HEX 缓存输出，保证 RX 二进制安全且避免 payload 直接混入 AT 流。
 4. 可选 `AT+MIPCFG="autofree",0,1`，异常断开后由 Core 显式释放资源。
-5. `AT+MIPOPEN=0,"TCP","<host>",<port>,60,0`，等待 `+MIPOPEN: 0,0`。
-6. `AT+MIPSEND=0,<len>`，等待 `>` 后输入精确长度数据，等待 `OK` 或 `+MIPSEND: 0,<len>`。
-7. 缓存/手动取数场景收到 `+MIPURC` 后执行 `AT+MIPRD=0,<len>`。
+5. `AT+MIPOPEN=0,"TCP","<host>",<port>,60,2`，等待 `+MIPOPEN: 0,0`。
+6. `AT+MIPSEND=0,<len>`，等待 `>` 后输入精确长度数据；`+MIPSEND: 0,<len>` 表示进入协议栈缓存，随后仍需等待尾随 `OK`，避免 `OK` 残留污染下一条命令。
+7. 收到 `+MIPURC: "rtcp",0,<recv_length>,<total_length>` 后执行 `AT+MIPRD=0,<len>`，按 HEX 长度解码 payload；仅返回 `OK` 表示 stale readable/no cached data，不按错误处理。
 8. 可选 `AT+MIPSACK=0` 查询未 ACK 字节数。
-9. `AT+MIPCLOSE=0` 关闭连接，等待 `+MIPCLOSE: 0`。
+9. 收到 `+MIPURC: "disconn",0,<connect_state>` 或主动关闭时执行 `AT+MIPCLOSE=0` 释放连接，等待 `+MIPCLOSE: 0`。
 
 HTTP/HTTPS 推荐流程：
 

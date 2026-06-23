@@ -138,6 +138,35 @@ typedef esp_err_t (*modem_ping_fn)(modem_handle_t *me,
                                    modem_ping_summary_t *summary);
 
 /**
+ * @brief 打开 Socket 操作函数
+ * @details Open socket operation function
+ */
+typedef esp_err_t (*modem_socket_open_fn)(modem_handle_t *me,
+                                          const modem_socket_open_t *open);
+
+/**
+ * @brief 发送 Socket 数据操作函数
+ * @details Send socket data operation function
+ */
+typedef esp_err_t (*modem_socket_send_fn)(modem_handle_t *me,
+                                          const modem_socket_send_t *send);
+
+/**
+ * @brief 接收 Socket 数据操作函数
+ * @details Receive socket data operation function
+ */
+typedef esp_err_t (*modem_socket_recv_fn)(modem_handle_t *me,
+                                          const modem_socket_recv_t *recv,
+                                          modem_socket_recv_result_t *result);
+
+/**
+ * @brief 关闭 Socket 操作函数
+ * @details Close socket operation function
+ */
+typedef esp_err_t (*modem_socket_close_fn)(modem_handle_t *me,
+                                           const modem_socket_close_t *close);
+
+/**
  * @brief 调制解调器虚函数表
  * @details Modem virtual function table
  */
@@ -171,6 +200,12 @@ typedef struct modem_ops {
     modem_mqtt_topic_fn mqtt_unsubscribe;            /**< 取消订阅 MQTT 主题； Unsubscribe MQTT topic */
     modem_mqtt_publish_fn mqtt_publish;              /**< 发布 MQTT 消息； Publish MQTT message */
     modem_mqtt_get_status_fn mqtt_get_status;        /**< 查询 MQTT 状态； Query MQTT status */
+
+    /* ── Socket 客户端； Socket client ───────────────────── */
+    modem_socket_open_fn socket_open;                /**< 打开 socket； Open socket */
+    modem_socket_send_fn socket_send;                /**< 发送 socket 数据； Send socket data */
+    modem_socket_recv_fn socket_recv;                /**< 接收 socket 数据； Receive socket data */
+    modem_socket_close_fn socket_close;              /**< 关闭 socket； Close socket */
 
     /* ── 诊断； Diagnostics ──────────────────────────────── */
     modem_ping_fn ping;                              /**< 执行 Ping 诊断； Execute ping diagnostic */

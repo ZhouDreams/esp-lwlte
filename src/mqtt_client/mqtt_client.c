@@ -45,6 +45,7 @@ static void mqtt_protocol_data_cb(core_handle_t *me,
                                   void *user_ctx);
 static void mqtt_protocol_closed_cb(core_handle_t *me,
                                     core_protocol_t protocol,
+                                    const core_protocol_data_t *data,
                                     void *user_ctx);
 static void mqtt_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
                                   core_cmd_result_t result,
@@ -294,9 +295,11 @@ static void mqtt_protocol_data_cb(core_handle_t *me,
 
 static void mqtt_protocol_closed_cb(core_handle_t *me,
                                     core_protocol_t protocol,
+                                    const core_protocol_data_t *data,
                                     void *user_ctx)
 {
     (void)me;
+    (void)data;
     mqtt_client_handle_t *client = (mqtt_client_handle_t *)user_ctx;
     if (!client || protocol != CORE_PROTOCOL_MQTT) {
         return;
@@ -381,8 +384,11 @@ static void cleanup_partial_client(mqtt_client_handle_t *me)
     }
 
     if (me->core) {
-        (void)core_register_protocol_callback(me->core, NULL, NULL);
-        (void)core_register_protocol_closed_callback(me->core, NULL, NULL);
+        (void)core_register_protocol_callback(me->core, CORE_PROTOCOL_MQTT,
+                                              NULL, NULL);
+        (void)core_register_protocol_closed_callback(me->core,
+                                                     CORE_PROTOCOL_MQTT,
+                                                     NULL, NULL);
     }
     if (me->config.event.loop) {
         (void)esp_event_handler_unregister_with(me->config.event.loop, LWLTE_EVENT,
@@ -927,12 +933,14 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
         return NULL;
     }
 
-    ret = core_register_protocol_callback(core, mqtt_protocol_data_cb, me);
+    ret = core_register_protocol_callback(core, CORE_PROTOCOL_MQTT,
+                                          mqtt_protocol_data_cb, me);
     if (ret != ESP_OK) {
         cleanup_partial_client(me);
         return NULL;
     }
-    ret = core_register_protocol_closed_callback(core, mqtt_protocol_closed_cb, me);
+    ret = core_register_protocol_closed_callback(core, CORE_PROTOCOL_MQTT,
+                                                 mqtt_protocol_closed_cb, me);
     if (ret != ESP_OK) {
         cleanup_partial_client(me);
         return NULL;
@@ -1017,8 +1025,11 @@ esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me)
     }
 
     if (me->core) {
-        (void)core_register_protocol_callback(me->core, NULL, NULL);
-        (void)core_register_protocol_closed_callback(me->core, NULL, NULL);
+        (void)core_register_protocol_callback(me->core, CORE_PROTOCOL_MQTT,
+                                              NULL, NULL);
+        (void)core_register_protocol_closed_callback(me->core,
+                                                     CORE_PROTOCOL_MQTT,
+                                                     NULL, NULL);
     }
 
     if (me->fsm_queue) {

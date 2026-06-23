@@ -13,7 +13,7 @@ App
   ↓ 只依赖 src/include/lwlte.h
 LWLTE Facade
   ↓ 调用 Core/MQTT/TCP/HTTP 等 service API，并在模块 factory 中完成装配
-Service Layer: MQTT → Core；Core 是访问 Modem 的 service；future TCP/HTTP 边界待设计
+Service Layer: MQTT/TCP → Core；Core 是访问 Modem 的 service；HTTP 边界待设计
   ↓ Core 调用
 Modem Adapter
   ↓
@@ -24,7 +24,7 @@ AT Engine
 |----|------|
 | App | 用户业务逻辑只操作 `lwlte_handle_t`；板级初始化代码 include `lwlte.h` 并填写 `lwlte_air780ep_config_t` 等模块配置 |
 | LWLTE Facade | `lwlte_handle_t` 用户门面、模块 factory、资源生命周期组合根、用户事件适配 |
-| Service Layer | Core 负责网络状态机、PDP 管理、连接/重连和命令串行化；MQTT 是依赖 Core 的上层 service；TCP/HTTP 边界留待后续设计 |
+| Service Layer | Core 负责网络状态机、PDP 管理、连接/重连和命令串行化；MQTT 和 TCP Client 是依赖 Core 的上层 service；HTTP 边界留待后续设计 |
 | Modem Adapter | `modem_handle_t` 抽象、具体模块 factory 与 AT 指令/URC 语义翻译 |
 | AT Engine | 通用 AT 协议引擎 + UART 硬件操作，只做命令响应和 URC 前缀分发 |
 
@@ -54,7 +54,7 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 - 业务 App 代码只应 include `lwlte.h` 并调用 `lwlte_*` 操作；板级初始化或 App 自有配置代码也 include `lwlte.h`，并填写其中声明的模块配置如 `lwlte_air780ep_config_t`。
 - Facade 的通用文件只应调用 service 层 API。
 - Facade 的模块 factory 文件是 composition root，允许认识 AT Engine、Modem、具体 Modem factory 和 Core，用于创建并持有完整依赖树。
-- Core 可以调用紧邻的 Modem Adapter；MQTT 通过 Core command queue 投递模块命令，不直接调用 Modem 或 AT Engine；TCP/HTTP 边界尚未承诺。
+- Core 可以调用紧邻的 Modem Adapter；MQTT 和 TCP Client 通过 Core command queue 投递模块命令，不直接调用 Modem 或 AT Engine；HTTP 边界尚未承诺。
 
 | 类别 | 规则 | 示例 |
 |------|------|------|
@@ -79,9 +79,12 @@ esp-lwlte 是一个 ESP-IDF 组件，不是通用嵌入式库。目标平台只�
 | Facade 模块 factory | AT Engine、Modem、具体 Modem factory、Core | 不限（driver/gpio.h、driver/uart.h 等用于配置装配） | 完整装配 API，但不 include 任意 `_priv.h` |
 | Service: Core | Modem `modem_*` 统一 API | 不限（FreeRTOS task/queue/timer、esp_event 等） | `modem_handle_t`、Core 自身定义的类型 |
 | Service: MQTT | Core 层间 API、Core command queue（`core_submit_cmd()`） | 不限（FreeRTOS task/queue/timer、esp_event 等） | `core_handle_t`、MQTT 自身定义的类型 |
-| Service: future TCP / future HTTP | 后续边界设计 | 不限 | 后续边界设计 |
+| Service: TCP Client | Core 层间 API、Core command queue（`core_submit_cmd()`） | 不限（FreeRTOS task/queue/timer、esp_event 等） | `core_handle_t`、TCP 自身定义的类型 |
+| Service: future HTTP | 后续边界设计 | 不限 | 后续边界设计 |
 | Modem | AT Engine API | 不限（driver/gpio.h 用于模块复位/电源控制等） | AT Engine 层间头文件、Modem 自身定义的类型 |
 | AT Engine | 无下层（最底层） | 不限（driver/uart.h、FreeRTOS task/queue 等，直接操作硬件） | AT Engine 自身类型 |
+
+TCP Client Service 与 MQTT 遵循同一 service boundary：App code calls `lwlte_tcp_*`, Facade delegates to `tcp_client`, `tcp_client` submits `CORE_CMD_SOCKET_*`, Core serializes Modem access, and Modem maps socket operations to module AT commands. `tcp_client -> Core -> Modem` 表示 TCP service 的运行期下行依赖；TCP service must not include Modem or AT Engine headers. Runtime path: `tcp_client -> Core -> Modem -> AT Engine`。
 
 ---
 
@@ -493,7 +496,7 @@ err_at:
 ## 7. Event Bus
 
 lwlte uses ESP-IDF's event loop library as its event bus. The bus is shared across
-all layers (core, MQTT client) and exposed to the application.
+all layers that publish public events (core, MQTT client, TCP client) and exposed to the application.
 
 ### Bases
 
@@ -501,6 +504,7 @@ all layers (core, MQTT client) and exposed to the application.
 |------|----------|--------|
 | LWLTE_EVENT | Core FSM | STARTED, READY, NET_CONNECTING, NET_ONLINE, NET_OFFLINE, NET_ERROR, STOPPED, ERROR |
 | LWLTE_MQTT_EVENT | MQTT client FSM | STARTED, STOPPED, CONNECTING, CONNECTED, DISCONNECTED, SUBSCRIBED, UNSUBSCRIBED, PUBLISHED, DATA, ERROR |
+| LWLTE_TCP_EVENT | TCP client FSM | STARTED, STOPPED, CONNECTED, DISCONNECTED, SENT, DATA, ERROR |
 
 ### Registration
 
@@ -509,12 +513,13 @@ Application registers handlers via standard ESP-IDF APIs:
 ```c
 esp_event_handler_register(LWLTE_EVENT, ESP_EVENT_ANY_ID, handler, ctx);
 esp_event_handler_register(LWLTE_MQTT_EVENT, ESP_EVENT_ANY_ID, handler, ctx);
+esp_event_handler_register(LWLTE_TCP_EVENT, ESP_EVENT_ANY_ID, handler, ctx);
 ```
 
 ### Protocol data (private)
 
-Protocol data (modem → MQTT client) flows over a private synchronous callback
-(core_register_protocol_callback), NOT over the event bus. This keeps the
+Protocol data (modem → MQTT/TCP client) flows over a private synchronous callback
+(`core_register_protocol_callback`), NOT over the shared LWLTE_EVENT bus. This keeps the
 high-volume data stream off the shared queue and hides transport-layer details
 from the application.
 

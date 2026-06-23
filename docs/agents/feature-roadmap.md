@@ -32,7 +32,7 @@ MQTT 是这个哲学的范例：`modem_ops` 把 MQTT 拆成 `mqtt_configure / mq
 | MQTT | 已完成 | — | 专属 service + 自有 FSM（`mqtt_client`） |
 | Ping | 已完成 | — | Core 同步命令（`CORE_CMD_PING`） |
 | 低功耗 / 休眠管理 | 规划 | P1 | Core 策略（跨层） |
-| TCP/UDP Socket | 规划 | P2 | 专属 service + 自有 FSM |
+| TCP/UDP Socket | TCP client v1 已完成；UDP/扩展规划 | P2 | 专属 service + 自有 FSM |
 | TLS/SSL 配置 | 规划 | P3 | 横向能力，非独立 service |
 | HTTP/HTTPS | 规划 | P4 | Core 同步命令（v1） |
 
@@ -64,11 +64,11 @@ Modem 层职责：把语义操作翻译成具体 AT 指令，差异封装在 `mo
 
 ### 共享前置改造：协议数据事件泛化（Socket / HTTP 的基础）
 
-当前 `modem_protocol_data_t` 与 `modem_protocol_t` 只建模了 MQTT 的 `topic / payload`，**缺少连接 id 维度**。Socket（多连接 0..5）和 HTTP（多实例 httpid）落地前，必须先：
+TCP client v1 已完成 `MODEM_PROTOCOL_TCP` 和 `conn_id` 维度，`modem_protocol_data_t` 可承载 MQTT 的 `topic / payload` 和 TCP 的 `conn_id / payload / reason / modem_error_code`。UDP（多连接 0..5）和 HTTP（多实例 httpid）落地前仍需在此基础上继续扩展：
 
-- 扩展 `modem_protocol_t`：现有 `MODEM_PROTOCOL_MQTT`，新增 `MODEM_PROTOCOL_TCP` / `MODEM_PROTOCOL_UDP` / `MODEM_PROTOCOL_HTTP`。
-- 泛化 `modem_protocol_data_t`：增加 `conn_id`（或 socket/http 实例 id），使 RX 数据与关闭事件能路由到正确的连接。
-- 复用现有 `MODEM_EVENT_PROTOCOL_DATA` / `MODEM_EVENT_PROTOCOL_CLOSED` 上行通道，但携带 id 维度。
+- 扩展 `modem_protocol_t`：现有 `MODEM_PROTOCOL_MQTT` / `MODEM_PROTOCOL_TCP`，后续新增 `MODEM_PROTOCOL_UDP` / `MODEM_PROTOCOL_HTTP`。
+- 泛化 `modem_protocol_data_t`：复用已存在的 `conn_id` / `reason` 字段，使 UDP/HTTP RX 数据与关闭事件能路由到正确实例。
+- 复用现有 `MODEM_EVENT_PROTOCOL_DATA` / `MODEM_EVENT_PROTOCOL_CLOSED` 上行通道，并保持 id 维度。
 
 这是 P2/P4 的公共前置，应在 Socket 能力中一并完成。
 
@@ -87,15 +87,17 @@ Modem 层职责：把语义操作翻译成具体 AT 指令，差异封装在 `mo
 
 #### P2 TCP/UDP Socket
 
+TCP client v1 已在 Air780EP 和 ML307R 上实现 plain TCP，当前限定一个 client connection，支持 binary-safe TX/RX，并通过 ESP event 投递连接、发送、接收和错误事件。UDP、TLS、server/listen mode、local port binding、multiple simultaneous connections、automatic reconnect 和 high-throughput streaming 仍是后续规划工作。
+
 | 项 | 内容 |
 |----|------|
-| 前置 | 先完成「协议数据事件泛化」 |
+| 状态 | TCP client v1 已完成 Air780EP / ML307R plain TCP 单连接；UDP 和高级 socket 能力规划中 |
 | 新增 ops | `socket_open`、`socket_send`、`socket_close`、`socket_recv`（缓存读模式） |
-| 新增参数结构 | `modem_socket_open_t`（proto TCP/UDP、host、port、conn_id、ssl 标志/ctx）、`modem_socket_send_t`（conn_id、data、len） |
-| 新增协议类型 | `MODEM_PROTOCOL_TCP` / `MODEM_PROTOCOL_UDP`（带 conn_id） |
-| Air780EP AT | `AT+CIPMUX`（多连接）、`AT+CIPSTART`、`AT+CIPSEND`、`AT+CIPCLOSE`、`AT+CIPSHUT`；URC `+RECEIVE,<n>,<len>:` / `+IPD` |
-| ML307R AT | `AT+MIPOPEN`、`AT+MIPSEND`、`AT+MIPCLOSE`、`AT+MIPRD`、`AT+MIPCFG`；URC `+MIPURC: "rtcp/rudp/rbuf/ack/closed"` |
-| 开放问题 | 多连接 id 路由；RX 模型选「直收」还是「缓存读」（二进制建议缓存读，避免污染 AT 流）；第一版是否限定单连接。 |
+| v1 参数结构 | `modem_socket_open_t`（TCP proto、host、port、conn_id、timeout、原始模块错误码输出）、`modem_socket_send_t`（conn_id、data、len）、`modem_socket_recv_t`、`modem_socket_recv_result_t`、`modem_socket_close_t` |
+| v1 协议类型 | `MODEM_PROTOCOL_TCP`（带 conn_id） |
+| Air780EP AT | TCP client v1 使用 `AT+CIPSTART`、`AT+CIPSEND`、`AT+CIPRXGET=5`、`AT+CIPRXGET=3,<len>`、`AT+CIPCLOSE`；`+RECEIVE` / `+IPD` 属直推 RX 或多连接路径，留作非 v1/后续能力参考 |
+| ML307R AT | `AT+MIPOPEN`、`AT+MIPSEND`、`AT+MIPCLOSE`、`AT+MIPRD`、`AT+MIPCFG`；TCP v1 使用 `+MIPURC: "rtcp"` 接收缓存通知和 `+MIPURC: "disconn"` 断链通知 |
+| 规划工作 | UDP (`MODEM_PROTOCOL_UDP`)、TLS/SSL ctx、server/listen mode、local port binding、multiple simultaneous connections、automatic reconnect、high-throughput streaming。 |
 
 #### P3 TLS/SSL 配置
 
@@ -144,11 +146,11 @@ Service 层职责：通过 `core_submit_cmd()` 串行驱动 `modem_ops`，管理
 
 | 项 | 内容 |
 |----|------|
-| 归属 | 新建 `socket_client` service（类比 `mqtt_client`）。 |
-| 新增命令 | `CORE_CMD_SOCKET_OPEN` / `CORE_CMD_SOCKET_SEND` / `CORE_CMD_SOCKET_CLOSE`。 |
-| 新增协议数据 | `CORE_PROTOCOL_SOCKET`；`core_protocol_data_t` 增加 conn_id。 |
-| 编排逻辑 | 管理多连接（0..5），每连接独立状态；RX 流按 conn_id 路由到对应 socket，再上抛用户回调；断链触发重连/通知。 |
-| Facade API | `lwlte_socket_open/send/close()`；数据事件携带 conn_id。 |
+| 归属 | `tcp_client` service（类比 `mqtt_client`），TCP client v1 只管理一个 client connection。 |
+| 新增命令 | `CORE_CMD_SOCKET_OPEN` / `CORE_CMD_SOCKET_SEND` / `CORE_CMD_SOCKET_RECV` / `CORE_CMD_SOCKET_CLOSE`。 |
+| 新增协议数据 | `CORE_PROTOCOL_TCP`；`core_protocol_data_t` 携带 conn_id。 |
+| 编排逻辑 | v1 固定 `conn_id=0`，RX 使用缓存读模式保证二进制安全；后续再扩展多连接、UDP、TLS 和重连策略。 |
+| Facade API | `lwlte_tcp_open/send/close()`；数据事件通过 `LWLTE_TCP_EVENT` 投递。 |
 
 #### P3 TLS/SSL 配置 —— 横向能力（非独立 service）
 

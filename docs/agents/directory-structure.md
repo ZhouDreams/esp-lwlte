@@ -21,18 +21,19 @@ src/
 ├── include/       # 用户公共头文件，仅导出 lwlte.h
 ├── lwlte/         # 用户门面层（lwlte_handle_t、模块 factory、资源组合根）
 ├── core/          # Core Service 层（网络状态机、PDP 管理、连接/重连）
+├── tcp_client/    # TCP Client Service（Facade 使用的内部异步 TCP client service）
 ├── modem/         # 模块适配层（modem_handle_t 抽象 + 具体模块实现）
 └── at_engine/     # AT 引擎层（通用 AT 协议引擎 + UART 硬件操作）
 ```
 
 `src/include/` 只放真正给 App include 的用户 API。
-`core.h`、`modem.h`、`modem_air780ep.h`、`at_engine.h` 放在各自模块目录，通过组件 `PRIV_INCLUDE_DIRS` 给内部源码使用，不导出给用户 App。
+`core.h`、`mqtt_client.h`、`src/tcp_client/tcp_client.h`（`tcp_client_` 层间 API）、`ping_client.h`、`modem.h`、`modem_air780ep.h`、`at_engine.h` 放在各自模块目录，通过组件 `PRIV_INCLUDE_DIRS` 给内部源码使用，不导出给用户 App。
 
 ### example/ — 统一示例入口
 
 根 ESP-IDF 项目的 main 组件。`example/main.c` 是唯一示例入口，通过 `EXAMPLE_SELECTED` 宏选择要构建烧录后运行的示例。
 
-示例实现按文件拆分，例如 `air780ep_basic_connect.c`、`air780ep_mqtt_client.c`、`ml307r_basic_connect.c`、`ml307r_mqtt_client.c`。新增示例时应在 `example/example.h` 中新增选择宏和 run 函数声明，并在 `example/main.c` 的选择逻辑中接入。
+示例实现按文件拆分，例如 `air780ep_basic_connect.c`、`air780ep_mqtt_client.c`、`air780ep_tcp_client.c`、`ml307r_basic_connect.c`、`ml307r_mqtt_client.c`、`ml307r_tcp_client.c`。新增示例时应在 `example/example.h` 中新增选择宏和 run 函数声明，并在 `example/main.c` 的选择逻辑中接入。
 
 ### docs/ — 项目文档
 

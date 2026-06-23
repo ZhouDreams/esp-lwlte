@@ -7,11 +7,13 @@
 | 可见性 | 落入哪个头文件 | 谁能看到 | 命名前缀 |
 |--------|-------------|---------|---------|
 | 用户 API | `src/include/lwlte.h` | App 开发者 | `lwlte_` |
-| 层间 API | `src/core/core.h`、`src/mqtt_client/mqtt_client.h`、`src/ping_client/ping_client.h`、`src/modem/modem.h`、`src/modem/modem_air780ep.h`、`src/at_engine/at_engine.h` | 组件内部相邻层；Facade factory 作为 composition root 可见全部装配 API | `core_`、`mqtt_client_`、`ping_client_`、`modem_`、`modem_air780ep_`、`at_engine_` |
+| 层间 API | `src/core/core.h`、`src/mqtt_client/mqtt_client.h`、`src/tcp_client/tcp_client.h`、`src/ping_client/ping_client.h`、`src/modem/modem.h`、`src/modem/modem_air780ep.h`、`src/at_engine/at_engine.h` | 组件内部相邻层；Facade factory 作为 composition root 可见全部装配 API | `core_`、`mqtt_client_`、`tcp_client_`、`ping_client_`、`modem_`、`modem_air780ep_`、`at_engine_` |
 | 模块私有 API | `*_priv.h` | 当前模块自己的 `.c` 文件 | 模块内部命名 |
 | 文件内部 | `.c` 中 static | 当前 `.c` 文件 | 无限制 |
 
-**核心区别**：用户 API 是给 App 开发者用的，层间 API 是层与层之间、以及 Facade 模块 factory 装配时用的。AT Engine、Modem、Core、MQTT Client Service 和 Ping Service 都没有任何用户 API——它们被 LWLTE Facade 封装，最终用户看不到它们的存在。
+**核心区别**：用户 API 是给 App 开发者用的，层间 API 是层与层之间、以及 Facade 模块 factory 装配时用的。AT Engine、Modem、Core、MQTT Client Service、TCP Client Service 和 Ping Service 都没有任何用户 API——它们被 LWLTE Facade 封装，最终用户看不到它们的存在。
+
+兼容既有文档契约：AT Engine、Modem、Core、MQTT Client Service 和 Ping Service 都没有任何用户 API；TCP Client Service 同样遵循这一规则。
 
 `*_priv.h` 虽然通过 `PRIV_INCLUDE_DIRS` 在编译上可见，但约束上只允许同模块源码 include。Core 不 include `modem_priv.h`，Modem 不 include `core_priv.h`，Facade 不 include 任意 `_priv.h`。
 
@@ -353,7 +355,7 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_handle_t`，不直接调
 | `modem_ping_summary_t` | 层间 API | Core + Modem 层 | 值对象 | Ping 汇总结果，包含 sent/received/lost/min/max/avg |
 | `modem_event_id_t` | 层间 API | Core + Modem 层 | 事件枚举 | URC 翻译后的事件类型 |
 | `modem_event_t` | 层间 API | Core + Modem 层 | 值对象 | Modem event task 上报给 Core 的事件 |
-| `modem_protocol_t` | 层间 API | Core + Modem 层 | 枚举 | Modem 上报的上层协议类型，第一版用于 MQTT 数据事件 |
+| `modem_protocol_t` | 层间 API | Core + Modem 层 | 枚举 | Modem 上报的上层协议类型，当前用于 MQTT 和 TCP 事件路由 |
 | `modem_protocol_data_t` | 层间 API | Core + Modem 层 | 值对象 | Modem 上报给 Core 的协议数据事件 |
 | `modem_event_callback_t` | 层间 API | Core + Modem 层 | 回调接口 | Core 注册，Modem event task 调用 |
 | `modem_base_config_t` | 层间 API | 具体 Modem 配置结构体 | 配置结构体 | 通用硬件、时序和事件任务配置组 |
@@ -412,6 +414,16 @@ esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
                                  const modem_mqtt_topic_t *topic);
 esp_err_t modem_mqtt_publish(modem_handle_t *me,
                              const modem_mqtt_publish_t *publish);
+esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status);
+esp_err_t modem_socket_open(modem_handle_t *me,
+                            const modem_socket_open_t *open);
+esp_err_t modem_socket_send(modem_handle_t *me,
+                            const modem_socket_send_t *send);
+esp_err_t modem_socket_recv(modem_handle_t *me,
+                            const modem_socket_recv_t *recv,
+                            modem_socket_recv_result_t *result);
+esp_err_t modem_socket_close(modem_handle_t *me,
+                             const modem_socket_close_t *close);
 esp_err_t modem_ping(modem_handle_t *me,
                      const modem_ping_request_t *request,
                      modem_ping_reply_t *replies,
@@ -493,9 +505,47 @@ typedef struct {
     uint32_t max_time_ms;
     uint32_t avg_time_ms;
 } modem_ping_summary_t;
+
+typedef enum {
+    MODEM_SOCKET_PROTO_TCP = 0,
+} modem_socket_proto_t;
+
+typedef struct {
+    modem_socket_proto_t proto;
+    uint8_t conn_id;
+    const char *host;
+    uint16_t port;
+    uint32_t timeout_ms;
+    int *modem_error_code;
+} modem_socket_open_t;
+
+typedef struct {
+    uint8_t conn_id;
+    const uint8_t *data;
+    size_t len;
+    uint32_t timeout_ms;
+} modem_socket_send_t;
+
+typedef struct {
+    uint8_t conn_id;
+    size_t max_len;
+} modem_socket_recv_t;
+
+typedef struct {
+    uint8_t conn_id;
+    uint8_t *payload;
+    size_t payload_len;
+    size_t remaining_len;
+    int modem_error_code;
+} modem_socket_recv_result_t;
+
+typedef struct {
+    uint8_t conn_id;
+    uint32_t timeout_ms;
+} modem_socket_close_t;
 ```
 
-这些值对象属于 Modem Adapter 的模块命令语义，不是上层 service API。Core 执行 `core_cmd_t` 时把 Core command 数据转换成这些值对象，再调用对应 `modem_*` 包装 API；MQTT Client Service 和 Ping Service 不 include `modem.h`，也不直接调用这些函数。
+这些值对象属于 Modem Adapter 的模块命令语义，不是上层 service API。Core 执行 `core_cmd_t` 时把 Core command 数据转换成这些值对象，再调用对应 `modem_*` 包装 API；MQTT Client Service、TCP Client Service 和 Ping Service 不 include `modem.h`，也不直接调用这些函数。
 
 ```c
 typedef struct modem_ops {
@@ -524,6 +574,17 @@ typedef struct modem_ops {
                                   const modem_mqtt_topic_t *topic);
     esp_err_t (*mqtt_publish)(modem_handle_t *me,
                               const modem_mqtt_publish_t *publish);
+    esp_err_t (*mqtt_get_status)(modem_handle_t *me,
+                                 modem_mqtt_status_t *status);
+    esp_err_t (*socket_open)(modem_handle_t *me,
+                             const modem_socket_open_t *open);
+    esp_err_t (*socket_send)(modem_handle_t *me,
+                             const modem_socket_send_t *send);
+    esp_err_t (*socket_recv)(modem_handle_t *me,
+                             const modem_socket_recv_t *recv,
+                             modem_socket_recv_result_t *result);
+    esp_err_t (*socket_close)(modem_handle_t *me,
+                              const modem_socket_close_t *close);
     esp_err_t (*ping)(modem_handle_t *me,
                       const modem_ping_request_t *request,
                       modem_ping_reply_t *replies,
@@ -575,9 +636,13 @@ esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
 | `mqtt_subscribe` | 订阅 MQTT topic | `AT+MSUB`，成功 `SUBACK` |
 | `mqtt_unsubscribe` | 取消订阅 MQTT topic | `AT+MUNSUB`，成功 `UNSUBACK` |
 | `mqtt_publish` | 发布定长 MQTT payload | `AT+MPUBEX` + payload prompt |
+| `socket_open` | 打开模块内置 TCP socket | Air780EP `AT+CIPSTART`；ML307R `AT+MIPOPEN` |
+| `socket_send` | 发送定长 socket payload | Air780EP `AT+CIPSEND`；ML307R `AT+MIPSEND` |
+| `socket_recv` | 从模块缓存读取 socket payload | Air780EP `AT+CIPRXGET=3,<len>`；ML307R `AT+MIPRD` |
+| `socket_close` | 关闭 socket 连接 | Air780EP `AT+CIPCLOSE`；ML307R `AT+MIPCLOSE` |
 | `ping` | 执行网络连通性诊断，不参与 Core online 条件 | `AT+CIPPING` |
 
-MQTT command ops 和 ping ops 是 Modem Adapter 暴露给 Core 的模块语义能力，用于执行 Core command queue 中的上层 service 命令。它们不改变上层 service 的依赖方向：MQTT service 和 Ping Service 仍只调用 Core，不调用 Modem。
+MQTT command ops、socket ops 和 ping ops 是 Modem Adapter 暴露给 Core 的模块语义能力，用于执行 Core command queue 中的上层 service 命令。它们不改变上层 service 的依赖方向：MQTT service、TCP Client Service 和 Ping Service 仍只调用 Core，不调用 Modem。
 
 `AT+IPR`、`AT+IFC`、`AT&W` 属于板级串口/持久化配置，不进入 Modem ops。`AT+COPS?`、`AT^SYSINFO` 属于诊断或联网自检，第一版可作为 Air780EP 内部 helper，不先扩大 Core 可见 API。`AT+CIPPING` 现在作为 `modem_ping()` 的 Air780EP 映射暴露给 Core command queue，但它仍是用户触发的诊断命令，不参与 Core online 判定。`AT+CSCLK`、`AT+POWERMODE`、`AT+CFGRI` 等低功耗指令需要 Core 低功耗策略后再设计独立 ops。
 
@@ -717,20 +782,24 @@ typedef enum {
     MODEM_EVENT_PDP_DEACTIVATED,    // PDP 去激活
     MODEM_EVENT_SIGNAL_CHANGED,     // 信号质量变化
     MODEM_EVENT_ERROR,              // 模块侧错误事件
-    MODEM_EVENT_PROTOCOL_DATA,      // 上层协议数据事件，如 MQTT 下行消息
+    MODEM_EVENT_PROTOCOL_DATA,      // 上层协议数据事件，如 MQTT/TCP 下行数据
     MODEM_EVENT_PROTOCOL_CLOSED,    // 上层协议连接关闭事件
 } modem_event_id_t;
 
 typedef enum {
     MODEM_PROTOCOL_MQTT = 0,        // MQTT 协议事件
+    MODEM_PROTOCOL_TCP,             // TCP 协议事件
 } modem_protocol_t;
 
 typedef struct {
     modem_protocol_t protocol;      // 协议类型
+    uint8_t          conn_id;       // TCP connection id，MQTT 固定为 0
     const char      *topic;         // MQTT topic，回调期间有效
     size_t           topic_len;     // topic 长度
-    const uint8_t   *payload;       // MQTT payload，回调期间有效
+    const uint8_t   *payload;       // MQTT/TCP payload，回调期间有效
     size_t           payload_len;   // payload 长度
+    int              reason;        // 连接关闭或错误原因
+    int              modem_error_code; // 模块原始错误码
 } modem_protocol_data_t;
 
 typedef struct {
@@ -754,7 +823,7 @@ typedef void (*modem_event_callback_t)(modem_handle_t *modem,
 
 `MODEM_EVENT_PROTOCOL_DATA` 和 `MODEM_EVENT_PROTOCOL_CLOSED` 追加在 `MODEM_EVENT_ERROR` 之后，避免改变既有事件 ID 的数值。
 
-`MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的堆内存中；`modem_post_event()` 成功后由 Modem event task 在 Core 回调返回后释放，`modem_post_event()` 失败时仍由调用者释放。Core 若要通过 `LWLTE_EVENT_PROTOCOL_DATA` 继续上报给 MQTT service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
+`MODEM_EVENT_PROTOCOL_DATA` 的 `topic` 和 `payload` 指针只在 `modem_event_callback_t` 执行期间有效。Air780EP URC handler 解析 `+MSUB:` 后必须把 topic/payload 复制到 Modem event task 可安全持有的堆内存中；TCP manual RX 路径必须把 payload 复制到同样的事件生命周期中，`topic == NULL` 且 `topic_len == 0`。`modem_post_event()` 成功后由 Modem event task 在 Core 回调返回后释放，`modem_post_event()` 失败时仍由调用者释放。Core 若要继续上报给 MQTT/TCP service，必须再次复制或保证新的事件数据生命周期覆盖 Core event callback。
 
 ### 2.11 `modem_air780ep_config_t` / `modem_ml307r_config_t` — 具体模块配置
 
@@ -939,15 +1008,15 @@ Core Service
 | `core_net_state_t` | 层间 API | Facade + Core 内部 | 状态枚举 | 网络连接状态 |
 | `lwlte_event_id_t` | 用户 API | App + esp_event | 事件枚举 | LWLTE_EVENT 上行事件类型 |
 | `lwlte_event_data_t` | 用户 API | App + esp_event | 值对象 | 事件携带数据 |
-| `core_protocol_t` | 层间 API | MQTT Client Service + Core 内部 | 枚举 | Core protocol event 所属协议类型 |
-| `core_protocol_data_t` | 层间 API | MQTT Client Service + Core 内部 | 值对象 | Core 上报给上层 protocol service 的数据事件 |
-| `core_protocol_callback_t` | 层间 API | MQTT Client Service | 回调接口 | 私有协议数据回调（modem→MQTT，同步） |
-| `core_cmd_type_t` | 层间 API | MQTT Client Service + Ping Service + Core 内部 | 命令枚举 | 上层 service 投递给 Core 的协议命令类型 |
-| `core_cmd_result_t` | 层间 API | MQTT Client Service + Ping Service + Core 内部 | 结果枚举 | Core command 执行结果 |
+| `core_protocol_t` | 层间 API | MQTT/TCP Client Service + Core 内部 | 枚举 | Core protocol event 所属协议类型 |
+| `core_protocol_data_t` | 层间 API | MQTT/TCP Client Service + Core 内部 | 值对象 | Core 上报给上层 protocol service 的数据事件 |
+| `core_protocol_callback_t` | 层间 API | MQTT/TCP Client Service | 回调接口 | 私有协议数据回调（Modem → Core → 上层 service，同步） |
+| `core_cmd_type_t` | 层间 API | MQTT/TCP Client Service + Ping Service + Core 内部 | 命令枚举 | 上层 service 投递给 Core 的协议命令类型 |
+| `core_cmd_result_t` | 层间 API | MQTT/TCP Client Service + Ping Service + Core 内部 | 结果枚举 | Core command 执行结果 |
 | `core_ping_reply_t` | 层间 API | Ping Service + Core 内部 | 值对象 | `CORE_CMD_PING` 的单包结果，Core command callback 前写入 |
 | `core_ping_summary_t` | 层间 API | Ping Service + Core 内部 | 值对象 | `CORE_CMD_PING` 的汇总结果，Core command callback 前写入 |
-| `core_cmd_t` | 层间 API | MQTT Client Service + Ping Service + Core 内部 | 值对象 | 上层 service 投递到 Core 的 typed command request |
-| `core_cmd_done_callback_t` | 层间 API | MQTT Client Service + Ping Service + Core 内部 | 回调接口 | Core command 完成后回调上层 service，用于投递上层 FSM 信号 |
+| `core_cmd_t` | 层间 API | MQTT/TCP Client Service + Ping Service + Core 内部 | 值对象 | 上层 service 投递到 Core 的 typed command request |
+| `core_cmd_done_callback_t` | 层间 API | MQTT/TCP Client Service + Ping Service + Core 内部 | 回调接口 | Core command 完成后回调上层 service，用于投递上层 FSM 信号 |
 | `core_fsm_sig_type_t` | 模块私有 API | Core FSM | 信号枚举 | FSM 内部信号类型 |
 | `core_fsm_sig_t` | 模块私有 API | Core FSM | 值对象 | FSM 队列中的信号 |
 | `core_fsm_t` | 模块私有 API | Core | 组合成员 | FSM 线程 + 队列管理 |
@@ -1003,9 +1072,11 @@ esp_err_t core_start(core_handle_t *me);
 esp_err_t core_stop(core_handle_t *me);
 
 esp_err_t core_register_protocol_callback(core_handle_t *me,
+                                          core_protocol_t protocol,
                                           core_protocol_callback_t callback,
                                           void *user_ctx);
 esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
+                                                  core_protocol_t protocol,
                                                   core_protocol_closed_callback_t callback,
                                                   void *user_ctx);
 
@@ -1026,7 +1097,7 @@ esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
 
 - `config`：Core 层间配置快照，保存 event/network/fsm 分组参数。
 - `modem`：Facade factory 注入的 `modem_handle_t` 句柄，Core 借用但不拥有生命周期。
-- `protocol_callback`、`protocol_closed_callback`：私有同步协议数据回调槽，由 MQTT service 注册。
+- `protocol_callback`、`protocol_closed_callback`：按 `core_protocol_t` 保存的私有同步协议数据回调槽，由 MQTT/TCP service 注册。
 - `fsm`、`net_mgr`、`pdp_mgr`：`core_handle_t` 的组合成员，分别负责信号串行化、网络激活/重连、PDP 缓存。
 - `state`、`destroying`、`lock`：Core 生命周期状态和并发保护。
 
@@ -1076,14 +1147,19 @@ typedef enum {
 
 typedef enum {
     CORE_PROTOCOL_MQTT = 0,
+    CORE_PROTOCOL_TCP,
+    CORE_PROTOCOL_MAX,
 } core_protocol_t;
 
 typedef struct {
     core_protocol_t protocol;
+    uint8_t conn_id;
     const char *topic;
     size_t topic_len;
     const uint8_t *payload;
     size_t payload_len;
+    int reason;
+    int modem_error_code;
 } core_protocol_data_t;
 
 typedef struct {
@@ -1095,21 +1171,22 @@ typedef void (*core_protocol_callback_t)(core_handle_t *core,
                                          const core_protocol_data_t *data,
                                          void *user_ctx);
 typedef void (*core_protocol_closed_callback_t)(core_handle_t *core,
-                                                 core_protocol_t protocol,
-                                                 void *user_ctx);
+                                                  core_protocol_t protocol,
+                                                  const core_protocol_data_t *data,
+                                                  void *user_ctx);
 ```
 
 **边界说明**：`core_state_t` 表示 Core 自身生命周期阶段，`core_net_state_t` 表示纯网络状态。Core 通过 `core_post_event()` 把状态变化直接投递到共享事件总线 `LWLTE_EVENT`，应用层通过 `esp_event_handler_register()` 订阅。Facade 内部注册 `facade_ready_handler` 驱动 `lwlte_wait_ready()` 同步。
 
-`core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 `core_protocol_callback_t` 执行期间有效；MQTT Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据。协议数据通过私有同步回调（`core_register_protocol_callback`）传递，不经过事件总线。
+`core_protocol_data_t` 中的 `topic` 和 `payload` 指针只在 `core_protocol_callback_t` 执行期间有效；MQTT Client Service 和 TCP Client Service 若要把数据投递到自己的 FSM 队列，必须先复制这些数据。TCP client v1 使用 `CORE_PROTOCOL_TCP`、`conn_id=0`、`payload/payload_len` 和 `reason/modem_error_code`，不使用 MQTT topic 字段。协议数据通过私有同步回调（`core_register_protocol_callback`）传递，不经过事件总线。
 
 ### 3.5 Core command queue 类型
 
 **所属层**：Core Service
-**可见性**：层间 API — `src/core/core.h`，供 MQTT Client Service 和 Ping Service 使用
+**可见性**：层间 API — `src/core/core.h`，供 MQTT Client Service、TCP Client Service 和 Ping Service 使用
 **OOP 角色**：命令枚举 + 结果枚举 + 值对象 + 回调接口
 
-Core command queue 是本设计中上层 service 使用的 typed command 入口。MQTT Client Service 通过 `core_submit_cmd()` 投递 MQTT 模块命令；Ping Service 通过 `core_submit_cmd()` 投递轻量 `CORE_CMD_PING` 诊断命令。Core FSM 串行执行这些 command，执行时调用 `modem_*` API，并在命令完成后通过 callback 把结果交还给上层 service。MQTT 和 Ping 都不直接调用 Modem 或 AT Engine。TCP/HTTP 后续可以复用这个 command 边界，但本节不承诺它们的具体跨层边界。
+Core command queue 是本设计中上层 service 使用的 typed command 入口。MQTT Client Service 通过 `core_submit_cmd()` 投递 MQTT 模块命令；TCP Client Service 通过 `core_submit_cmd()` 投递 socket 命令；Ping Service 通过 `core_submit_cmd()` 投递轻量 `CORE_CMD_PING` 诊断命令。Core FSM 串行执行这些 command，执行时调用 `modem_*` API，并在命令完成后通过 callback 把结果交还给上层 service。MQTT、TCP 和 Ping 都不直接调用 Modem 或 AT Engine。HTTP 后续可以复用这个 command 边界，但本节不承诺其具体跨层边界。
 
 ```c
 typedef enum {
@@ -1122,6 +1199,10 @@ typedef enum {
     CORE_CMD_MQTT_UNSUBSCRIBE,
     CORE_CMD_MQTT_PUBLISH,
     CORE_CMD_PING,
+    CORE_CMD_SOCKET_OPEN,
+    CORE_CMD_SOCKET_SEND,
+    CORE_CMD_SOCKET_RECV,
+    CORE_CMD_SOCKET_CLOSE,
 } core_cmd_type_t;
 
 typedef enum {
@@ -1147,6 +1228,48 @@ typedef struct {
     uint32_t max_time_ms;
     uint32_t avg_time_ms;
 } core_ping_summary_t;
+
+typedef enum {
+    CORE_SOCKET_PROTO_TCP = 0,
+} core_socket_proto_t;
+
+typedef struct {
+    core_socket_proto_t proto;
+    uint8_t conn_id;
+    const char *host;
+    uint16_t port;
+    uint32_t timeout_ms;
+} core_socket_open_t;
+
+typedef struct {
+    uint8_t conn_id;
+    const uint8_t *data;
+    size_t len;
+    uint32_t timeout_ms;
+} core_socket_send_t;
+
+typedef struct {
+    uint8_t conn_id;
+    size_t max_len;
+} core_socket_recv_t;
+
+typedef struct {
+    uint8_t conn_id;
+    uint8_t *payload;
+    size_t payload_len;
+    size_t remaining_len;
+    int modem_error_code;
+} core_socket_recv_result_t;
+
+typedef struct {
+    uint8_t conn_id;
+    uint32_t timeout_ms;
+} core_socket_close_t;
+
+typedef struct {
+    esp_err_t error_code;
+    int modem_error_code;
+} core_socket_result_t;
 
 typedef void (*core_cmd_done_callback_t)(core_handle_t *core,
                                          core_cmd_type_t type,
@@ -1198,12 +1321,18 @@ typedef struct {
             size_t max_replies;
             core_ping_summary_t *summary;
         } ping;
+
+        core_socket_open_t socket_open;
+        core_socket_send_t socket_send;
+        core_socket_recv_t socket_recv;
+        core_socket_close_t socket_close;
     } data;
 } core_cmd_t;
 ```
 
 **关键设计决策**：
 - `core_submit_cmd()` 复制异步执行所需的字符串和 payload；调用方传入的指针只需在调用期间有效。
+- Socket open 的 host 和 socket send 的 TX payload 由 Core 深拷贝后入队；TCP client v1 固定使用 `conn_id=0`。
 - `core_submit_cmd()` 深拷贝 `core_cmd_t` 到 Core-owned heap object，然后发送 `CORE_SIG_SERVICE_CMD` 到 `core_fsm_t.queue`。
 - `CORE_CMD_PING` 的 `host` 由 `core_submit_cmd()` 深拷贝；`replies` 和 `summary` 是同步 Ping Service 调用持有的输出 buffer，Core 只在 command 执行期间写入，不拥有其生命周期。
 - `ping_client_ping()` 会等待 `CORE_CMD_PING` 完成后才返回，所以 `replies` 和 `summary` 在 `done_cb` 返回前有效。
@@ -1399,11 +1528,11 @@ Core FSM 处理 `CORE_SIG_SERVICE_CMD` 时执行 Core-owned `core_cmd_t`，按�
 | `MODEM_EVENT_REG_CHANGED` | 更新 net_mgr 可用的注册状态 |
 | `MODEM_EVENT_PDP_ACTIVATED` | 可更新 PDP 状态并通知运行期观察者；Core online 需要命令确认路径中 PDP active 且获得有效 IP 后才发布 `LWLTE_EVENT_NET_ONLINE` |
 | `MODEM_EVENT_PDP_DEACTIVATED` | net_state → OFFLINE，发布 `LWLTE_EVENT_NET_OFFLINE`，启动重连定时器 |
-| `MODEM_EVENT_PROTOCOL_DATA` | Core 复制协议数据并发布 `LWLTE_EVENT_PROTOCOL_DATA`；MQTT service 再从 Core event handler 投递 MQTT FSM 信号 |
-| `MODEM_EVENT_PROTOCOL_CLOSED` | Core 发布 `LWLTE_EVENT_PROTOCOL_CLOSED`；MQTT service 视为协议连接关闭并回到等待网络或错误处理流程 |
+| `MODEM_EVENT_PROTOCOL_DATA` | Core 将协议数据路由到对应 `core_protocol_callback_t`；MQTT/TCP service 在同步回调中复制必要数据并投递自身 FSM 信号 |
+| `MODEM_EVENT_PROTOCOL_CLOSED` | Core 将关闭原因路由到对应 `core_protocol_closed_callback_t`；MQTT/TCP service 视为协议连接关闭并进入自身恢复或通知流程 |
 | `MODEM_EVENT_ERROR` | 根据 error_code 决定重试或进入 ERROR 状态 |
 
-`MODEM_EVENT_PROTOCOL_DATA` 中的指针只在 Modem callback 执行期间有效，Core 发布 `LWLTE_EVENT_PROTOCOL_DATA` 前必须复制数据。
+`MODEM_EVENT_PROTOCOL_DATA` 中的指针只在 Modem callback 执行期间有效；Core 通过私有同步 protocol callback 传递借用指针，上层 service 在入队前必须复制需要保留的数据。协议数据不通过公共 `LWLTE_EVENT` 事件总线发布；用户可见的数据事件由 MQTT/TCP service 分别发布到 `LWLTE_MQTT_EVENT` / `LWLTE_TCP_EVENT`。
 
 ### 3.10 初始化与装配
 
@@ -1733,7 +1862,7 @@ typedef struct {
 
 ### 4.7 Core command queue 边界
 
-MQTT 所有模块命令都通过 `core_submit_cmd()` 投递给 Core。MQTT 不生成 AT 字符串，不调用 `modem_*`，也不注册 AT Engine URC。Core command queue 的作用是把 MQTT Client Service 的业务命令串行化到 Core FSM，再由 Core 调用 Modem Adapter。TCP/HTTP 后续可以复用这个命令边界，但具体边界不在本节承诺。
+MQTT 所有模块命令都通过 `core_submit_cmd()` 投递给 Core。MQTT 不生成 AT 字符串，不调用 `modem_*`，也不注册 AT Engine URC。Core command queue 的作用是把 MQTT Client Service 的业务命令串行化到 Core FSM，再由 Core 调用 Modem Adapter。TCP Client Service 已复用这个命令边界；HTTP 后续可以复用，但具体边界不在本节承诺。
 
 | MQTT 操作 | Core command | Air780EP 第一版底层命令 |
 |-----------|--------------|--------------------------|
@@ -1805,10 +1934,14 @@ Facade/App task
             └─ xQueueSend(mqtt.fsm_queue)
 
 Core event loop task
-  └─ LWLTE_EVENT_NET_ONLINE / OFFLINE / PROTOCOL_DATA
+  └─ LWLTE_EVENT_NET_ONLINE / OFFLINE
        └─ MQTT core_event_handler
-            └─ 深拷贝必要数据
-                 └─ xQueueSend(mqtt.fsm_queue)
+            └─ 投递网络状态信号到 MQTT FSM
+
+Core FSM task
+  └─ core_register_protocol_callback(CORE_PROTOCOL_MQTT)
+       └─ MQTT mqtt_protocol_data_cb 深拷贝 topic/payload
+            └─ xQueueSend(mqtt.fsm_queue)
 
 MQTT FSM task
   └─ 串行处理 MQTT 信号
@@ -1852,7 +1985,32 @@ Core FSM task
 
 ---
 
+## 5. TCP Client Service（TCP 客户端服务层）
+
+TCP Client Service 是 Core 之上的独立异步 service，负责 plain TCP client 的打开、发送、缓存读取、关闭和事件投递。它与 MQTT 使用同一 service boundary：运行期只调用 Core 层间 API 和 `core_submit_cmd()`，不直接调用 Modem Adapter 或 AT Engine。
+
+`tcp_client_handle_t` owns the TCP FSM task, one `tcp_client_conn_t`, Core protocol callbacks for `CORE_PROTOCOL_TCP`, and event posting to `LWLTE_TCP_EVENT`.
+
+`tcp_client_conn_t` is the internal object behind public `lwlte_tcp_conn_t`. It owns connection state, `conn_id=0`, user context, pending Core command metadata, and a FIFO of copied TX payloads.
+
+TCP event handlers must call `lwlte_tcp_event_data_release()` before returning when `owns_event` or `owns_payload` is true. `LWLTE_TCP_EVENT_DATA` payloads additionally carry heap-owned bytes when `owns_payload` is true.
+
+关键约束：
+
+- TCP client v1 只支持 plain TCP 和一个 client connection；连接 id 固定为 `conn_id=0`。
+- TX payload 在进入 TCP FSM 队列前复制，保证调用方 buffer 可在 API 返回后释放或复用。
+- RX 数据由 Modem 通过 Core protocol callback 上报到 `tcp_client`，再由 TCP FSM 投递 `LWLTE_TCP_EVENT_DATA`。
+- `tcp_client` 不 include `modem.h`、`modem_air780ep.h`、`modem_ml307r.h`、`at_engine.h` 或任意下层 `_priv.h`。
+
+### 5.1 Socket Commands
+
+Core socket commands are `CORE_CMD_SOCKET_OPEN`, `CORE_CMD_SOCKET_SEND`, `CORE_CMD_SOCKET_RECV`, and `CORE_CMD_SOCKET_CLOSE`. Core deep-copies socket hosts and TX payloads before enqueueing commands.
+
+---
+
 ## 5. Ping Service（Ping 诊断服务层）
+
+> 编号兼容说明：TCP Client Service 已作为 `## 5. TCP Client Service` 插入在 MQTT 与 Ping 之间；本节保留 `## 5. Ping Service` 锚点以兼容既有静态文档契约。
 
 Ping Service 是 Core 之上的轻量 service，负责把用户同步 `lwlte_ping()` 请求转换成 `CORE_CMD_PING`，并等待 Core command 完成后把详细 ping 结果返回给调用方。它不负责网络状态机、不参与 Core online 判定，也不维护长期连接状态。
 
@@ -2063,5 +2221,15 @@ esp_err_t lwlte_ping(lwlte_handle_t *me,
 ```
 
 调用方负责传入 `lwlte_ping_reply_t` 数组，`max_replies` 必须大于等于 `request->count`；组件不分配也不释放该数组。`summary` 可以为 `NULL`。第一版只实现同步阻塞 `lwlte_ping()`；`lwlte_ping_async()` 只作为后续设计方向，不进入第一版用户 API。
+
+TCP client v1 增加这些用户可见类型、事件和函数：
+
+- `lwlte_tcp_config_t`：TCP client service 配置，v1 只支持 `max_conns` 为 0 或 1，并提供 TX/RX 事件长度、超时和 FSM 资源配置。
+- `lwlte_tcp_open_config_t`：单次 TCP open 参数，包含 host、port 和事件中原样返回的 `user_ctx`。
+- `lwlte_tcp_conn_t`：opaque TCP connection 句柄，公开 API 不暴露内部 `conn_id`。
+- `lwlte_tcp_event_data_t`：`LWLTE_TCP_EVENT` 数据；事件数据带 `owns_event` 或 `owns_payload` 时 handler 必须调用 `lwlte_tcp_event_data_release()`，其中 `LWLTE_TCP_EVENT_DATA` 额外携带 heap-owned payload。
+- `LWLTE_TCP_EVENT`：TCP client public event base，包含 STARTED、STOPPED、CONNECTED、DISCONNECTED、SENT、DATA 和 ERROR。
+- `lwlte_tcp_init()` / `lwlte_tcp_destroy()`：TCP client service 生命周期。
+- `lwlte_tcp_open()` / `lwlte_tcp_send()` / `lwlte_tcp_close()` / `lwlte_tcp_conn_get_state()` / `lwlte_tcp_conn_destroy()`：Facade 用户 API，内部只调用 `tcp_client_*`，不直接操作 Core command 或 Modem。
 
 App 仍不 include `src/mqtt_client/mqtt_client.h`、`src/ping_client/ping_client.h`、`src/core/core.h`、`src/modem/modem.h` 或任何 `_priv.h`。

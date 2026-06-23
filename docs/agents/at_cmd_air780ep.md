@@ -118,13 +118,15 @@
 
 本节摘录手册第 12 章“嵌入式 TCPIP 命令”和 `AT+CIPPING`。其中 `CSTT/CPNETAPN/CIICR/CIFSR/CIPSTATUS/CIPSHUT/CIPPING` 已在 PDP 激活表中列出，这里按连接层实现补充完整 TCP/UDP、SSL、DNS、收发、关闭、保活和心跳相关指令。
 
+实现注记：TCP client v1 uses `AT+CIPSTART`, `AT+CIPSEND`, `AT+CIPRXGET=5`, `AT+CIPRXGET=3,<len>`, and `AT+CIPCLOSE`. RX is read in HEX/manual mode and decoded by the Air780EP Modem implementation.
+
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
-| 多连接开关 | `AT+CIPMUX=<n>`，`AT+CIPMUX?` | `+CIPMUX: <n>` + `OK` | `0` 单连接；`1` 多连接 | 9s | Socket 层初始化配置 | 只在 `IP INITIAL` 状态可设置；必须在 `CSTT/CIICR/CIFSR` 之前设置。第一版可先固定单连接或按 socket 层能力开启多连接 |
+| 多连接开关 | `AT+CIPMUX=<n>`，`AT+CIPMUX?` | `+CIPMUX: <n>` + `OK` | `0` 单连接；`1` 多连接 | 9s | Socket 层初始化配置 | 只在 `IP INITIAL` 状态可设置；必须在 `CSTT/CIICR/CIFSR` 之前设置。TCP client v1 固定单连接，后续多连接能力再评估启用 `CIPMUX=1` |
 | TCP SSL 开关 | `AT+CIPSSL=<n>`，`AT+CIPSSL?` | `+CIPSSL: <n>` + `OK` | `0` 关闭；`1` 开启 | 9s | TLS socket 连接前配置 | `CIPSTART` 前设置；当前仅作为 SSL Client；EC716S 平台 Air780EL/Air780ET/Air700EC 仅 `_FS`、`_MS` 固件支持，其它固件不支持 |
 | SSL 参数 | `AT+SSLCFG="<tag>",<ctx>[,<value>]` | `+SSLCFG: "<tag>",<ctx>,<value>` + `OK` 或 `OK` | `ctx=0..5,34,88,153`；TCP 单连接固定 `0`，多连接绑定连接号，FTP 为 `34`，MQTT 为 `88`，HTTP 为 `153`；`tag` 包括 `sslversion`、`ciphersuite`、`cacert`、`clientcert`、`clientkey`、`clientrandom`、`premaster`、`seclevel`、`hostname`、`ignorelocaltime`、`negotiatetimeout`、`verifymode` | 9s | TLS 证书与安全等级配置 | `sslversion=0/1/2/3/4` 分别为 SSL3.0/TLS1.0/TLS1.1/TLS1.2/ALL；`seclevel=0` 不鉴权、`1` 服务器鉴权、`2` 双向鉴权；`negotiatetimeout=10..300s`；删除证书/参数时用 `AT+SSLCFG="<tag>",<ctx>,`，逗号不能省略；证书文件需先写入文件系统 |
 | 本地端口 | `AT+CLPORT=<mode>,<port>` 或 `AT+CLPORT=<n>,<mode>,<port>`，`AT+CLPORT?` | 单连接查询 `+CLPORT: <tcp_port>,<udp_port>`；多连接查询多行 `+CLPORT: <n>,<tcp_port>,<udp_port>` + `OK` | `mode="TCP"/"UDP"`；`port=1..65535`（测试响应列出 `0..65535`）；多连接 `n=0..5` | 9s | 可选 socket bind/local port 能力 | 单连接和多连接语法不同；非必须功能 |
-| 建立 TCP/UDP 连接 | 单连接：`AT+CIPSTART=<mode>,<server>,<port>`；多连接：`AT+CIPSTART=<n>,<mode>,<server>,<port>` | 格式/状态错误可立即 `+CME ERROR:<err>`；正常先 `OK`，随后 `CONNECT OK`、`<n>,CONNECT OK`、`CONNECT`、`ALREADY CONNECT`、`<n>,ALREADY CONNECT`、`CONNECT FAIL`、`<n>,CONNECT FAIL` 或 `STATE:<state>` | `mode="TCP"/"UDP"`；`server` 为 IP 或域名，最大 128 字节；`port=1..65535`；`n=0..5`；参数可加引号也可不加 | 9s 发送命令；连接结果最长约 75s | `modem_socket_connect()` | 异步 URC 表示最终结果；单连接需处于 `IP INITIAL`、`IP STATUS` 或 `TCP/UDP CLOSED`；多连接仅 `IP STATUS` 或 `IP PROCESSING` 可执行，且需先完成 `CSTT/CIICR/CIFSR`；状态异常时先 `AT+CIPSHUT` |
+| 建立 TCP/UDP 连接 | 单连接：`AT+CIPSTART=<mode>,<server>,<port>`；多连接：`AT+CIPSTART=<n>,<mode>,<server>,<port>` | 格式/状态错误可立即 `+CME ERROR:<err>`；正常先 `OK`，随后 `CONNECT OK`、`<n>,CONNECT OK`、`CONNECT`、`ALREADY CONNECT`、`<n>,ALREADY CONNECT`、`CONNECT FAIL`、`<n>,CONNECT FAIL` 或 `STATE:<state>` | `mode="TCP"/"UDP"`；`server` 为 IP 或域名，最大 128 字节；`port=1..65535`；`n=0..5`；参数可加引号也可不加 | 9s 发送命令；连接结果最长约 75s | `modem_socket_open()` | 异步 URC 表示最终结果；单连接需处于 `IP INITIAL`、`IP STATUS` 或 `TCP/UDP CLOSED`；多连接仅 `IP STATUS` 或 `IP PROCESSING` 可执行，且需先完成 `CSTT/CIICR/CIFSR`；状态异常时先 `AT+CIPSHUT` |
 | TCPIP 应用模式 | `AT+CIPMODE=<mode>`，`AT+CIPMODE?` | `+CIPMODE: <mode>` + `OK` | `0` 非透传；`1` 透传 | 9s | Socket 发送/接收模式配置 | 只在 `IP INITIAL` 状态可设置；只有 TCP 单连接支持透传；第一版建议非透传 |
 | 非透传发送模式 | `AT+CIPQSEND=<n>`，`AT+CIPQSEND?` | `+CIPQSEND: <n>` + `OK` | `0` 快发且返回 `SEND OK`；`1` 快发且返回 `DATAACCEPT`/`DATA ACCEPT`；`2` 慢发；默认 `0` | 9s | Socket send 策略 | 手册推荐快发，避免慢发阻塞 AT 通道；手册表格写作 `DATAACCEPT`，示例写作 `DATA ACCEPT`，解析应兼容；可配合 `AT+CIPACK` 确认对端 ACK |
 | 接收数据尾部 CRLF | `AT+CIPRXF=<n>`，`AT+CIPRXF?` | `+CIPRXF: <n>` + `OK` | `0` 接收数据末尾自动加 `\r\n`；`1` 不添加 | 9s | Socket 接收格式配置 | 二进制数据建议设置为 `1`，避免数据被额外 CRLF 污染 |
@@ -138,7 +140,7 @@
 | DNS 配置 | `AT+CDNSCFG=<pri_dns>[,<sec_dns>[,<cid>]]`，`AT+CDNSCFG?` | `PrimaryDns: <pri_dns>` + `SecondaryDns: <sec_dns>` + `OK` | 主/备 DNS IP；`cid=1..3` 用于 SAPBR 场景 | 9s | DNS 配置 API 或诊断 | TCPIP/MQTT 使用 `CSTT/CIICR/CIFSR` 后可查询默认 DNS；HTTP/FTP 的 SAPBR 场景需带 `cid` 设置 |
 | 域名解析 | `AT+CDNSGIP=<domain>` | `OK` 后异步 `+CDNSGIP:1,"<domain>","<IPaddress>"`；失败 `OK` 后异步 `+CDNSGIP:0,<dns error code>`；语法错误直接 `ERROR` | `domain` 最大 128 字节；`dns error code=10..15`，分别为 `GENERAL ERROR`、`MAX RETRIES`、`NO SERVER ADDR`、`NO MEMORY`、`INVALID NAME`、`INVALID RESP` | 9s | `modem_dns_lookup()` 或连接前诊断 | 需先完成 `CSTT/CIICR/CIFSR`；结果是异步行，不能只等首个 `OK`；字段通常带引号 |
 | 单连接来源地址显示 | `AT+CIPSRIP=<mode>`，`AT+CIPSRIP?` | `+CIPSRIP: <mode>` + `OK` | `0` 不显示；`1` 接收时上报 `RECV FROM:<IP>:<PORT>` | 9s | UDP 或调试接收来源 | 仅单连接有效 |
-| 单连接 IP 头显示 | `AT+CIPHEAD=<mode>`，`AT+CIPHEAD?` | `+CIPHEAD: <mode>` + `OK` | `0` 无 IP 头，数据可能裸到达；`1` 接收时显示 `+IPD,<len>:` | 9s | Socket 接收解析模式 | 单连接建议开启，以便解析数据长度；多连接固定用 `+RECEIVE`，不受 `CIPHEAD/CIPSHOWTP` 影响 |
+| 单连接 IP 头显示 | `AT+CIPHEAD=<mode>`，`AT+CIPHEAD?` | `+CIPHEAD: <mode>` + `OK` | `0` 无 IP 头，数据可能裸到达；`1` 接收时显示 `+IPD,<len>:` | 9s | 直推 RX 诊断/非 v1 socket RX 参考 | TCP client v1 不使用 `CIPHEAD/+IPD` 直推 RX，改用 `CIPRXGET` 手动 HEX 读取；多连接固定用 `+RECEIVE`，不受 `CIPHEAD/CIPSHOWTP` 影响 |
 | IP 头协议显示 | `AT+CIPSHOWTP=<mode>`，`AT+CIPSHOWTP?` | `+CIPSHOWTP: <mode>` + `OK` | `0` 不显示协议；`1` 显示 `+IPD,<len>,<TCP/UDP>:` | 9s | 单连接接收诊断 | 仅单连接且 `AT+CIPHEAD=1` 时有效 |
 | 多连接接收数据 URC | `+RECEIVE,<n>,<length>:` | 下一行 `Received data` | `n=0..5`；`length` 为接收字节数 | URC | Socket RX handler | 多连接模式的数据路径；正文和头分行上报；多连接接收总是该格式 |
 | 保存 TCPIP 上下文 | `AT+CIPSCONT`，`AT+CIPSCONT?` | 执行返回 `OK`；查询多行 TCPIP 参数 + `OK` | 查询字段 `+CIPSCONT:<value>` 中 `value=0` 表示已保存 TCPIP 上下文，`1` 默认不保存；上下文包括 `CIPMUX`、`CIPQSEND`、`CIPMODE`、`CIPDPDP`、`CIPRDTIMER` 等 | 9s | 配置持久化参考 | 保存使用裸执行命令，不带 `<value>` 参数；不要在每次启动频繁写 NV；第一版不建议依赖 |
@@ -283,7 +285,7 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 
 ## 系统 URC 注册清单
 
-以下前缀是基础系统层建议优先注册并翻译为 `modem_event_t` 的 URC。TCP、HTTP、MQTT 等连接层 URC 在下一小节列出；当前 `+MSUB:` MQTT RX 由 Modem handler 转成协议数据事件，其它连接层 URC 暂不承诺直接处理边界。
+以下前缀是基础系统层建议优先注册并翻译为 `modem_event_t` 的 URC。TCP、HTTP、MQTT 等连接层 URC 在下一小节列出；当前 `+MSUB:` MQTT RX 和 Air780EP TCP client v1 的连接/RX 相关 URC 由 Modem handler 转成协议事件或 socket 命令结果，其它非 v1 连接层能力暂不承诺直接处理边界。
 
 | 前缀/完整行 | 来源 | 触发条件 | 映射建议 | 注意事项 |
 |-------------|------|----------|----------|----------|
@@ -297,7 +299,7 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 
 ### 后续连接层 URC
 
-以下 URC/ACK 属于 TCP、HTTP、MQTT 连接层或数据路径。系统层不应直接翻译为通用网络事件，除非它们表示全局 PDP 去激活或 TCP 断链恢复入口。当前实现中 `+MSUB:` 由 Air780EP Modem 上报 `MODEM_EVENT_PROTOCOL_DATA`，Core 再转发给 MQTT service；其它连接层 URC 的直接对象边界后续再设计。
+以下 URC/ACK 属于 TCP、HTTP、MQTT 连接层或数据路径。系统层不应直接翻译为通用网络事件，除非它们表示全局 PDP 去激活或 TCP 断链恢复入口。当前实现中 `+MSUB:` 由 Air780EP Modem 上报 `MODEM_EVENT_PROTOCOL_DATA`，Core 再转发给 MQTT service；Air780EP TCP client v1 覆盖 `CONNECT OK`、`CONNECT FAIL`、`CLOSED`、`TCP ERROR`、`SEND OK`/`DATA ACCEPT` 和 `+CIPRXGET`，用于 TCP open/send/recv/close 和断链通知。UDP、TLS、server/listen mode、多连接等非 v1 能力仍按后续设计处理。
 
 | 前缀/完整行 | 来源 | 触发条件 | 后续映射建议 | 注意事项 |
 |-------------|------|----------|--------------|----------|
@@ -310,7 +312,7 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 | `SHUT OK` / `OK` | TCPIP shutdown | `CIPSHUT` 关闭移动场景成功 | TCPIP scene closed | 命令说明列 `SHUT OK`，使用方法示例出现 `OK`，解析可兼容 |
 | `SEND OK` / `<n>,SEND OK` | TCPIP send | 慢发或快发模式 0 发送完成 | send complete | 发送模式由 `AT+CIPQSEND` 决定 |
 | `DATAACCEPT:<length>` / `DATA ACCEPT:<length>` / `DATAACCEPT:<n>,<length>` / `DATA ACCEPT:<n>,<length>` | TCPIP send | 快发模式 1 模块接收待发送数据 | send accepted | 不代表对端已 ACK，可用 `AT+CIPACK` 查询；手册表格和示例的空格不一致 |
-| `+IPD,` | TCPIP 单连接接收 | `AT+CIPHEAD=1` 后收到数据 | socket RX event | 需按 `+IPD,<len>:<data>` 或 `+IPD,<len>,<TCP/UDP>:<data>` 的长度字段读取数据；`CIPHEAD=0` 时可能裸数据上报 |
+| `+IPD,` | TCPIP 单连接接收 | `AT+CIPHEAD=1` 后收到数据 | 直推 RX / 非 v1 socket RX event | 需按 `+IPD,<len>:<data>` 或 `+IPD,<len>,<TCP/UDP>:<data>` 的长度字段读取数据；TCP client v1 不使用该直推 RX 路径，改用 `+CIPRXGET:` 通知后 `AT+CIPRXGET=3,<len>` 读取 |
 | `RECV FROM:` | TCPIP 单连接接收 | `AT+CIPSRIP=1` 后收到数据 | 记录远端地址 | 常与 `+IPD` 相邻出现 |
 | `+RECEIVE,` | TCPIP 多连接接收 | 多连接收到数据 | socket RX event | 头部与数据分行，按 `<length>` 读取下一行数据 |
 | `+CIPRXGET:` | TCPIP 手动取数 | 手动接收模式收到数据或读取结果 | 数据到达/读取完成 | 到达通知为 `+CIPRXGET:1` 或 `+CIPRXGET:1,<n>`；`mode=2/3/4` 是命令响应 |
@@ -344,17 +346,18 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 11. `AT+CIFSR`，读取本地 IP
 12. 可选 `AT+CIPPING="<host>",4,32,10,64`，执行基础连通性检查
 
-TCP 单连接非透传推荐流程：
+TCP 单连接非透传推荐流程（TCP client v1）：
 
 1. 确保当前处于 `IP INITIAL`；若状态未知或刚从多连接切回，先执行 `AT+CIPSHUT` 清理。
 2. `AT+CIPMUX=0`，使用单连接模式。该命令只能在 `IP INITIAL` 设置，必须早于 `CSTT/CIICR/CIFSR`。
 3. `AT+CIPQSEND=1`，使用快发并以 `DATAACCEPT`/`DATA ACCEPT` 判断模块接收待发送数据。
-4. 可选 `AT+CIPHEAD=1`，接收时使用 `+IPD,<len>:` 头便于按长度解析。
+4. `AT+CIPRXGET=5` 启用手动取数模式，每次有数据均上报 `+CIPRXGET:1`；v1 不使用 `CIPHEAD/+IPD` 直推 RX 路径。
 5. 执行基础 TCPIP/PDP 激活流程中的 `AT+CSTT`、`AT+CIICR`、`AT+CIFSR`，确认返回本地 IP。
 6. `AT+CIPSTART="TCP","<host>",<port>`，等待 `CONNECT OK`，最长约 75s。
 7. `AT+CIPSEND=<len>`，等待 `>` 后输入精确长度的数据，等待 `DATAACCEPT:<len>`/`DATA ACCEPT:<len>`，最长约 50s。
-8. 可选 `AT+CIPACK`，确认 `<nacklen>` 是否为 0。
-9. `AT+CIPCLOSE` 关闭连接，必要时 `AT+CIPSHUT` 关闭移动场景。
+8. 收到 `+CIPRXGET:1` 后执行 `AT+CIPRXGET=3,<len>` 按 HEX 读取并解码 payload；单次 HEX 读取长度受 Air780EP 限制约束。
+9. 可选 `AT+CIPACK`，确认 `<nacklen>` 是否为 0。
+10. `AT+CIPCLOSE` 关闭连接，必要时 `AT+CIPSHUT` 关闭移动场景。
 
 HTTP GET/POST 推荐流程：
 

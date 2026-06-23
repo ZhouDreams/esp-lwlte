@@ -27,6 +27,7 @@
  *********************/
 #define TAG                                  "lwlte_air780ep"
 #define LWLTE_AIR780EP_PRIMARY_CID           1U
+#define LWLTE_AIR780EP_DEFAULT_AT_LINE_BUF_SIZE 2048
 
 /**********************
  *      TYPEDEFS
@@ -116,6 +117,9 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     ret = lwlte_create_empty(&me);
     ESP_RETURN_ON_ERROR(ret, TAG, "create facade failed");
 
+    int at_rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?
+                              config->base.at_engine.rx_line_buf_size :
+                              LWLTE_AIR780EP_DEFAULT_AT_LINE_BUF_SIZE;
     /* AT Engine 是最底层：直接操作 UART 硬件，运行 RX task 接收字节 */
     const at_engine_config_t at_config = {
         .uart = {
@@ -128,7 +132,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
         .runtime = {
             .rx_task_stack = config->base.at_engine.rx_task_stack,
             .rx_task_priority = config->base.at_engine.rx_task_priority,
-            .rx_line_buf_size = config->base.at_engine.rx_line_buf_size,
+            .rx_line_buf_size = at_rx_line_buf_size,
             .cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms,
             .max_response_lines = config->base.at_engine.max_response_lines,
         },

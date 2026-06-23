@@ -143,8 +143,8 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "mqtt_client_destroy",
             "mqtt_fsm_task",
             "me->fsm_task == xTaskGetCurrentTaskHandle()",
-            "core_register_protocol_callback(core, mqtt_protocol_data_cb, me)",
-            "core_register_protocol_closed_callback(core, mqtt_protocol_closed_cb, me)",
+            "core_register_protocol_callback(core, CORE_PROTOCOL_MQTT",
+            "core_register_protocol_closed_callback(core, CORE_PROTOCOL_MQTT",
             "LWLTE_MQTT_EVENT",
             "drain_fsm_queue_payloads",
         ]:
@@ -935,9 +935,15 @@ class MqttEndToEndContractTest(unittest.TestCase):
             ".runtime = {",
             ".rx_task_stack = config->base.at_engine.rx_task_stack",
             ".rx_task_priority = config->base.at_engine.rx_task_priority",
-            ".rx_line_buf_size = config->base.at_engine.rx_line_buf_size",
+            ".rx_line_buf_size = at_rx_line_buf_size",
             ".cmd_default_timeout_ms = config->base.at_engine.cmd_default_timeout_ms",
             ".max_response_lines = config->base.at_engine.max_response_lines",
+        ]:
+            self.assertIn(token, self.lwlte_air780ep_c)
+        for token in [
+            "int at_rx_line_buf_size = config->base.at_engine.rx_line_buf_size ?",
+            "config->base.at_engine.rx_line_buf_size :",
+            "LWLTE_AIR780EP_DEFAULT_AT_LINE_BUF_SIZE",
         ]:
             self.assertIn(token, self.lwlte_air780ep_c)
 

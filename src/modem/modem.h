@@ -253,6 +253,7 @@ typedef struct {
  */
 typedef enum {
     MODEM_PROTOCOL_MQTT = 0,      /**< MQTT 协议； MQTT protocol */
+    MODEM_PROTOCOL_TCP,           /**< TCP 协议； TCP protocol */
 } modem_protocol_t;
 
 /**
@@ -266,11 +267,78 @@ typedef enum {
  */
 typedef struct {
     modem_protocol_t protocol;    /**< 协议类型； Protocol type */
+    uint8_t conn_id;              /**< 连接 ID； Connection ID */
     const char *topic;            /**< 主题指针； Topic pointer */
     size_t topic_len;             /**< 主题长度； Topic length */
     const uint8_t *payload;       /**< 负载指针； Payload pointer */
     size_t payload_len;           /**< 负载长度； Payload length */
+    int reason;                   /**< 事件原因； Event reason */
+    int modem_error_code;         /**< 模块原始错误码； Raw modem error code */
 } modem_protocol_data_t;
+
+/**
+ * @brief Socket 协议类型
+ * @details Socket protocol type
+ */
+typedef enum {
+    MODEM_SOCKET_PROTO_TCP = 0,   /**< TCP socket； TCP socket */
+} modem_socket_proto_t;
+
+/**
+ * @brief Socket 打开参数
+ * @details Socket open parameters
+ */
+typedef struct {
+    modem_socket_proto_t proto;   /**< Socket 协议； Socket protocol */
+    uint8_t conn_id;              /**< 连接 ID； Connection ID */
+    const char *host;             /**< 目标主机； Target host */
+    uint16_t port;                /**< 目标端口； Target port */
+    uint32_t timeout_ms;          /**< 打开超时； Open timeout */
+    int *modem_error_code;        /**< 模块原始错误码输出，可为 NULL； Raw modem error code output, optional */
+} modem_socket_open_t;
+
+/**
+ * @brief Socket 发送参数
+ * @details Socket send parameters
+ */
+typedef struct {
+    uint8_t conn_id;              /**< 连接 ID； Connection ID */
+    const uint8_t *data;          /**< 发送数据； Send data */
+    size_t len;                   /**< 发送长度； Send length */
+    uint32_t timeout_ms;          /**< 发送超时； Send timeout */
+    int *modem_error_code;        /**< 模块原始错误码输出，可为 NULL； Raw modem error code output, optional */
+} modem_socket_send_t;
+
+/**
+ * @brief Socket 接收参数
+ * @details Socket receive parameters
+ */
+typedef struct {
+    uint8_t conn_id;              /**< 连接 ID； Connection ID */
+    size_t max_len;               /**< 最大读取长度； Maximum read length */
+} modem_socket_recv_t;
+
+/**
+ * @brief Socket 接收结果
+ * @details Socket receive result
+ */
+typedef struct {
+    uint8_t conn_id;              /**< 连接 ID； Connection ID */
+    uint8_t *payload;             /**< 堆负载，调用方拥有； Heap payload, caller owns */
+    size_t payload_len;           /**< 负载长度； Payload length */
+    size_t remaining_len;         /**< 模块缓存剩余长度； Remaining cached length */
+    int modem_error_code;         /**< 模块错误码； Modem error code */
+} modem_socket_recv_result_t;
+
+/**
+ * @brief Socket 关闭参数
+ * @details Socket close parameters
+ */
+typedef struct {
+    uint8_t conn_id;              /**< 连接 ID； Connection ID */
+    uint32_t timeout_ms;          /**< 关闭超时； Close timeout */
+    int *modem_error_code;        /**< 模块原始错误码输出，可为 NULL； Raw modem error code output, optional */
+} modem_socket_close_t;
 
 /**
  * @brief 调制解调器事件 ID
@@ -644,6 +712,68 @@ esp_err_t modem_mqtt_publish(modem_handle_t *me,
  *         - ESP_FAIL: 查询失败
  */
 esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status);
+
+/**
+ * @brief 打开 Socket 连接
+ * @details Open socket connection
+ * @param[in] me 调制解调器句柄
+ * @param[in] open Socket 打开参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t modem_socket_open(modem_handle_t *me,
+                            const modem_socket_open_t *open);
+
+/**
+ * @brief 发送 Socket 数据
+ * @details Send socket data
+ * @param[in] me 调制解调器句柄
+ * @param[in] send Socket 发送参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t modem_socket_send(modem_handle_t *me,
+                            const modem_socket_send_t *send);
+
+/**
+ * @brief 接收 Socket 数据
+ * @details Receive socket data
+ * @param[in] me 调制解调器句柄
+ * @param[in] recv Socket 接收参数
+ * @param[out] result Socket 接收结果，payload 成功时由调用方释放
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t modem_socket_recv(modem_handle_t *me,
+                            const modem_socket_recv_t *recv,
+                            modem_socket_recv_result_t *result);
+
+/**
+ * @brief 关闭 Socket 连接
+ * @details Close socket connection
+ * @param[in] me 调制解调器句柄
+ * @param[in] close Socket 关闭参数
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t modem_socket_close(modem_handle_t *me,
+                             const modem_socket_close_t *close);
 
 /**
  * @brief 执行 Ping 诊断
