@@ -123,7 +123,7 @@ struct at_engine_handle {
     uint32_t rx_epoch;                  /**< RX 输入代次，用于丢弃 flush 前旧数据； RX epoch for discarding stale data before flush */
 
     /* ── Response Pool ─────────────────────────────────────────── */
-    char *response_pool;                /**< 响应行文本池； Response line text pool */
+    char **response_pool;               /**< 响应行文本指针池； Response line text pointer pool */
     int response_pool_lines;            /**< 响应文本池行数； Response text pool line count */
     int response_line_size;             /**< 单条响应文本容量； Capacity of one response text line */
 };
@@ -432,6 +432,15 @@ static void append_response_line_locked(at_engine_handle_t *me, at_cmd_ctx_t *ct
  * @param[in] line 响应行
  */
 static void append_final_response_line_locked(at_engine_handle_t *me, at_cmd_ctx_t *ctx, const char *line);
+
+/**
+ * @brief 因保存响应行内存不足而中止当前命令
+ * @details Abort current command when response-line storage is out of memory
+ * @note 调用方必须持有 me->lock。
+ * @param[in] me AT Engine 实例
+ * @param[in,out] ctx 当前命令上下文
+ */
+static void abort_current_cmd_for_no_mem_locked(at_engine_handle_t *me, at_cmd_ctx_t *ctx);
 
 /**
  * @brief 完成当前命令
@@ -1365,8 +1374,15 @@ static void append_response_line_locked(at_engine_handle_t *me, at_cmd_ctx_t *ct
         return;
     }
 
-    char *dst = me->response_pool + ((size_t)ctx->data_line_index * (size_t)me->response_line_size);
-    strlcpy(dst, line, (size_t)me->response_line_size);
+    size_t copy_len = strnlen(line, (size_t)me->response_line_size - 1U);
+    char *dst = malloc(copy_len + 1U);
+    if (!dst) {
+        abort_current_cmd_for_no_mem_locked(me, ctx);
+        return;
+    }
+    memcpy(dst, line, copy_len);
+    dst[copy_len] = '\0';
+    me->response_pool[ctx->data_line_index] = dst;
     ctx->response->lines[ctx->data_line_index] = dst;
     ctx->data_line_index++;
     ctx->response->line_count = ctx->data_line_index;
@@ -1386,10 +1402,28 @@ static void append_final_response_line_locked(at_engine_handle_t *me, at_cmd_ctx
         return;
     }
 
-    char *dst = me->response_pool + ((size_t)(limit - 1) * (size_t)me->response_line_size);
-    strlcpy(dst, line, (size_t)me->response_line_size);
+    free(me->response_pool[limit - 1]);
+    ctx->response->lines[limit - 1] = NULL;
+    me->response_pool[limit - 1] = NULL;
+
+    size_t copy_len = strnlen(line, (size_t)me->response_line_size - 1U);
+    char *dst = malloc(copy_len + 1U);
+    if (!dst) {
+        abort_current_cmd_for_no_mem_locked(me, ctx);
+        return;
+    }
+    memcpy(dst, line, copy_len);
+    dst[copy_len] = '\0';
+    me->response_pool[limit - 1] = dst;
     ctx->response->lines[limit - 1] = dst;
     ctx->response->line_count = limit;
+}
+
+static void abort_current_cmd_for_no_mem_locked(at_engine_handle_t *me, at_cmd_ctx_t *ctx)
+{
+    ctx->io_error = ESP_ERR_NO_MEM;
+    flush_rx_input_locked(me);
+    finish_cmd_locked(me, AT_RESP_ERROR, 0);
 }
 
 static void finish_cmd_locked(at_engine_handle_t *me, at_response_status_t status, int error_code)
@@ -1505,8 +1539,10 @@ static void reset_response(at_response_t *response)
 static void clear_response_pool(at_engine_handle_t *me)
 {
     if (me->response_pool) {
-        memset(me->response_pool, 0,
-               (size_t)me->response_pool_lines * (size_t)me->response_line_size);
+        for (int i = 0; i < me->response_pool_lines; i++) {
+            free(me->response_pool[i]);
+            me->response_pool[i] = NULL;
+        }
     }
 }
 
@@ -1591,7 +1627,8 @@ static esp_err_t init_resources(at_engine_handle_t *me)
 
     me->response_pool_lines = me->config.runtime.max_response_lines;
     me->response_line_size = me->config.runtime.rx_line_buf_size;
-    me->response_pool = calloc((size_t)me->response_pool_lines, (size_t)me->response_line_size);
+    me->response_pool = calloc((size_t)me->response_pool_lines,
+                               sizeof(me->response_pool[0]));
     ESP_RETURN_ON_FALSE(me->response_pool, ESP_ERR_NO_MEM, TAG, "create response_pool failed");
 
     return ESP_OK;
@@ -1658,6 +1695,7 @@ static void cleanup_resources(at_engine_handle_t *me)
         me->line_work_buf = NULL;
     }
     if (me->response_pool) {
+        clear_response_pool(me);
         free(me->response_pool);
         me->response_pool = NULL;
     }

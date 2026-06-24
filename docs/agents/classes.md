@@ -115,7 +115,7 @@ struct at_engine_handle {
     int                  line_buf_pos;        // 当前行已接收字节数
     bool                 line_overflow;       // 当前行过长，丢弃直到 LF
     uint32_t             rx_epoch;            // RX flush 代际，丢弃超时前本地残留字节
-    char                *response_pool;       // 响应文本池
+    char               **response_pool;       // 响应文本指针池，每行按需分配
     int                  response_pool_lines;
     int                  response_line_size;
     bool                 uart_driver_installed;
@@ -175,9 +175,10 @@ if (err == ESP_OK && resp.status == AT_RESP_OK) {
 ```
 
 **关键设计决策**：
-- `lines` 数组由**调用方分配**，AT Engine 只填入指向实例内 `response_pool` 的字符串指针
+- `lines` 数组由**调用方分配**，AT Engine 只填入指向实例内 `response_pool` 槽位所拥有字符串的指针
 - 调用方不得释放或修改 `lines[i]` 指向的字符串；数据在同一 AT Engine 实例下次 `send_cmd` 前有效
 - 实际保存行数按 `min(response->max_lines, config.runtime.max_response_lines)` 截断，防止溢出
+- `response_pool` 只在创建时分配指针槽位；每条响应行在收到时按实际长度分配，下次 `send_cmd` 开始或 `at_engine_destroy()` 时统一释放
 
 ### 1.5 `at_cmd_options_t` — 单次命令选项
 

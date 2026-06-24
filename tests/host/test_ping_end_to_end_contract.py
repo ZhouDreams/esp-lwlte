@@ -508,6 +508,42 @@ class PingEndToEndContractTest(unittest.TestCase):
         )
         self.assert_define_at_least(at_engine_c, "AT_ENGINE_DEFAULT_MAX_RESP_LINES", 101)
 
+    def test_at_engine_response_pool_allocates_lines_on_demand(self):
+        at_engine_c = read("src/at_engine/at_engine.c")
+
+        struct_match = re.search(r"struct\s+at_engine_handle\s*\{(?P<body>[\s\S]*?)\n\};",
+                                 at_engine_c)
+        self.assertIsNotNone(struct_match, "missing at_engine_handle struct")
+        struct_body = struct_match.group("body")
+        self.assertIn("char **response_pool;", struct_body)
+        self.assertNotIn("char *response_pool;", struct_body)
+
+        init_body = self.assert_function_body(at_engine_c, "init_resources")
+        self.assertRegex(init_body, r"calloc\s*\(\s*\(\s*size_t\s*\)\s*me->response_pool_lines\s*,\s*sizeof\s*\(\s*me->response_pool\s*\[\s*0\s*\]\s*\)\s*\)")
+        self.assertNotIn("(size_t)me->response_pool_lines, (size_t)me->response_line_size", init_body)
+
+        append_body = self.assert_function_body(at_engine_c, "append_response_line_locked")
+        self.assertIn("strnlen(line, (size_t)me->response_line_size - 1U)", append_body)
+        self.assertIn("malloc(copy_len + 1U)", append_body)
+        self.assertIn("abort_current_cmd_for_no_mem_locked(me, ctx);", append_body)
+        self.assertIn("ctx->response->lines[ctx->data_line_index] = dst;", append_body)
+
+        clear_body = self.assert_function_body(at_engine_c, "clear_response_pool")
+        self.assertIn("for (int i = 0; i < me->response_pool_lines; i++)", clear_body)
+        self.assertIn("free(me->response_pool[i]);", clear_body)
+        self.assertIn("me->response_pool[i] = NULL;", clear_body)
+
+        final_body = self.assert_function_body(at_engine_c, "append_final_response_line_locked")
+        self.assertIn("free(me->response_pool[limit - 1]);", final_body)
+        self.assertIn("abort_current_cmd_for_no_mem_locked(me, ctx);", final_body)
+        self.assertNotIn("me->response_pool + ((size_t)(limit - 1)", final_body)
+
+        abort_body = self.assert_function_body(at_engine_c,
+                                               "abort_current_cmd_for_no_mem_locked")
+        self.assertIn("ctx->io_error = ESP_ERR_NO_MEM;", abort_body)
+        self.assertIn("flush_rx_input_locked(me);", abort_body)
+        self.assertIn("finish_cmd_locked(me, AT_RESP_ERROR, 0);", abort_body)
+
     def test_cmake_registers_ping_client_source(self):
         cmake = read("src/CMakeLists.txt")
         self.assertIn('"ping_client/ping_client.c"', cmake)

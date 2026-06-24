@@ -616,6 +616,29 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
             ".socket_close = air780ep_socket_close",
         ], "air780ep tcp mapping")
 
+    def test_air780ep_tcpip_settings_are_configured_before_activation(self):
+        activate_body = self.assert_function_body(self.air780ep_c,
+                                                  "air780ep_activate_pdp")
+        open_body = self.assert_function_body(self.air780ep_c,
+                                             "air780ep_socket_open")
+        prepare_body = self.assert_function_body(self.air780ep_c,
+                                                "air780ep_socket_prepare")
+
+        self.assert_ordered(prepare_body, [
+            "AT+CIPMUX=0",
+            "AT+CIPMODE=0",
+            "AT+CIPQSEND=1",
+            "AT+CIPRXF=1",
+            "AT+CIPRXGET=5",
+        ], "air780ep TCPIP socket options")
+        self.assert_ordered(activate_body, [
+            "air780ep_socket_prepare(self)",
+            "cstt_cmd",
+            "AT+CIICR",
+            "AT+CIFSR",
+        ], "air780ep CIPMUX before TCPIP activation")
+        self.assertNotIn("air780ep_socket_prepare(self)", open_body)
+
     def test_air780ep_tcp_readable_urc_accepts_spaced_and_compact_forms(self):
         register_body = self.assert_function_body(self.air780ep_c, "register_urcs")
         unregister_body = self.assert_function_body(self.air780ep_c, "air780ep_unregister_urcs")

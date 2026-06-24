@@ -3317,6 +3317,10 @@ static esp_err_t air780ep_activate_pdp(modem_handle_t *me, uint8_t cid)
     xSemaphoreGive(self->base.lock);
 
     esp_err_t ret;
+    air780ep_cmd_ctx_t ctx;
+
+    ret = air780ep_socket_prepare(self);
+    ESP_RETURN_ON_ERROR(ret, TAG, "prepare Air780EP TCPIP settings failed");
 
     char cstt_cmd_buf[96];
     const char *cstt_cmd = "AT+CSTT";
@@ -3329,7 +3333,6 @@ static esp_err_t air780ep_activate_pdp(modem_handle_t *me, uint8_t cid)
         cstt_cmd = cstt_cmd_buf;
     }
 
-    air780ep_cmd_ctx_t ctx;
     ret = send_cmd(self, cstt_cmd, &ctx, AIR780EP_CSTT_TIMEOUT_MS);
     ESP_RETURN_ON_ERROR(ret, TAG, "send %s failed", cstt_cmd);
 
@@ -3548,8 +3551,6 @@ static esp_err_t air780ep_socket_open(modem_handle_t *me,
                         ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
 
     modem_air780ep_t *self = to_air780ep(me);
-    esp_err_t ret = air780ep_socket_prepare(self);
-    ESP_RETURN_ON_ERROR(ret, TAG, "prepare Air780EP TCP socket failed");
 
     char *host = escape_at_string(open->host);
     ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape socket host failed");
@@ -3588,7 +3589,7 @@ static esp_err_t air780ep_socket_open(modem_handle_t *me,
     };
 
     air780ep_cmd_ctx_t ctx;
-    ret = send_cmd_with_options(self, cmd, &ctx, &options);
+    esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
     if (ret == ESP_OK &&
         (response_contains(&ctx.response, "CONNECT OK") ||
          response_contains(&ctx.response, "ALREADY CONNECT"))) {
