@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 
 #include "example.h"
+#include "example_event_names.h"
 #include "lwlte.h"
 
 /*********************
@@ -30,9 +31,9 @@
 #define TAG                                      "ml307r_mqtt"
 
 #define EXAMPLE_LTE_UART_NUM                     UART_NUM_1
-#define EXAMPLE_LTE_UART_TX_PIN                  GPIO_NUM_0
-#define EXAMPLE_LTE_UART_RX_PIN                  GPIO_NUM_1
-#define EXAMPLE_LTE_EN_PIN                       GPIO_NUM_2
+#define EXAMPLE_LTE_UART_TX_PIN                  GPIO_NUM_3
+#define EXAMPLE_LTE_UART_RX_PIN                  GPIO_NUM_10
+#define EXAMPLE_LTE_EN_PIN                       GPIO_NUM_4
 #define EXAMPLE_LTE_UART_BAUD_RATE               115200
 #define EXAMPLE_LTE_APN                          ""
 #define EXAMPLE_LTE_PRIMARY_CID                  1
@@ -261,7 +262,8 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
 
     const lwlte_event_data_t *data = event_data;
 
-    ESP_LOGI(TAG, "LTE event=%d", (int)event_id);
+    ESP_LOGI(TAG, "LTE event=%d(%s)", (int)event_id,
+             example_lwlte_event_name((lwlte_event_id_t)event_id));
 
     switch ((lwlte_event_id_t)event_id) {
     case LWLTE_EVENT_NET_CONNECTING:
@@ -300,7 +302,8 @@ static void mqtt_event_cb(void *arg, esp_event_base_t base,
 
     lwlte_mqtt_event_data_t *data = event_data;
 
-    ESP_LOGI(TAG, "MQTT event=%d", (int)event_id);
+    ESP_LOGI(TAG, "MQTT event=%d(%s)", (int)event_id,
+             example_lwlte_mqtt_event_name((lwlte_mqtt_event_id_t)event_id));
 
     switch ((lwlte_mqtt_event_id_t)event_id) {
     case LWLTE_MQTT_EVENT_CONNECTED:

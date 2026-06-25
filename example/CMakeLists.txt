@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS "main.c"
+         "example_event_names.c"
          "air780ep_basic_connect.c"
          "air780ep_mqtt_client.c"
          "air780ep_tcp_client.c"

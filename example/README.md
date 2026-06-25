@@ -102,12 +102,12 @@ Default wiring targets the ESP32-C3 Pro DevKit setup used during development.
 
 | ESP32-C3 | ML307R | Notes |
 |----------|--------|-------|
-| GPIO0 | RX | ESP32-C3 UART1 TX |
-| GPIO1 | TX | ESP32-C3 UART1 RX |
-| GPIO2 | EN or power enable | Controlled by modem adapter |
+| GPIO3 | RX | ESP32-C3 UART1 TX |
+| GPIO10 | TX | ESP32-C3 UART1 RX |
+| GPIO4 | EN or power enable | Controlled by modem adapter |
 | GND | GND | Common ground required |
 
-The ML307R modem adapter toggles EN low then high during start/reset, probes `AT` until `OK`, and then sends basic AT initialization commands. It does not use the old standalone UART diagnostic path.
+ML307R defaults intentionally avoid the Air780EP GPIO0/GPIO1/GPIO2 wiring so both modules can stay connected while `EXAMPLE_SELECTED` chooses which one runs. The ML307R modem adapter toggles EN low then high during start/reset, probes `AT` until `OK`, and then sends basic AT initialization commands. It does not use the old standalone UART diagnostic path.
 
 ## ML307R Basic Connect
 

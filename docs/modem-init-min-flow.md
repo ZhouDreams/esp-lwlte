@@ -109,9 +109,9 @@ I (11681) appmain: ping summary: sent=4 recv=4 lost=0 min=250ms max=400ms avg=29
 | AT serialization | 确保上一条 AT 完成后再发下一条 | 无并发 AT | 无 | 手册明确不能同时发送多条 AT 命令。 |
 | AT parser setup | `ATE0`，`AT+CMEE=1` | 均返回 `OK` | 无 | 默认 echo 可能已关闭，仍建议显式设置。 |
 | Optional CFUN gate | `AT+CFUN?`，必要时 `AT+CFUN=1` | `+CFUN: 1` | 无 | 手册要求 `+MATREADY` 后至少等待 2 秒才能执行 `AT+CFUN=0/1`。 |
-| Enable registration URC | `AT+CEREG=2`，`AT+CGREG=2`，可选 `AT+CREG=2` | 均返回 `OK` | 这些命令只开启后续注册变化 URC | 正常上电会自动驻网，仍需 `AT+CEREG?` 查询确认。 |
+| Enable registration URC | `AT+CEREG=2` | 返回 `OK` | 只开启 LTE/EPS 注册变化 URC | 当前实测 ML307R 固件 `AT+CGREG*` 和 `AT+CREG*` 返回 `ERROR`，不要在主动初始化路径调用。 |
 | SIM ready | `AT+CPIN?` 轮询 | `+CPIN: READY` | `+CPIN:` 可作为运行期 SIM 状态事件 | 当前 Core SIM 进度仍以 `AT+CPIN?` 查询为准。 |
-| Registered | `AT+CEREG?` 轮询，必要时查 `CGREG/CREG` | `stat=1` 或 `stat=5` | 需先 `AT+CEREG=<n>` / `AT+CGREG=<n>` / `AT+CREG=<n>` 才有注册变化 URC | 通信流程手册明确正常上电后自动驻网，可用 `AT+CEREG?` 查询是否成功。 |
+| Registered | `AT+CEREG?` 轮询 | `stat=1` 或 `stat=5` | 需先 `AT+CEREG=<n>` 才有注册变化 URC | 通信流程手册明确正常上电后自动驻网，可用 `AT+CEREG?` 查询是否成功。 |
 | Data plane | 先查 `AT+MIPCALL?`，若未激活则 `AT+CGDCONT=<cid>,...` 后 `AT+MIPCALL=1,<cid>` | `+MIPCALL: <cid>,1,"<ip>"[...]` | `+MIPCALL` 可能来自自动拨号，也可能是命令结果 | ML307R 应用层联网主路径是 `MIPCALL`，不是 Air780EP 的 `CSTT/CIICR/CIFSR`。 |
 
 ### ML307R URC 分类
@@ -120,9 +120,7 @@ I (11681) appmain: ping summary: sent=4 recv=4 lost=0 min=250ms max=400ms avg=29
 |-----|----------|----------------|------------|----------|
 | `+MATREADY` | 是，但自适应波特率模式可能没有 | 否 | 模块 AT ready gate | 无该 URC 时用 `AT` 返回 `OK` 作为兜底。 |
 | `+CPIN:` | 可能 | 否 | 运行期 SIM 状态事件 | 同前缀也用于 `AT+CPIN?` 查询响应；当前 Core SIM 进度仍以命令查询为准。 |
-| `+CREG:` | 否，除非已开启 | `AT+CREG=<n>`，`n=1/2/3` | 通用注册状态变化 | 手册定义 `<n>=1` 上报注册变化，`<n>=2` 增加小区信息，`<n>=3` 增加原因值。 |
-| `+CEREG:` | 否，除非已开启 | `AT+CEREG=<n>`，`n=1/2/3/4/5` | LTE/EPS 注册状态变化 | LTE 主路径优先使用。 |
-| `+CGREG:` | 否，除非已开启 | `AT+CGREG=<n>`，`n=1/2/3`，手册也描述 PSM 相关扩展形态 | 分组域注册状态变化 | 同前缀也用于查询响应。 |
+| `+CEREG:` | 否，除非已开启 | `AT+CEREG=<n>`，`n=1/2/3/4/5` | LTE/EPS 注册状态变化 | ML307R 当前主动注册路径只使用 CEREG；同前缀也用于查询响应。 |
 | `+MIPCALL: <cid>,1,"<ip>"[...]` | 可能 | 自动拨号无需配置；手动拨号需先发 `AT+MIPCALL=1,<cid>` | 应用层数据面激活成功 | 上电可能已自动拨号激活 `cid=1`，所以初始化应先 `AT+MIPCALL?`。 |
 | `+MIPCALL:<cid>,0` / `+MIPCALL: <cid>,0` | 可能 | 可由 `AT+MIPCALL=0,<cid>`、`AT+CFUN=4` 或网络变化触发 | 应用层数据面断开 | `AT+MIPCALL=0,<cid>` 只断开网络连接，不保证去激活 PDP；需去激活 PDP 时手册建议 `AT+CFUN=4`。 |
 | `+MIPOPEN: <connect_id>,0` | 命令结果 URC | 先发 `AT+MIPOPEN=...` | TCP/UDP socket connected | `<result>` 非 0 表示连接失败；透传模式成功为 `CONNECT`。 |
@@ -148,7 +146,7 @@ I (11681) appmain: ping summary: sent=4 recv=4 lost=0 min=250ms max=400ms avg=29
 
 - Air780EP 当前硬复位后以 `AT OK` 确认 AT 通道 ready，不消费 `RDY` 作为 gate；ML307R 可用 `+MATREADY` 快速触发，自适应波特率无上报时用 `AT OK` 兜底。
 - SIM ready 当前实现只通过 `AT+CPIN?` 命令轮询推进；`+CPIN:` URC 是运行期观察，不释放命令等待，不推进初始化，也不推进网络激活。
-- 注册状态建议先发送 `CEREG/CGREG/CREG=<n>` 开启后续变化 URC，再立即查询当前状态；如果已经注册，设置 URC 后可能没有状态变化，因此不会主动上报。
+- 注册状态建议先发送模块支持的注册 URC 开关后，再立即查询当前状态；Air780EP 可用 `CEREG/CGREG/CREG=<n>`，ML307R 只用 `CEREG=<n>`。如果已经注册，设置命令后可能没有状态变化，因此不会主动上报。
 - PDP/PDN 事件 URC 适合作为异步状态变化输入，但应用层上线必须以“拿到 IP”为准。Air780EP 是 `CIFSR`/`CGPADDR`，ML307R 是 `MIPCALL` 返回 IP。
 - TCP/MQTT/HTTP 的连接/请求结果通常本来就是异步 URC；这些 URC 属于业务操作结果，不应混入基础 PDP ready gate。
 
@@ -163,8 +161,8 @@ I (11681) appmain: ping summary: sent=4 recv=4 lost=0 min=250ms max=400ms avg=29
 | 主题 | Air780EP | ML307R |
 |------|----------|--------|
 | 启动 ready | 硬复位后轮询 `AT` 到 `OK`；`RDY` 仅日志现象 | `+MATREADY`；自适应波特率无上报时用 `AT` 兜底 |
-| LTE 注册主判断 | `CEREG`，辅以 `CGREG/CREG` | `CEREG`，辅以 `CGREG/CREG` |
-| 注册 URC 开启 | `AT+CEREG=<n>`、`AT+CGREG=<n>`、`AT+CREG=<n>` | 同左 |
+| LTE 注册主判断 | `CEREG`，辅以 `CGREG/CREG` | `CEREG` only（当前实测 `CGREG/CREG` 返回 `ERROR`） |
+| 注册 URC 开启 | `AT+CEREG=<n>`、`AT+CGREG=<n>`、`AT+CREG=<n>` | `AT+CEREG=<n>` |
 | SIM 判断 | `AT+CPIN?` 命令轮询；`+CPIN:` 仅运行期观察 | `AT+CPIN?` 命令轮询；`+CPIN:` 仅运行期观察 |
 | 数据面主路径 | `AT+CSTT` -> `AT+CIICR` -> `AT+CIFSR` | `AT+MIPCALL?` / `AT+MIPCALL=1,<cid>` |
 | 数据面成功条件 | `CIFSR` 返回 IP，必要时 `CGACT?/CGPADDR` 校验 | `+MIPCALL: <cid>,1,"<ip>"[...]` |
@@ -176,9 +174,9 @@ I (11681) appmain: ping summary: sent=4 recv=4 lost=0 min=250ms max=400ms avg=29
 ## 推荐最小实现策略
 
 1. Air780EP 硬复位后轮询 `AT` 到 `OK`；ML307R 等待 `+MATREADY` 或轮询 `AT` 到 `OK`，以命令确认 AT 通道可用。
-2. 进入 `CONFIG_AT`，关闭 echo，开启 `CMEE=1`，设置注册 URC 为 `CEREG=2`、`CGREG=2`、`CREG=2`。
+2. 进入 `CONFIG_AT`，关闭 echo，开启 `CMEE=1`。Air780EP 设置注册 URC 为 `CEREG=2`、`CGREG=2`、`CREG=2`；ML307R 只设置 `CEREG=2`。
 3. 进入 `WAIT_SIM`，周期发送 `AT+CPIN?`，直到命令响应为 `READY`；`+CPIN:` 仅作为运行期观察，不推进该阶段。
-4. 进入 `WAIT_REGISTERED`，消费 `+CEREG/+CGREG/+CREG`，同时周期查询 `AT+CEREG?`，直到 `stat=1/5`。
+4. 进入 `WAIT_REGISTERED`。Air780EP 消费 `+CEREG/+CGREG/+CREG`；ML307R 只消费 `+CEREG`。两者都周期查询 `AT+CEREG?`，直到 `stat=1/5`。
 5. 进入 `WAIT_ATTACHED`，查询 `AT+CGATT?`，直到 `1` 或让数据面激活失败回退到该状态。
 6. Air780EP 进入 `ACTIVATE_AIR780EP_DATA`，执行 `CSTT/CIICR/CIFSR`，以 IP 地址作为上线条件。
 7. ML307R 进入 `ACTIVATE_ML307R_DATA`，先 `MIPCALL?`，未激活再 `CGDCONT` + `MIPCALL=1,<cid>`，以 `+MIPCALL` 中 IP 地址作为上线条件。

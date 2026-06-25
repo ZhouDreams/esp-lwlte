@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 
 #include "example.h"
+#include "example_event_names.h"
 #include "lwlte.h"
 
 /*********************
@@ -261,7 +262,8 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
 
     const lwlte_event_data_t *data = event_data;
 
-    ESP_LOGI(TAG, "LTE event=%d", (int)event_id);
+    ESP_LOGI(TAG, "LTE event=%d(%s)", (int)event_id,
+             example_lwlte_event_name((lwlte_event_id_t)event_id));
 
     switch ((lwlte_event_id_t)event_id) {
     case LWLTE_EVENT_NET_CONNECTING:
@@ -300,7 +302,8 @@ static void mqtt_event_cb(void *arg, esp_event_base_t base,
 
     lwlte_mqtt_event_data_t *data = event_data;
 
-    ESP_LOGI(TAG, "MQTT event=%d", (int)event_id);
+    ESP_LOGI(TAG, "MQTT event=%d(%s)", (int)event_id,
+             example_lwlte_mqtt_event_name((lwlte_mqtt_event_id_t)event_id));
 
     switch ((lwlte_mqtt_event_id_t)event_id) {
     case LWLTE_MQTT_EVENT_CONNECTED:

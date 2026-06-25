@@ -880,6 +880,16 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
                 "lwlte_tcp_event_data_release(data);",
                 "base.at_engine.rx_line_buf_size = 2048",
             ], label)
+
+    def test_tcp_example_defaults_target_line_echo_server(self):
+        self.assert_ordered(self.example_kconfig, [
+            "config EXAMPLE_TCP_HOST",
+            'default "tcpbin.com"',
+            "config EXAMPLE_TCP_PORT",
+            "default 4242",
+            "config EXAMPLE_TCP_PAYLOAD_HEX",
+            'default "68656c6c6f2066726f6d206573702d6c776c7465207463700a"',
+        ], "tcp example line echo defaults")
         self.assertIn("TCP Client Service", self.classes_md)
         self.assertIn("tcp_client -> Core -> Modem", self.arch_md)
         self.assertIn("TCP client v1", self.roadmap_md)

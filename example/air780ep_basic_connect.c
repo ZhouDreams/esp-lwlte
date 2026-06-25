@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 
 #include "example.h"
+#include "example_event_names.h"
 #include "lwlte.h"
 
 /*********************
@@ -177,9 +178,11 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
     (void)base;
 
     const lwlte_event_data_t *data = event_data;
+    const lwlte_net_state_t net_state = data ? data->net_state : (lwlte_net_state_t)-1;
 
-    ESP_LOGI(TAG, "LTE event=%d net=%d err=%d", (int)event_id,
-             data ? (int)data->net_state : -1,
+    ESP_LOGI(TAG, "LTE event=%d(%s) net=%d(%s) err=%d", (int)event_id,
+             example_lwlte_event_name((lwlte_event_id_t)event_id),
+             (int)net_state, example_lwlte_net_state_name(net_state),
              data ? data->error_code : 0);
 
     switch ((lwlte_event_id_t)event_id) {

@@ -23,6 +23,7 @@
 #include "freertos/task.h"
 
 #include "example.h"
+#include "example_event_names.h"
 #include "lwlte.h"
 
 /*********************
@@ -31,9 +32,9 @@
 #define TAG                                      "ml307r_tcp"
 
 #define EXAMPLE_LTE_UART_NUM                     UART_NUM_1
-#define EXAMPLE_LTE_UART_TX_PIN                  GPIO_NUM_0
-#define EXAMPLE_LTE_UART_RX_PIN                  GPIO_NUM_1
-#define EXAMPLE_LTE_EN_PIN                       GPIO_NUM_2
+#define EXAMPLE_LTE_UART_TX_PIN                  GPIO_NUM_3
+#define EXAMPLE_LTE_UART_RX_PIN                  GPIO_NUM_10
+#define EXAMPLE_LTE_EN_PIN                       GPIO_NUM_4
 #define EXAMPLE_LTE_UART_BAUD_RATE               115200
 #define EXAMPLE_LTE_APN                          ""
 #define EXAMPLE_LTE_PRIMARY_CID                  1
@@ -148,9 +149,11 @@ static void tcp_event_cb(void *arg, esp_event_base_t base,
     (void)base;
 
     lwlte_tcp_event_data_t *data = event_data;
-    ESP_LOGI(TAG, "TCP event=%d state=%d err=%d modem=%d reason=%d",
+    const lwlte_tcp_conn_state_t conn_state = data ? data->conn_state : (lwlte_tcp_conn_state_t)-1;
+    ESP_LOGI(TAG, "TCP event=%d(%s) state=%d(%s) err=%d modem=%d reason=%d",
              (int)event_id,
-             data ? (int)data->conn_state : -1,
+             example_lwlte_tcp_event_name((lwlte_tcp_event_id_t)event_id),
+             (int)conn_state, example_lwlte_tcp_conn_state_name(conn_state),
              data ? data->error_code : 0,
              data ? data->modem_error_code : 0,
              data ? data->reason : 0);

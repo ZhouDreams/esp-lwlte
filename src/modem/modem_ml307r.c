@@ -52,9 +52,7 @@
 #define ML307R_MPING_MAX_COUNT           100
 #define ML307R_MPING_CMD_OVERHEAD_MS     5000U
 #define ML307R_URC_CPIN                  "+CPIN:"
-#define ML307R_URC_CREG                  "+CREG:"
 #define ML307R_URC_CEREG                 "+CEREG:"
-#define ML307R_URC_CGREG                 "+CGREG:"
 #define ML307R_URC_MIPCALL               "+MIPCALL:"
 #define ML307R_URC_MQTTURC               "+MQTTURC:"
 #define ML307R_MIPURC_RTCP_PREFIX        "+MIPURC: \"rtcp\""
@@ -189,8 +187,7 @@ static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *s
 static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal);
 /**
  * @brief 获取 ML307R 网络注册状态
- * @details Query EPS/GSM/CS registration via AT+CEREG?, AT+CGREG? and AT+CREG?;
- *          the first non-UNKNOWN result wins and updates the modem state
+ * @details Query EPS/LTE registration via AT+CEREG? and update the modem state
  * @param[in] me 调制解调器句柄
  * @param[out] status 网络注册状态
  * @return
@@ -2659,8 +2656,6 @@ static esp_err_t run_basic_init_cmds(modem_ml307r_t *self)
         "ATE0",
         "AT+CMEE=1",
         "AT+CEREG=2",
-        "AT+CGREG=2",
-        "AT+CREG=2",
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
@@ -2808,9 +2803,7 @@ static esp_err_t register_urcs(modem_ml307r_t *self)
         at_urc_callback_t callback;
     } urcs[] = {
         { ML307R_URC_CPIN, &self->cpin_handler, cpin_urc_handler },
-        { ML307R_URC_CREG, &self->creg_handler, reg_urc_handler },
         { ML307R_URC_CEREG, &self->cereg_handler, reg_urc_handler },
-        { ML307R_URC_CGREG, &self->cgreg_handler, reg_urc_handler },
         { ML307R_URC_MIPCALL, &self->mipcall_handler, mipcall_urc_handler },
         { ML307R_URC_MQTTURC, &self->mqtturc_handler, mqtturc_urc_handler },
         { ML307R_MIPURC_RTCP_PREFIX, &self->tcp_readable_handler,
@@ -2881,9 +2874,7 @@ static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self)
         at_urc_handler_t *handler;
     } urcs[] = {
         { ML307R_URC_CPIN, &self->cpin_handler },
-        { ML307R_URC_CREG, &self->creg_handler },
         { ML307R_URC_CEREG, &self->cereg_handler },
-        { ML307R_URC_CGREG, &self->cgreg_handler },
         { ML307R_URC_MIPCALL, &self->mipcall_handler },
         { ML307R_URC_MQTTURC, &self->mqtturc_handler },
         { ML307R_MIPURC_RTCP_PREFIX, &self->tcp_readable_handler },
@@ -3244,8 +3235,6 @@ static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t 
         const char *prefix;
     } queries[] = {
         { "AT+CEREG?", ML307R_URC_CEREG },
-        { "AT+CGREG?", ML307R_URC_CGREG },
-        { "AT+CREG?", ML307R_URC_CREG },
     };
     esp_err_t last_err = ESP_FAIL;
     bool had_error = false;

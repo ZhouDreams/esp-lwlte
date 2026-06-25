@@ -2,6 +2,7 @@
 """Static regression checks for ML307R examples."""
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -9,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DIR = ROOT / "example"
 BASIC_C = EXAMPLE_DIR / "ml307r_basic_connect.c"
 MQTT_C = EXAMPLE_DIR / "ml307r_mqtt_client.c"
+TCP_C = EXAMPLE_DIR / "ml307r_tcp_client.c"
 PROBE_C = EXAMPLE_DIR / "ml307r_probe.c"
 EXAMPLE_H = EXAMPLE_DIR / "example.h"
 MAIN_C = EXAMPLE_DIR / "main.c"
@@ -28,6 +30,7 @@ class Ml307rExamplesContractTest(unittest.TestCase):
     def setUpClass(cls):
         cls.basic_c = read_optional(BASIC_C)
         cls.mqtt_c = read_optional(MQTT_C)
+        cls.tcp_c = read_optional(TCP_C)
         cls.example_h = read_optional(EXAMPLE_H)
         cls.main_c = read_optional(MAIN_C)
         cls.cmake = read_optional(CMAKE)
@@ -37,6 +40,20 @@ class Ml307rExamplesContractTest(unittest.TestCase):
     def assert_contains_all(self, text: str, tokens: list[str]):
         for token in tokens:
             self.assertIn(token, text)
+
+    def get_section(self, text: str, heading: str) -> str:
+        start = text.index(heading)
+        next_heading = text.find("\n## ", start + len(heading))
+        if next_heading == -1:
+            return text[start:]
+        return text[start:next_heading]
+
+    def assert_pin_define(self, text: str, macro: str, gpio: int, label: str):
+        self.assertRegex(
+            text,
+            rf"(?m)^#define\s+{re.escape(macro)}\s+GPIO_NUM_{gpio}\b",
+            label,
+        )
 
     def test_probe_removed_everywhere(self):
         self.assertFalse(PROBE_C.exists(), "ml307r_probe.c should be removed")
@@ -73,6 +90,45 @@ class Ml307rExamplesContractTest(unittest.TestCase):
             '"ml307r_basic_connect.c"',
             '"ml307r_mqtt_client.c"',
         ])
+
+    def test_ml307r_examples_use_dedicated_esp32c3_pins(self):
+        for label, text in [
+            ("ml307r_basic_connect.c", self.basic_c),
+            ("ml307r_mqtt_client.c", self.mqtt_c),
+            ("ml307r_tcp_client.c", self.tcp_c),
+        ]:
+            self.assert_pin_define(text, "EXAMPLE_LTE_UART_TX_PIN", 3, label)
+            self.assert_pin_define(text, "EXAMPLE_LTE_UART_RX_PIN", 10, label)
+            self.assert_pin_define(text, "EXAMPLE_LTE_EN_PIN", 4, label)
+            self.assertNotRegex(
+                text,
+                r"(?m)^#define\s+EXAMPLE_LTE_UART_TX_PIN\s+GPIO_NUM_0\b",
+                label,
+            )
+            self.assertNotRegex(
+                text,
+                r"(?m)^#define\s+EXAMPLE_LTE_UART_RX_PIN\s+GPIO_NUM_1\b",
+                label,
+            )
+            self.assertNotRegex(
+                text,
+                r"(?m)^#define\s+EXAMPLE_LTE_EN_PIN\s+GPIO_NUM_2\b",
+                label,
+            )
+
+        ml307r_wiring = self.get_section(self.readme, "## ML307R Wiring")
+        self.assert_contains_all(ml307r_wiring, [
+            "| GPIO3 | RX | ESP32-C3 UART1 TX |",
+            "| GPIO10 | TX | ESP32-C3 UART1 RX |",
+            "| GPIO4 | EN or power enable | Controlled by modem adapter |",
+            "ML307R defaults intentionally avoid the Air780EP GPIO0/GPIO1/GPIO2 wiring",
+        ])
+        for old_row in [
+            "| GPIO0 | RX | ESP32-C3 UART1 TX |",
+            "| GPIO1 | TX | ESP32-C3 UART1 RX |",
+            "| GPIO2 | EN or power enable | Controlled by modem adapter |",
+        ]:
+            self.assertNotIn(old_row, ml307r_wiring)
 
     def test_ml307r_basic_connect_example(self):
         self.assertTrue(BASIC_C.exists(), "missing ml307r_basic_connect.c")

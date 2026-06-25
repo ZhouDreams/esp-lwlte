@@ -27,7 +27,7 @@
 
 ## 实现注意事项
 
-当前 `at_engine` 第一版在有当前命令时，会把非最终响应行优先放入当前 `at_response_t`；只有无当前命令时才按 URC 前缀分发。因此 `+CREG:`、`+CEREG:`、`+CGREG:`、`+MIPCALL:`、`+MIPOPEN:`、`+MIPCLOSE:`、`+MIPSEND:`、`+MQTTURC:` 这类既可能作为命令相关响应、又可能作为异步事件的前缀，在命令等待期间不会被可靠地区分为独立 URC。
+当前 `at_engine` 第一版在有当前命令时，会把非最终响应行优先放入当前 `at_response_t`；只有无当前命令时才按 URC 前缀分发。因此 `+CEREG:`、`+MIPCALL:`、`+MIPOPEN:`、`+MIPCLOSE:`、`+MIPSEND:`、`+MQTTURC:` 这类既可能作为命令相关响应、又可能作为异步事件的前缀，在命令等待期间不会被可靠地区分为独立 URC；当前实测 ML307R 固件仅主动使用 `+CEREG:`，`+CGREG:`/`+CREG:` 对应命令族返回 `ERROR`，初始化实现不要主动调用。
 
 `modem_ml307r_t` 第一版应按以下规则实现：
 
@@ -86,9 +86,7 @@
 | 查询 ICCID | `AT+MCCID` | `<iccid>` + `OK` | ICCID | 9s | `modem_info_t.iccid` | 扩展 AT 手册列为 ML307R ICCID 读取命令 |
 | 查询信号质量 | `AT+CSQ` | `+CSQ: <rssi>,<ber>` + `OK` | `rssi=0..31,99`；`ber=0..7,99` | 9s | `modem_get_signal()` | dBm 可按常见公式 `-113 + 2*rssi` 估算 |
 | 查询扩展信号 | `AT+CESQ` | `+CESQ: <rxlev>,<rxqual>,<rscp>,<ecno>,<rsrq>,<rsrp>` + `OK` | LTE 重点解析 `rsrq`、`rsrp`；`255` 未知 | 9s | 诊断/未来扩展 | 可补充 `AT+CSQ`，第一版不必强依赖 |
-| 网络注册状态 | `AT+CREG=<n>`，`AT+CREG?` | `+CREG: <n>,<stat>[,<lac>,<ci>,<act>]` + `OK` | `stat=1/5` 已注册；`2` 搜索；`3` 拒绝 | 9s | 通用注册状态和 URC | 同前缀也用于查询响应 |
-| EPS 注册状态 | `AT+CEREG=<n>`，`AT+CEREG?` | `+CEREG: <n>,<stat>[,<tac>,<ci>,<act>...]` + `OK` | LTE/EPS 注册状态；`stat=1/5` 可用 | 9s | ML307R LTE 主注册状态 | 建议初始化启用 URC，再轮询查询兜底 |
-| GPRS 注册状态 | `AT+CGREG=<n>`，`AT+CGREG?` | `+CGREG: <n>,<stat>[,<lac>,<ci>[,...]]` + `OK` | 分组域注册状态 | 9s | 数据域注册状态和 URC | 同前缀也用于查询响应 |
+| EPS 注册状态 | `AT+CEREG=<n>`，`AT+CEREG?` | `+CEREG: <n>,<stat>[,<tac>,<ci>,<act>...]` + `OK` | LTE/EPS 注册状态；`stat=1/5` 可用 | 9s | ML307R 当前注册主路径 | 实测 ML307R 固件支持 CEREG；`CGREG/CREG` 命令族返回 `ERROR`，实现不要主动调用 |
 | 运营商查询 | `AT+COPS?` | `+COPS: <mode>[,<format>,<oper>,<act>]` + `OK` | `oper` 运营商；`act` 接入制式 | 300s | 诊断接口或日志字段 | 初始化主路径不应频繁调用 |
 | UE 网络诊断 | `AT+MUESTATS[=<type>]` | 多类 `+MUESTATS:` 信息 + `OK` | `radio`、`cell`、`bler`、`thp`、`sband` | 9s | 诊断快照 | 扩展手册提供，第一版可仅日志化 |
 
@@ -307,9 +305,7 @@ MQTT 命令错误以 `+CME ERROR:<err>` 上报（需 `AT+CMEE=1`），手册定�
 |-------------|------|----------|----------|----------|
 | `+MATREADY` | 模块启动 | 模块 AT 初始化完成 | 释放初始化 ready 等待；AT 初始化完成后投递 `MODEM_EVENT_READY` | 自适应波特率模式可能不上报，需 `AT` 探测兜底 |
 | `+CPIN:` | SIM | SIM/PIN 状态变化 | 更新 SIM 状态，必要时触发重新注册流程 | 同时也是 `AT+CPIN?` 查询响应前缀 |
-| `+CREG:` | 网络注册 | CREG URC 开启后注册状态变化 | 更新通用注册状态 | 同时也是查询响应前缀 |
-| `+CEREG:` | EPS 注册 | CEREG URC 开启后注册状态变化 | 优先用于 LTE 注册状态 | 同时也是查询响应前缀 |
-| `+CGREG:` | GPRS 注册 | CGREG URC 开启后分组域注册状态变化 | 更新分组域注册状态 | 同时也是查询响应前缀 |
+| `+CEREG:` | EPS 注册 | CEREG URC 开启后注册状态变化 | ML307R 当前唯一主动注册状态事件 | 同时也是 `AT+CEREG?` 查询响应前缀；实测 `CGREG/CREG` 不可用 |
 | `+MIPCALL:` | 应用层拨号 | 自动拨号、手动拨号或断开 | PDP/application networking activated/deactivated | 与命令结果同前缀，命令期间应由响应解析处理 |
 | `+MLPMENTER:` | 低功耗 | 模块进入睡眠 | sleep event | 需 `MLPMCFG="sleepind"` 启用 |
 | `+MLPMEXIT:` | 低功耗 | 模块退出睡眠 | wake event | 需 `MLPMCFG="sleepind"` 启用 |
@@ -344,11 +340,11 @@ MQTT 命令错误以 `+CME ERROR:<err>` 上报（需 `AT+CMEE=1`），手册定�
 
 注册与 SIM 检查：
 
-1. `AT+CEREG=2`、`AT+CGREG=2`、`AT+CREG=2` 启用注册状态 URC。
+1. `AT+CEREG=2` 启用 LTE/EPS 注册状态 URC。
 2. 轮询 `AT+CPIN?`，要求 `+CPIN: READY`。
 3. `AT+CFUN?`，确认驻网前功能模式为 `1`。
 4. `AT+CSQ` 或 `AT+CESQ` 检查信号。
-5. 轮询 `AT+CEREG?` 或 `AT+CGREG?`，要求 `stat=1` 或 `stat=5`。
+5. 轮询 `AT+CEREG?`，要求 `stat=1` 或 `stat=5`。
 6. `AT+CGATT?`，要求 `+CGATT: 1`。
 7. 可选 `AT+MUESTATS="radio"` 或 `AT+MUESTATS="cell"` 打印诊断。
 

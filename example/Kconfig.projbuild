@@ -41,7 +41,7 @@ config EXAMPLE_TCP_PAYLOAD
 
 config EXAMPLE_TCP_PAYLOAD_HEX
     string "TCP payload HEX bytes"
-    default ""
+    default "68656c6c6f2066726f6d206573702d6c776c7465207463700a"
     help
         When non-empty, decode this HEX string and send the bytes instead of EXAMPLE_TCP_PAYLOAD.
 

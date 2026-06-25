@@ -101,12 +101,14 @@ class Ml307rContractTest(unittest.TestCase):
 
     def test_basic_init_commands_and_start_reset_order(self):
         init_body = function_body(self.ml307r_c, "static esp_err_t run_basic_init_cmds(modem_ml307r_t *self)")
-        expected_order = ['"ATE0"', '"AT+CMEE=1"', '"AT+CEREG=2"', '"AT+CGREG=2"', '"AT+CREG=2"']
+        expected_order = ['"ATE0"', '"AT+CMEE=1"', '"AT+CEREG=2"']
         last = -1
         for token in expected_order:
             index = init_body.find(token)
             self.assertGreater(index, last, token)
             last = index
+        self.assertNotIn('"AT+CGREG=2"', init_body)
+        self.assertNotIn('"AT+CREG=2"', init_body)
         for signature in [
             "static esp_err_t ml307r_start(modem_handle_t *me)",
             "static esp_err_t ml307r_reset(modem_handle_t *me)",
@@ -168,8 +170,6 @@ class Ml307rContractTest(unittest.TestCase):
             "AT+CPIN?",
             "AT+CSQ",
             "AT+CEREG?",
-            "AT+CGREG?",
-            "AT+CREG?",
             "AT+CGATT?",
             "parse_sim_status_line",
             "map_reg_status",
@@ -181,6 +181,13 @@ class Ml307rContractTest(unittest.TestCase):
             ".get_packet_attach_status = ml307r_get_packet_attach_status",
         ]:
             self.assertIn(token, self.ml307r_c)
+        reg_body = function_body(
+            self.ml307r_c,
+            "static esp_err_t ml307r_get_registration(modem_handle_t *me,",
+        )
+        self.assertIn('"AT+CEREG?"', reg_body)
+        self.assertNotIn('"AT+CGREG?"', reg_body)
+        self.assertNotIn('"AT+CREG?"', reg_body)
 
     def test_mipcall_network_mapping_exists(self):
         for token in [
@@ -271,14 +278,27 @@ class Ml307rContractTest(unittest.TestCase):
         register_body = function_body(self.ml307r_c, "static esp_err_t register_urcs(modem_ml307r_t *self)")
         for token in [
             "ML307R_URC_CPIN",
-            "ML307R_URC_CREG",
             "ML307R_URC_CEREG",
-            "ML307R_URC_CGREG",
             "ML307R_URC_MIPCALL",
             "ML307R_URC_MQTTURC",
             "at_engine_register_urc",
         ]:
             self.assertIn(token, register_body)
+        self.assertNotIn("ML307R_URC_CREG", register_body)
+        self.assertNotIn("ML307R_URC_CGREG", register_body)
+        unregister_body = function_body(
+            self.ml307r_c,
+            "static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self)",
+        )
+        for token in [
+            "ML307R_URC_CPIN",
+            "ML307R_URC_CEREG",
+            "ML307R_URC_MIPCALL",
+            "ML307R_URC_MQTTURC",
+        ]:
+            self.assertIn(token, unregister_body)
+        self.assertNotIn("ML307R_URC_CREG", unregister_body)
+        self.assertNotIn("ML307R_URC_CGREG", unregister_body)
         for handler in [
             "static void cpin_urc_handler",
             "static void reg_urc_handler",
