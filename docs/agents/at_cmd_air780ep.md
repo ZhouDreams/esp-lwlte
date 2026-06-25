@@ -124,7 +124,7 @@
 |------|---------|----------|----------------|----------|----------|----------|
 | 多连接开关 | `AT+CIPMUX=<n>`，`AT+CIPMUX?` | `+CIPMUX: <n>` + `OK` | `0` 单连接；`1` 多连接 | 9s | Socket 层初始化配置 | 只在 `IP INITIAL` 状态可设置；必须在 `CSTT/CIICR/CIFSR` 之前设置。TCP client v1 固定单连接，后续多连接能力再评估启用 `CIPMUX=1` |
 | TCP SSL 开关 | `AT+CIPSSL=<n>`，`AT+CIPSSL?` | `+CIPSSL: <n>` + `OK` | `0` 关闭；`1` 开启 | 9s | TLS socket 连接前配置 | `CIPSTART` 前设置；当前仅作为 SSL Client；EC716S 平台 Air780EL/Air780ET/Air700EC 仅 `_FS`、`_MS` 固件支持，其它固件不支持 |
-| SSL 参数 | `AT+SSLCFG="<tag>",<ctx>[,<value>]` | `+SSLCFG: "<tag>",<ctx>,<value>` + `OK` 或 `OK` | `ctx=0..5,34,88,153`；TCP 单连接固定 `0`，多连接绑定连接号，FTP 为 `34`，MQTT 为 `88`，HTTP 为 `153`；`tag` 包括 `sslversion`、`ciphersuite`、`cacert`、`clientcert`、`clientkey`、`clientrandom`、`premaster`、`seclevel`、`hostname`、`ignorelocaltime`、`negotiatetimeout`、`verifymode` | 9s | TLS 证书与安全等级配置 | `sslversion=0/1/2/3/4` 分别为 SSL3.0/TLS1.0/TLS1.1/TLS1.2/ALL；`seclevel=0` 不鉴权、`1` 服务器鉴权、`2` 双向鉴权；`negotiatetimeout=10..300s`；删除证书/参数时用 `AT+SSLCFG="<tag>",<ctx>,`，逗号不能省略；证书文件需先写入文件系统 |
+| SSL 参数 | `AT+SSLCFG="<tag>",<ctx>[,<value>]` | `+SSLCFG: "<tag>",<ctx>,<value>` + `OK` 或 `OK` | `ctx=0..5,34,88,153`；TCP 单连接固定 `0`，多连接绑定连接号，FTP 为 `34`，MQTT 为 `88`，HTTP 为 `153`；`tag` 包括 `sslversion`、`ciphersuite`、`cacert`、`clientcert`、`clientkey`、`clientrandom`、`premaster`、`seclevel`、`hostname`、`ignorelocaltime`、`negotiatetimeout`、`verifymode` | 9s | TLS 证书与安全等级配置 | `sslversion=0/1/2/3/4` 分别为 SSL3.0/TLS1.0/TLS1.1/TLS1.2/ALL；`ciphersuite` 设置项的参数名为 `<ciphersuites>`；`seclevel=0` 不鉴权、`1` 服务器鉴权、`2` 双向鉴权；`negotiatetimeout=10..300s`；删除证书/参数时用 `AT+SSLCFG="<tag>",<ctx>,`，逗号不能省略；证书文件需先写入文件系统；MQTT over SSL 使用 context `88` |
 | 本地端口 | `AT+CLPORT=<mode>,<port>` 或 `AT+CLPORT=<n>,<mode>,<port>`，`AT+CLPORT?` | 单连接查询 `+CLPORT: <tcp_port>,<udp_port>`；多连接查询多行 `+CLPORT: <n>,<tcp_port>,<udp_port>` + `OK` | `mode="TCP"/"UDP"`；`port=1..65535`（测试响应列出 `0..65535`）；多连接 `n=0..5` | 9s | 可选 socket bind/local port 能力 | 单连接和多连接语法不同；非必须功能 |
 | 建立 TCP/UDP 连接 | 单连接：`AT+CIPSTART=<mode>,<server>,<port>`；多连接：`AT+CIPSTART=<n>,<mode>,<server>,<port>` | 格式/状态错误可立即 `+CME ERROR:<err>`；正常先 `OK`，随后 `CONNECT OK`、`<n>,CONNECT OK`、`CONNECT`、`ALREADY CONNECT`、`<n>,ALREADY CONNECT`、`CONNECT FAIL`、`<n>,CONNECT FAIL` 或 `STATE:<state>` | `mode="TCP"/"UDP"`；`server` 为 IP 或域名，最大 128 字节；`port=1..65535`；`n=0..5`；参数可加引号也可不加 | 9s 发送命令；连接结果最长约 75s | `modem_socket_open()` | 异步 URC 表示最终结果；单连接需处于 `IP INITIAL`、`IP STATUS` 或 `TCP/UDP CLOSED`；多连接仅 `IP STATUS` 或 `IP PROCESSING` 可执行，且需先完成 `CSTT/CIICR/CIFSR`；状态异常时先 `AT+CIPSHUT` |
 | TCPIP 应用模式 | `AT+CIPMODE=<mode>`，`AT+CIPMODE?` | `+CIPMODE: <mode>` + `OK` | `0` 非透传；`1` 透传 | 9s | Socket 发送/接收模式配置 | 只在 `IP INITIAL` 状态可设置；只有 TCP 单连接支持透传；第一版建议非透传 |
@@ -199,25 +199,25 @@ HTTP 指令来自手册第 14 章。HTTP 功能通常使用 `AT+SAPBR` 管理承
 
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
-| HTTP 承载管理 | `AT+SAPBR=<cmd_type>,<cid>[,<tag>,<value>]` | 查询 `+SAPBR: <cid>,<Status>,<IP_Addr>` + `OK`；URC `+SAPBR <cid>: DEACT` | `cmd_type=0` 关闭；`1` 打开；`2` 查询；`3` 设置；`4` 获取；`cid=1..3`；`tag="CONTYPE"/"APN"/"USER"/"PWD"` | 9s | HTTP/FTP 类应用承载辅助 | 设置 APN 可用 `AT+SAPBR=3,<cid>,"APN",""` 让模块使用自动获取 APN；与 `CSTT/CIICR` 是不同应用承载路径 |
+| HTTP 承载管理 | `AT+SAPBR=<cmd_type>,<cid>[,<tag>,<value>]` | 查询 `+SAPBR: <cid>,<Status>,<IP_Addr>` + `OK`；获取参数 `+SAPBR:<ConParamTag>,<ConParamValue>` + `OK`；URC `+SAPBR <cid>: DEACT` | `cmd_type=0` 关闭；`1` 打开；`2` 查询；`3` 设置；`4` 获取；`cid=1..3`；`Status=0/1/2/3` 正在连接/已连接/正在关闭/已关闭；`tag="CONTYPE"/"APN"/"USER"/"PWD"/"PHONENUM"/"RATE"` | 9s | HTTP/FTP 类应用承载辅助 | `APN/USER/PWD` 最长 50 字符；设置 APN 可用 `AT+SAPBR=3,<cid>,"APN",""` 让模块使用自动获取 APN；与 `CSTT/CIICR` 是不同应用承载路径 |
 | 初始化 HTTP | `AT+HTTPINIT` | `OK` | 无 | 9s | `http_client_init()` | 使用 HTTP 服务前调用；HTTPS 还需配置 `HTTPSSL` 与 `SSLCFG` |
 | HTTP SSL 开关 | `AT+HTTPSSL=<n>`，`AT+HTTPSSL?` | `+HTTPSSL: <n>` + `OK` | `0` 关闭；`1` 开启 | 9s | HTTPS 开关 | 需要证书/加密套件/安全等级时使用 `AT+SSLCFG`，HTTP SSL context 为 `153` |
-| 设置 HTTP 参数 | `AT+HTTPPARA=<HTTPParamTag>,<HTTPParamValue>`，`AT+HTTPPARA?` | 多行 `+HTTPPARA:` 参数 + `OK` | 必选 `"CID"`、`"URL"`；可选 `"UA"`、`"PROIP"`、`"PROPORT"`、`"REDIR"`、`"BREAK"`、`"BREAKEND"`、`"TIMEOUT"`、`"CONTENT"`、`"USER_DEFINED"`、`"USERDATA"` | 9s | HTTP 请求参数构造 | `URL` 最长 500 字节；`TIMEOUT` 默认 120s；多条 `USER_DEFINED` 可逐条设置；`USERDATA` 可用 `\r\n` 拼接多行头 |
+| 设置 HTTP 参数 | `AT+HTTPPARA=<HTTPParamTag>,<HTTPParamValue>`，`AT+HTTPPARA?` | 多行 `+HTTPPARA:` 参数 + `OK` | 必选 `"CID"`、`"URL"`；`CID=1..3`；可选 `"UA"`、`"PROIP"`、`"PROPORT"`、`"REDIR"`、`"BREAK"`、`"BREAKEND"`、`"TIMEOUT"`、`"CONTENT"`、`"USER_DEFINED"`、`"USERDATA"` | 9s | HTTP 请求参数构造 | `URL` 最长 500 字节，未写端口时 HTTP 默认 80；`UA` 默认 `AM_MODULE`；`REDIR=0/1` 控制是否自动重定向；`BREAK/BREAKEND` 用于断点续传范围；`TIMEOUT` 默认 120s；多条 `USER_DEFINED` 可逐条设置且后设置不覆盖前设置；`USERDATA` 可用 `\r\n` 拼接多行头；报头内容中的双引号按 `\22` 转义 |
 | 写 POST 数据 | `AT+HTTPDATA=<size>,<time>` | `DOWNLOAD`，输入数据后 `OK` | AT 固件 `size=0..3356`；LSAT 固件 `0..130048`；`time=1000..120000ms` | 按 `<time>` 加输入预算 | HTTP POST body 写入 | 实际输入数据不能大于 `size`；`size=0` 表示清除内容 |
-| HTTP 动作 | `AT+HTTPACTION=<method>` | 立即 `OK`，随后 `+HTTPACTION: <Method>,<StatusCode>,<DataLen>`；错误可返回 `+CME ERROR:<err>` 后仍跟 URC | `method=0` GET；`1` POST；`2` HEAD；`StatusCode=100..606` | 命令 9s；请求完成按 `TIMEOUT` 预算 | `http_client_perform()` | 结果由 URC 返回；`StatusCode=600..606` 为模块侧 HTTP/网络/SSL 错误 |
-| HTTP 动作扩展 | `AT+HTTPEXACTION=<method>[,<len>]` | `OK` 或 `+CME ERROR:<err>` | `method=0` GET；`1` POST；`len` 为 POST 长度 | 9s | 大数据/扩展 HTTP 流程 | EC618 >= V1106 支持；后续配合 `HTTPEXPOST/HTTPEXGET` |
+| HTTP 动作 | `AT+HTTPACTION=<method>` | 立即 `OK`，随后 `+HTTPACTION: <Method>,<StatusCode>,<DataLen>`；错误可返回 `+CME ERROR:<err>` 后仍跟 URC | `method=0` GET；`1` POST；`2` HEAD；`StatusCode` 为手册列出的 HTTP 状态码和 `600..606` 模块侧状态，不是连续取值；手册列出 `100/101/200..206/300..305/307/400..417/500..505/600..606` | 命令 9s；请求完成按 `TIMEOUT` 预算 | `http_client_perform()` | 结果由 URC 返回；`600` 非 HTTP PDU；`601` 网络错误；`602` 内存不足；`603` DNS 错误；`604` 协议栈忙；`605` SSL 通道建立失败；`606` SSL 通信告警/错误 |
+| HTTP 动作扩展 | `AT+HTTPEXACTION=<method>[,<len>]` | `OK` 或 `+CME ERROR:<err>`；示例中完成后上报 `+HTTPEXACTION:<method>,<status>` | `method=0` GET；`1` POST；`len` 为 POST 长度 | 9s | 大数据/扩展 HTTP 流程 | EC618 >= V1106 支持；配合 `HTTPEXPOST/HTTPEXGET`，扩展流程的提示和完成 URC 需单独处理 |
 | 读取 HTTP 响应 | `AT+HTTPREAD` 或 `AT+HTTPREAD=<start_address>,<byte_size>` | `+HTTPREAD:<date_len>` + `<data>` + `OK` | `start_address=0..3356`；`byte_size=1..3356` | 9s 或按响应长度预算 | 读取 `HTTPACTION` 响应体 | 数据可能包含任意文本/二进制，解析应按长度处理，不应只按行处理 |
 | 获取 HTTP 响应到路径 | `AT+HTTPGET=<path>` | `+HTTPGET:<date_len>` + `OK` | `path` 最长 255 ASCII 字符 | 9s | 旧式 HTTP GET 读取参考 | 与 `HTTPACTION/HTTPREAD` 功能重叠，低优先级 |
-| 扩展 GET 读取 | `AT+HTTPEXGET[=<len>]` | `+HTTPGET:<date_len>` + `data` + `OK` | `len` 为读取长度 | 9s 或按长度预算 | 扩展 HTTP 响应读取 | EC618 >= V1106 支持；手册返回前缀写为 `+HTTPGET` |
+| 扩展 GET 读取 | `AT+HTTPEXGET[=<len>]` | `+HTTPGET:<date_len>` 或 `+HTTPEXGET:<date_len>` + `data` + `OK` | `len` 为读取长度 | 9s 或按长度预算 | 扩展 HTTP 响应读取 | EC618 >= V1106 支持；手册命令表和示例前缀不完全一致，解析应兼容 `+HTTPGET` 与 `+HTTPEXGET` |
 | 扩展 POST 写入 | `AT+HTTPEXPOST=<len>[,<timeout>]` | `>` 后输入数据，随后 `OK` + `+HTTPEXPOST: <len>` | `len` 不超过 `HTTPEXACTION` 设置长度；`timeout=1..120000ms` | 按 `<timeout>` 加输入预算 | 扩展 POST body 写入 | EC618 >= V1106 支持；与 `HTTPEXACTION=1,<len>` 配套 |
-| 下载到文件系统 | `AT+HTTPGETTOFS=<loc>,<filename>`，`AT+HTTPGETTOFS?` | `OK`/`ERROR`；URC `+HTTPGETTOFS:<HTTP响应码>,<writelen>`；查询 `+HTTPGETTOFS:<status>,<writelen>,<totalLength>` | `loc=0` 保存到 ROM，目录固定 `/USER/HTTP`；`filename` 最长 64 字符 | 9s 启动；下载按业务预算 | OTA/文件下载辅助 | EC618 >= V1148 支持；同名文件会覆盖 |
-| 查询 HTTP 头 | `AT+HTTPHEAD` | `+HTTPREAD:<date_len>` + `<data>` + `OK` | 头信息长度和内容 | 9s | HEAD 或响应头读取 | 手册响应前缀写为 `+HTTPREAD`；需按长度读取 |
-| 保存 HTTP 上下文 | `AT+HTTPSCONT`，`AT+HTTPSCONT?` | `+HTTPSCONT:<mode>` + 多行 HTTP 参数 + `OK` | `mode=0` 保存到 NVRAM；`1` 未保存，取自 RAM | 9s | HTTP 参数持久化参考 | 避免启动路径频繁写 NV |
+| 下载到文件系统 | `AT+HTTPGETTOFS=<loc>,<filename>`，`AT+HTTPGETTOFS?` | `OK`/`ERROR`；URC `+HTTPGETTOFS:<HTTP响应码>,<writelen>`；查询 `+HTTPGETTOFS:<status>,<writelen>,<totalLength>` | `status=0` 不在下载过程；`1` 处于下载过程；`loc=0` 保存到 ROM，目录固定 `/USER/HTTP`；`filename` 最长 64 字符 | 9s 启动；下载按业务预算 | OTA/文件下载辅助 | EC618 >= V1148 支持；`writelen` 为已写入数据量，`totalLength` 为总长度；同名文件会覆盖 |
+| 查询 HTTP 头 | `AT+HTTPHEAD` | `+HTTPREAD:<date_len>` 或 `+HTTPHEAD:<date_len>` + `<data>` + `OK` | 头信息长度和内容 | 9s | HEAD 或响应头读取 | 手册命令表写 `+HTTPREAD`，示例可能写 `+HTTPHEAD`；需按长度读取 |
+| 保存 HTTP 上下文 | `AT+HTTPSCONT`，`AT+HTTPSCONT?` | 执行保存通常返回 `OK`；查询 `+HTTPSCONT:<mode>` + `CID/URL/UA/PROIP/PROPORT/REDIR/BREAK/BREAKEND/USERDATA` + `OK` | `mode=0` 已保存，值取自 NVRAM；`1` 未保存，值取自 RAM | 9s | HTTP 参数持久化参考 | 执行命令用于保存 HTTP 参数，系统重启后自动加载；手册执行响应表疑似误写为 `+HTTPREAD` 能力列表，固件实现前应以实测为准；避免启动路径频繁写 NV |
 | 终止 HTTP | `AT+HTTPTERM` | `OK` | 无 | 9s | `http_client_cleanup()` | 每次 HTTP 会话结束后调用，释放 HTTP 服务状态 |
 
 ### HTTP 错误码
 
-HTTP 模块错误会以 `ERROR:<err code>` 或 `+HTTPACTION` 的 `StatusCode=600..606` 体现。
+HTTP 模块错误会以 `ERROR:<err code>` / `ERROR: <err code>` 或 `+HTTPACTION` 的 `StatusCode=600..606` 体现。
 
 | 错误码 | 英文说明 | 中文说明 | 映射建议 |
 |--------|----------|----------|----------|
@@ -244,7 +244,7 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
 | MQTT 参数配置 | `AT+MCONFIG=<clientid>[,<username>,<password>[,<will_qos>,<will_retain>,<will_topic>,<will_message>]]` | `OK` 或 `ERROR` | `clientid`、`username`、`password` 最长 256 字节；`will_qos=0..2`；`will_retain=0/1`；`will_message` 最长 1360 字节 | 9s | `modem_mqtt_configure()` | 客户端 ID 不能与服务器上其他连接重复；遗嘱主题和消息需要加引号 |
-| 建立 MQTT TCP 连接 | 普通：`AT+MIPSTART=<svraddr>,<port>`；SSL：`AT+SSLMIPSTART=<svraddr>,<port>` | 立即 `OK`，后续 `CONNECT OK`、`ALREADY CONNECT`、`CONNECT FAIL`；多连接可能上报 `7,CONNECT OK` | `svraddr` 为 IP 或域名；`port=1..65535` | 命令 9s；连接结果按业务预算等待 | `modem_mqtt_tcp_connect()` | 使用 SSL 时先配置 `SSLCFG` context `88`；等待 `CONNECT OK` 后立即发送 `MCONNECT`，否则可能被服务器踢掉 |
+| 建立 MQTT TCP 连接 | 普通：`AT+MIPSTART=<svraddr>,<port>`；SSL：`AT+SSLMIPSTART=<svraddr>,<port>`，测试 `AT+SSLMIPSTART=?` | 立即 `OK`；单连接成功 `CONNECT OK`，已连接 `ALREADY CONNECT`，失败 `STATE:<state>` + `CONNECT FAIL`；多连接成功 `7,CONNECT OK`，失败 `7,CONNECT FAIL`；测试返回 IP/domain 两种地址格式和 `1..65535` 端口范围 | `svraddr` 为 IP 或域名；`port=1..65535` | 命令 9s；连接结果按业务预算等待 | `modem_mqtt_tcp_connect()` | 使用 SSL 时先配置 `SSLCFG` context `88`；`SSLMIPSTART` 除命令名外与普通连接一致；等待 `CONNECT OK` 后立即发送 `MCONNECT`，否则可能被服务器踢掉 |
 | MQTT 协议连接 | `AT+MCONNECT=<clean_session>,<keepalive>[,<mode>]` | 立即 `OK`；成功 URC `CONNACK OK`；失败 `ERROR` | `clean_session=0/1`；`keepalive=1..65535s`；`mode=1` 启用大于 300s 长心跳支持 | 命令 9s；CONNACK 按业务预算等待 | `modem_mqtt_connect()` | 收到 `CONNACK OK` 后才能 publish/subscribe；建议 keepalive 取 300s 以上 |
 | 发布消息 | `AT+MPUB=<topic>,<qos>,<retain>,<message>` | `qos=0`：`OK`；`qos=1`：`OK` + `PUBACK`；`qos=2`：`OK` + `PUBREC` + `PUBCOMP`；失败 `ERROR` | `topic` 最长 256 字节；`message` 最长 4100 字节；`qos=0..2`；`retain=0/1` | 9s 或按 QoS ACK 预算 | 仅作手册参考；本实现统一使用 `MPUBEX` | 消息内双引号用 `\22`，回车 `\0D`，换行 `\0A`，反斜杠 `\5C`；MCU 字符串中可能需再次转义 |
 | 定长发布 | `AT+MPUBEX=<topic>,<qos>,<retain>[,<len>]` | 先返回 `>`；输入指定长度或 `Ctrl+Z`/5s 超时后发送；随后按 QoS 返回 `OK`、`PUBACK`、`PUBREC`、`PUBCOMP` | `len=1..4100` | prompt 9s；发送按 QoS 预算 | `mqtt_client_publish()` 主路径；当前仅支持 `qos=0..1`，QoS2 返回 `ESP_ERR_NOT_SUPPORTED` | 适合包含特殊字符的数据；最大 4100 字节 |
@@ -262,6 +262,7 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 | URC/ACK | 含义 | 映射建议 | 注意事项 |
 |---------|------|----------|----------|
 | `CONNECT OK` | MQTT TCP 连接建立 | 进入 MQTT transport connected | `MIPSTART/SSLMIPSTART` 后上报 |
+| `STATE:<state>` + `CONNECT FAIL` / `7,CONNECT FAIL` | MQTT TCP/SSL TCP 建链失败 | connect failed | 单连接失败先上报 `STATE:<state>` 再上报 `CONNECT FAIL`；多连接失败可能带连接号 |
 | `CONNACK OK` | MQTT 会话认证成功 | `MQTT_EVENT_CONNECTED` | `MCONNECT` 后上报 |
 | `PUBACK` | QoS1 发布确认 | publish 完成 | `MPUB/MPUBEX` QoS1 使用 |
 | `PUBREC` + `PUBCOMP` | QoS2 发布流程确认 | publish 完成 | QoS2 需等待两步确认 |
@@ -319,7 +320,8 @@ MQTT 指令来自手册第 16 章。手册说明 EC716S 系列需 `_MU`、`_MS`�
 | `+CDNSGIP:` | DNS | 域名解析完成 | DNS result | `AT+CDNSGIP` 先返回 `OK`，结果随后上报，成功格式通常为 `+CDNSGIP:1,"<domain>","<ip>"` |
 | `+SAPBR <cid>: DEACT` | HTTP/SAPBR | SAPBR 承载去激活 | HTTP 承载失效 | 可触发 HTTP 层重建承载 |
 | `+HTTPACTION:` | HTTP | GET/POST/HEAD 完成 | HTTP response ready | 格式 `+HTTPACTION:<method>,<status>,<len>`，随后用 `HTTPREAD` 读取 |
-| `+HTTPEXPOST:` | HTTP 扩展 | 扩展 POST 数据写入完成 | POST body accepted | 与 `HTTPEXACTION/HTTPEXGET` 流程配套 |
+| `+HTTPEXPOST` / `+HTTPEXPOST:` | HTTP 扩展 | 扩展 POST 数据输入提示或写入完成 | POST body prompt / accepted | 示例中裸 `+HTTPEXPOST` 表示可发送 POST 数据，`+HTTPEXPOST:<len>` 表示写入完成 |
+| `+HTTPEXGET` / `+HTTPEXGET:` | HTTP 扩展 | 扩展 GET 读取提示或读取响应 | extended response ready/read | 手册命令表和示例对 `HTTPEXGET` 响应前缀不一致，实现宜兼容裸提示和带长度前缀 |
 | `+HTTPEXACTION:` | HTTP 扩展 | 扩展 HTTP 会话完成 | HTTP extended done | 手册示例为 `+HTTPEXACTION: <method>,<status>` |
 | `+HTTPGETTOFS:` | HTTP 下载 | 下载到文件系统完成或进度 | download complete/progress | 同名文件会覆盖，状态码在第一个字段 |
 | `CONNACK OK` | MQTT | MQTT CONNECT 成功 | MQTT connected | `MCONNECT` 后等待该行 |
@@ -369,7 +371,7 @@ HTTP GET/POST 推荐流程：
 6. HTTPS 可选 `AT+HTTPSSL=1`，证书校验场景先配置 `AT+SSLCFG` context `153`。
 7. `AT+HTTPPARA="CID",1`。
 8. `AT+HTTPPARA="URL","<url>"`。
-9. POST 时先 `AT+HTTPPARA="CONTENT","<content-type>"`，再 `AT+HTTPDATA=<size>,<time>` 写入 body。
+9. POST 时可选 `AT+HTTPPARA="CONTENT","<content-type>"`，再 `AT+HTTPDATA=<size>,<time>` 写入 body。
 10. `AT+HTTPACTION=0` 执行 GET，或 `AT+HTTPACTION=1` 执行 POST，等待 `+HTTPACTION:<method>,<status>,<len>`。
 11. `AT+HTTPREAD` 按长度读取响应体。
 12. `AT+HTTPTERM` 结束 HTTP 服务。
@@ -379,7 +381,7 @@ MQTT 推荐流程：
 1. 完成 SIM、注册、附着检查，确认 `AT+CGATT?` 返回 `+CGATT: 1`。
 2. TLS 场景先写入证书文件，并配置 `AT+SSLCFG` context `88`。
 3. `modem_mqtt_configure()` 保存完整 MQTT 配置，并发送 `AT+MCONFIG=<clientid>,<username>,<password>`；用户名密码为空时使用 `"",""`。
-4. `modem_mqtt_tcp_connect()` 使用已缓存的 host/port 发送普通连接 `AT+MIPSTART="<host>",<port>`；TLS 后续可映射 `AT+SSLMIPSTART="<host>",<port>`。
+4. `modem_mqtt_tcp_connect()` 使用已缓存的 host/port 发送普通连接 `AT+MIPSTART="<host>",<port>`；TLS 映射 `AT+SSLMIPSTART="<host>",<port>`，并同样等待 `CONNECT OK` / `CONNECT FAIL` 结果。
 5. 等待 `CONNECT OK` 后立即通过 `modem_mqtt_connect()` 使用已缓存的 clean session/keepalive 发送 `AT+MCONNECT=<clean_session>,<keepalive>[,<mode>]`。
 6. 等待 `CONNACK OK` 后执行 `AT+MSUB="<topic>",<qos>` 或 `AT+MPUB="<topic>",<qos>,<retain>,"<message>"`。
 7. 需要缓存订阅消息时先 `AT+MQTTMSGSET=1`，收到 `+MSUB:<store_addr>` 后用 `AT+MQTTMSGGET` 读取。
@@ -392,4 +394,4 @@ MQTT 推荐流程：
 - `AT+CIPSTATUS` 显示 `PDP DEACT` 时，也应执行 `AT+CIPSHUT` 回到 `IP INITIAL`。
 - `AT+CSTT/AT+CIICR/AT+CIFSR` 失败时，不要盲目重复同一步；先 `AT+CIPSHUT` 清理移动场景。
 - TCP/MQTT 收到 `CLOSED` 后，先查询对应连接状态；MQTT 可用 `AT+MQTTSTATU` 判断是离线还是只需重新 `MCONNECT`。
-- HTTP 收到 `+SAPBR <cid>: DEACT` 或 `+HTTPACTION` 状态码 `601..606` 后，应关闭 HTTP 服务并重建承载。
+- HTTP 收到 `+SAPBR <cid>: DEACT` 后应关闭 HTTP 服务并重建承载；`+HTTPACTION` 状态码 `601/603/605/606` 分别偏网络、DNS、SSL 建链或 SSL 通信错误，通常需要重建承载或 TLS 配置，`600/602/604` 更偏响应格式、内存或忙状态，应按业务策略重试或上报。

@@ -194,33 +194,77 @@ HTTP/HTTPS 使用 ML307R `MHTTP*` 命令族。HTTPS 通过 `AT+MHTTPCFG="ssl",<h
 
 | 能力 | AT 指令 | 响应格式 | 关键参数/数据 | 默认超时 | 映射建议 | 注意事项 |
 |------|---------|----------|----------------|----------|----------|----------|
-| HTTP 参数配置 | `AT+MHTTPCFG="<cmd>"[,<httpid>[,...]]` | `+MHTTPCFG: "<cmd>",...` + `OK` 或 `OK` | `header`、`chunked`、`cached`、`timeout`、`encoding`、`ssl`、`cid`、`fragment`、`urlencode` | 9s | HTTP client 参数配置 | `httpid=0..3`，由 `MHTTPCREATE` 创建；配置本次实例有效 |
-| 创建 HTTP 实例 | `AT+MHTTPCREATE="<host>"` | `+MHTTPCREATE: <httpid>` + `OK` | host 包含 scheme、域名/IP、端口 | 9s | `http_client_init()` / create | HTTP/HTTPS 生命周期起点 |
-| 设置特定报头 | `AT+MHTTPHEADER=<httpid>[,<eof>,<length>,<header>]` | `+MHTTPHEADER: <httpid>,<length>,<header>` + `OK` 或 `OK` | `eof` 结束标志；header 长度 | 9s | 设置请求头 | 通用报头也可用 `MHTTPCFG="header"` |
-| 设置请求内容 | `AT+MHTTPCONTENT=<httpid>[,<eof>,<length>,<data>]` | `+MHTTPCONTENT: <httpid>,<length>,<data>` + `OK` 或 `OK` | POST/PUT body；编码受 `MHTTPCFG="encoding"` 影响 | 9s 或按长度预算 | HTTP body 写入 | 普通模式先写 content 再 request；chunked 模式先 request，收到 `ind` 后写 content |
-| 发送 HTTP 请求 | `AT+MHTTPREQUEST=<httpid>,<method>[,<length>[,"<path>"]]` | `OK`，随后 `+MHTTPURC: "rsp",...` 或相关 URC | method 为 GET/POST/PUT/DELETE/HEAD 等手册枚举 | 命令 9s；响应按超时配置等待 | `http_client_perform()` | 请求完成由 URC 表示 |
-| 读取 HTTP 数据 | `AT+MHTTPREAD=<httpid>[,<read_len>]` | `+MHTTPREAD: <httpid>,...` + 数据 + `OK` | 响应体/缓存数据长度 | 9s 或按长度预算 | `http_client_read()` | 按长度读取，payload 可能是二进制 |
+| HTTP 参数配置 | `AT+MHTTPCFG="<cmd>"[,<httpid>[,...]]` | `+MHTTPCFG: "<cmd>",...` + `OK` 或 `OK` | `cmd` 包括 `header`、`chunked`、`cached`、`timeout`、`encoding`、`ssl`、`cid`、`fragment`、`urlencode`；`httpid=0..3` | 9s | HTTP client 参数配置 | 配置当前 HTTP 实例生命周期有效；`cached=0/1` 默认 0，`cache_length=1..8192` 默认 4096；`timeout` 为连接/响应/输入超时，ML307R `conn_timeout=0..180s`、`rsp_timeout=0..60s`、`input_timeout=1..120s`；`encoding` 输入 `0` raw/ASCII、`1` HEX、`2` 转义，输出 `0` raw、`1` HEX；`ssl_id=0..5`；`fragment` 分包大小 `0..1024`、间隔 `0..2000ms`；`urlencode=0/1` 控制 URL path 编码 |
+| 创建 HTTP 实例 | `AT+MHTTPCREATE="<host>"` | `+MHTTPCREATE: <httpid>` + `OK` | host 包含 scheme、域名/IP、可选端口 | 9s | `http_client_init()` / create | HTTP/HTTPS 生命周期起点；最多 4 个实例；未指定端口时 HTTP 默认 `80`，HTTPS 默认 `443` |
+| 设置特定报头 | `AT+MHTTPHEADER=<httpid>[,<eof>[,<length>[,<header>]]]` | 查询 `+MHTTPHEADER: <httpid>,<length>,<header>` + `OK`；数据模式先返回 `>`，输入后 `OK` | `eof=0` 结束输入；`1` 继续输入；`2` 清空已设置 header；`length` 为 header 长度 | 9s 或按长度预算 | 设置请求头 | 通用报头也可用 `MHTTPCFG="header"`；特定报头只对单次请求有效，请求结束后自动清空；直接命令输入受 `MHTTPCFG="encoding"` 影响，数据模式使用原始数据 |
+| 设置请求内容 | `AT+MHTTPCONTENT=<httpid>[,<eof>[,<length>[,<data>]]]` | 查询 `+MHTTPCONTENT: <httpid>,<length>,<data>` + `OK`；数据模式先返回 `>`，输入后 `OK` | POST/PUT body；`eof=0` 结束输入；`1` 继续输入；`2` 清空已设置 content（仅非 chunked 模式有效）；`length` 为数据长度 | 9s 或按长度预算 | HTTP body 写入 | 普通模式先写 content 再 request；chunked 模式先 request，收到 `+MHTTPURC: "ind",<httpid>` 后写 content；content 单次请求有效，请求结束后自动清空；直接命令输入受 `MHTTPCFG="encoding"` 影响，数据模式使用原始数据 |
+| 发送 HTTP 请求 | `AT+MHTTPREQUEST=<httpid>,<method>[,<length>[,"<path>"[,"<local_path>"]]]` | `OK`，随后非缓存模式上报 `+MHTTPURC: "header",...` 和 `+MHTTPURC: "content",...`；缓存模式上报 `+MHTTPURC: "recv",...` | `method=1` GET；`2` POST；`3` PUT；`4` DELETE；`5` HEAD；`length` 为 path 输入长度；`local_path` 用于请求结果下载到文件 | 命令 9s；响应按超时配置等待 | `http_client_perform()` | V6.1.1 未定义 `"rsp"` URC；普通模式先设置 content 后请求，chunked 模式先请求后按 `ind` 写 content；若响应重定向到 HTTPS 且未显式配置 SSL，模块可能默认启用 SSL |
+| 读取 HTTP 数据 | `AT+MHTTPREAD=<httpid>,<type>[,<read_len>]` | 不带 `read_len` 返回 `+MHTTPREAD: <httpid>,<type>,<unread_length>` + `OK`；带 `read_len` 返回 `+MHTTPREAD: <httpid>,<type>,<unread_length>,<data_len>,<data>` + `OK` | `type=0` header 数据；`1` content 数据；`read_len=0..65535`，`0` 或省略可用于查询/读取全部缓存 | 9s 或按长度预算 | `http_client_read()` | 仅缓存模式 `MHTTPCFG="cached",<httpid>,1` 下读取缓存；收到 `+MHTTPURC: "recv",...` 后按 header/content 长度读取；按长度解析，payload 可能是二进制 |
 | 删除 HTTP 实例 | `AT+MHTTPDEL=<httpid>` | `OK` | httpid | 9s | `http_client_cleanup()` | 释放指定实例 |
-| 终止 HTTP 传输 | `AT+MHTTPTERM=<httpid>` | `OK` | httpid | 9s | 中止当前请求/传输 | 用于错误恢复 |
-| HTTP 下载文件 | `AT+MHTTPDLFILE=<httpid>,...` | `OK`，随后 `+MHTTPURC: ...` | 文件路径、下载结果 | 命令 9s；下载按业务预算 | OTA/文件下载后续扩展 | 当前 Modem Adapter 可先不开放 |
-| SSL context 配置 | `AT+MSSLCFG="<cmd>"[,<ssl_id>[,...]]` | `+MSSLCFG: "<cmd>",...` + `OK` 或 `OK` | `auth`、`cert`、`psk`、`encoding`、`negotime`、`version`、`ciphersuite`、`session`、`ignorestamp`、`ignoreverify` | 9s | TLS 参数配置 | `ssl_id` 供 HTTPS、MQTT、SSL socket 引用 |
-| 写入 SSL 证书 | `AT+MSSLCERTWR=<name>,<length>` | `>` 输入证书，随后 `OK` | CA/客户端证书内容 | 按长度预算 | 证书管理 | 证书名称再由 `MSSLCFG="cert"` 引用 |
-| 写入 SSL 私钥 | `AT+MSSLKEYWR=<name>,<length>` | `>` 输入私钥，随后 `OK` | 客户端私钥 | 按长度预算 | 双向认证配置 | 注意输入长度和编码 |
-| 读取/列出/删除证书 | `AT+MSSLCERTRD`，`AT+MSSLLIST`，`AT+MSSLRM` | 证书信息 + `OK` 或 `OK` | 证书/密钥名称 | 9s | 诊断和证书维护 | 非每次启动路径 |
-| 证书检查和套件查询 | `AT+MSSLCHECK`，`AT+MSSLCIPHER` | 检查/套件结果 + `OK` | 证书合法性、cipher suite | 9s | TLS 诊断 | TLS 问题定位使用 |
+| 终止 HTTP 传输 | `AT+MHTTPTERM` 或 `AT+MHTTPTERM=<httpid>` | `OK` | 无参数终止所有 HTTP 连接；带 `httpid` 终止指定实例当前传输 | 9s | 中止当前请求/传输 | 用于错误恢复；保留实例，不主动清空特定报头和 content 数据 |
+| HTTP 下载文件 | `AT+MHTTPDLFILE="<url>","<local_path>"[,<progind>[,"<range>"[,<eof>[,<ssl_id>]]]]` | `OK`，随后报头 `+MHTTPURC: "header",...` 和下载进度 `+MHTTPDLFILE: <downloaded>,<content_length>,<percent>[,<entity_length>]` | `url` 包含 scheme/host/端口/path；`local_path` 为本地路径；`progind` 为进度上报步长；`range` 为 HTTP Range；`eof=0/1` 覆盖/追加；`ssl_id=0..5` | 命令 9s；下载按业务预算 | OTA/文件下载后续扩展 | 该命令无需创建 HTTP 实例，按 GET 下载并使用默认报头；ML307M 不支持；当前 Modem Adapter 可先不开放 |
+| SSL context 配置 | `AT+MSSLCFG="<cmd>"[,<ssl_id>[,...]]` | `+MSSLCFG: "<cmd>",...` + `OK` 或 `OK` | `cmd=auth/cert/psk/encoding/negotime/version/ciphersuite/session/ignorestamp/ignoreverify`；`ssl_id=0..5`；`auth` 的 `cert_verify=0/1/2` 分别为无认证/单向认证/双向认证；`cert` 绑定 `<srv_cert>,<cli_cert>,<prv_key>`；`encoding=0/1/2` 为 ASCII/HEX/转义；`negotime=10..300s` 默认 300；`version=0/1/2/3/255` 分别为 SSL3.0/TLS1.0/TLS1.1/TLS1.2/全部；`ciphersuite=0` 支持全部；`session` 默认开启；`ignorestamp` 默认忽略证书时间戳；`ignoreverify` 默认不忽略认证结果 | 9s | TLS 参数配置 | `ssl_id` 供 HTTPS、MQTT、SSL socket 引用；建立 SSL 连接前必须完成证书输入和模式配置，否则不生效；`AT+MSSLPSK` 虽在 SSL 手册中定义，但 ML307R 明确暂不支持，ML307R MQTTS 不使用 PSK 路径 |
+| 写入 SSL 证书 | `AT+MSSLCERTWR=<cert_name>,<remain_length>,<length>[,<data>]` | 未携带 `<data>` 时先返回 `>`，输入指定 `<length>` 证书内容后 `OK`；携带全部参数时直接 `OK` | `cert_name` 最长 64 字节；`remain_length=0` 表示最后一包，其它值表示还需再次写入；`length` 单包最大 8192 字节；`data` 必须为 PEM 格式 | 按长度预算 | 证书管理 | 写同名证书会删除旧证书；证书名称再由 `MSSLCFG="cert"` 的 `<srv_cert>` 或 `<cli_cert>` 引用；转义字符串输入时证书换行需用 `\r\n` 替换 |
+| 写入 SSL 私钥 | `AT+MSSLKEYWR=<key_name>,<remain_length>,<length>[,<data>]` | 未携带 `<data>` 时先返回 `>`，输入指定 `<length>` 私钥内容后 `OK`；携带全部参数时直接 `OK` | `key_name` 最长 64 字节；`remain_length=0` 表示最后一包，其它值表示还需再次写入；`length` 单包最大 8192 字节；`data` 必须为 PEM 格式 | 按长度预算 | 双向认证配置 | 写同名私钥会删除旧私钥；私钥名称再由 `MSSLCFG="cert"` 的 `<prv_key>` 引用；转义字符串输入时私钥换行需用 `\r\n` 替换 |
+| 读取 SSL 证书 | `AT+MSSLCERTRD=<cert_name>` | `+MSSLCERTRD: <length>,<data>` + `OK` | 证书名称；返回证书长度和内容 | 9s 或按长度预算 | 诊断和证书维护 | 客户端私钥不能通过该命令读取 |
+| 列出 SSL 证书/密钥 | `AT+MSSLLIST=<ca_type>` | 多行 `+MSSLLIST: <cert_name>,<len>` + `OK`，无匹配时直接 `OK` | `ca_type=1` 公钥证书；`2` 私钥；`3` PSK；`cert_name` 最长 64 字节 | 9s | 诊断和证书维护 | 可用于确认 CA/客户端证书/私钥是否已写入；PSK 文件不存在时通常直接返回 `OK` |
+| 删除 SSL 证书/密钥 | `AT+MSSLRM=<cert_name>` | `OK` | 证书或密钥名称 | 9s | 证书清理 | 只能在没有连接使用该证书/密钥时删除，否则可能导致连接失败 |
+| 证书/密钥校验 | `AT+MSSLCHECK=<cert_name>[,<verify_alg>]` | `+MSSLCHECK: <check_code>` + `OK` | `verify_alg=0/1/2/3` 对应 MD5/SHA/SHA256/CRC；默认 0；`check_code` 为校验码 | 9s | TLS 诊断 | ML307R 仅支持 MD5 校验；TLS 问题定位时用于确认写入内容 |
+| 查询密码套件 | `AT+MSSLCIPHER=?` | `+MSSLCIPHER: (<cipalgID>...)` + `OK` | 返回模块支持的 cipher suite ID 列表 | 9s | TLS 诊断 | SSL 手册标注 ML302S/ML307S 暂不支持该命令；ML307R 可用于确认 `MSSLCFG="ciphersuite"` 可选值 |
 
 ### HTTP/HTTPS URC 与错误
 
 | URC/结果 | 含义 | 映射建议 | 注意事项 |
 |----------|------|----------|----------|
-| `+MHTTPURC: "rsp",<httpid>,<rsp_code>,<data_len>` | HTTP 响应完成 | `rsp_code=100..399` 可按成功/重定向处理；`400..599` 返回 HTTP 服务器错误；随后按 `data_len` 决定是否 `MHTTPREAD` | 部分手册版本缓存模式使用 `recv`，非缓存流式模式使用 `header/content`；实现应保留 `rsp_code` |
-| `+MHTTPURC: "header",<httpid>,<code>,<header_len>,<data>` | 响应头输出 | header event；缓存 HTTP 状态码和 header | 输出格式受 `MHTTPCFG="encoding"/"fragment"` 影响；`<code>` 是 HTTP 请求结果码 |
+| `+MHTTPURC: "header",<httpid>,<code>,<header_len>,<data>` | 响应头输出 | header event；缓存 HTTP 状态码和 header | 非缓存模式直接输出；`MHTTPDLFILE` 也会上报响应头但不会把 header 写入文件；输出格式受 `MHTTPCFG="encoding"/"fragment"` 影响；`<code>` 是 HTTP 请求结果码 |
 | `+MHTTPURC: "content",<httpid>,<content_len>,<sum_len>,<cur_len>,<data>` | 响应内容输出 | streaming data event；当普通模式 `sum_len == content_len` 或 chunked 模式 `cur_len=0` 时认为 body 完成 | 按 `cur_len` 读取 payload，不能按行解析 |
-| `+MHTTPURC: "ind",<httpid>,...` | chunked/content 输入提示 | content writable | chunked 流程中收到后再发 `MHTTPCONTENT` |
+| `+MHTTPURC: "ind",<httpid>` | chunked/content 输入提示 | content writable | chunked 流程中收到后再发 `MHTTPCONTENT` |
 | `+MHTTPURC: "recv",<httpid>,<code>,<recv_header_len>,<recv_content_len>` | 缓存模式请求完成 | response ready；按 header/content 长度分段读取 | `<code>` 为 HTTP 请求结果码，非 2xx/3xx 不等于 AT 失败 |
-| `+MHTTPURC: "err",<httpid>,<error_code>` | 请求错误 | HTTP request failed；清理或重建实例 | `error_code=1` DNS 失败；`2` 连接服务器失败；`3` 连接超时；`4` SSL 握手失败；`5` 连接异常断开；`6` 响应超时；`7` 接收解析失败；其他码记录原始值 |
-| `+MHTTPURC: "closed",<httpid>,...` | HTTP 连接关闭 | HTTP disconnected / recovery | 若请求未完成则按连接错误处理，清理实例或重试 |
-| `+MHTTPURC: "download",<downloaded>,<content_length>[,<entity_length>]` | 文件下载进度或完成 | download event | `downloaded == content_length` 可视为下载完成；文件下载后续扩展处理 |
+| `+MHTTPURC: "err",<httpid>,<error_code>` | 请求错误 | HTTP request failed；清理或重建实例 | `error_code=1` DNS 失败；`2` 连接服务器失败；`3` 连接超时；`4` SSL 握手失败；`5` 连接异常断开；`6` 响应超时；`7` 接收解析失败；`8` 缓存空间不足；`9` 数据丢包；`10` 写文件失败；`255` 未知错误；其他码记录原始值 |
+| `+MHTTPURC: "download",<downloaded>,<content_length>[,<entity_length>]` | `MHTTPREQUEST` 下载到文件系统进度或完成 | download event | `downloaded == content_length` 可视为下载完成；`entity_length` 在 range 下载且服务器返回 `Content-Range` 时有效 |
+| `+MHTTPDLFILE: <downloaded>,<content_length>,<percent>[,<entity_length>]` | `MHTTPDLFILE` 独立下载进度或完成 | download event | `percent=100` 表示传输完成；chunked 响应中间进度可能显示 `content_length=0`、`percent=0` |
+
+### HTTP/HTTPS `+CME ERROR` 码
+
+HTTP/HTTPS 命令错误以 `+CME ERROR:<err>` 上报（需 `AT+CMEE=1`），手册定义的 HTTP/HTTPS 专用或相关错误码如下。
+
+| 错误码 | 含义 | 映射建议 |
+|--------|------|----------|
+| `3` | 操作不被允许 | `ESP_ERR_INVALID_STATE` 或权限/状态错误 |
+| `23` | 内存分配失败 | `ESP_ERR_NO_MEM` |
+| `50` | 参数错误 | `ESP_ERR_INVALID_ARG` |
+| `650` | 未知错误 | `ESP_FAIL` 并记录原始码 |
+| `651` | 无空闲客户端 | `ESP_ERR_NO_MEM` 或客户端实例耗尽 |
+| `652` | 客户端未创建 | `ESP_ERR_INVALID_STATE`，先执行 `MHTTPCREATE` |
+| `653` | 客户端忙 | `ESP_ERR_INVALID_STATE`，等待当前请求结束或 `MHTTPTERM` |
+| `654` | URL 解析失败 | URL/参数错误 |
+| `655` | SSL 未使能 | HTTPS 配置错误，检查 `MHTTPCFG="ssl"` |
+| `656` | 连接失败 | connect failed |
+| `657` | 数据发送失败 | send failed |
+| `658` | 打开文件失败 | file open failed |
+
+### SSL `+CME ERROR` 码
+
+SSL 命令错误以 `+CME ERROR:<err>` 上报（需 `AT+CMEE=1`），SSL 手册定义的 TLS/证书相关错误码如下。
+
+| 错误码 | 含义 | 映射建议 |
+|--------|------|----------|
+| `50` | 参数错误 | `ESP_ERR_INVALID_ARG` |
+| `750` | SSL/TLS/DTLS 未知错误 | `ESP_FAIL` 并记录原始码 |
+| `751` | SSL/TLS/DTLS 初始化资源错误 | `ESP_ERR_NO_MEM` 或 TLS 初始化失败 |
+| `752` | SSL/TLS/DTLS 服务器证书验证失败 | 证书链/认证失败，检查 CA、时间戳和 `auth/ignoreverify` 配置 |
+| `753` | SSL/TLS/DTLS 协商超时 | `ESP_ERR_TIMEOUT`，检查网络、端口和 `negotime` |
+| `754` | SSL/TLS/DTLS 协商失败 | TLS 握手失败，检查版本、cipher suite、证书和服务器配置 |
+| `760` | CERTS/KEYS 未知错误 | 证书/密钥管理失败 |
+| `761` | CERTS/KEYS 无效（格式/内容错误） | 证书或私钥格式错误 |
+| `762` | CERTS/KEYS 不存在 | 引用的证书/密钥名称不存在 |
+| `763` | CERTS/KEYS 已存在同名证书或密钥 | 名称冲突；写入同名对象前确认覆盖行为 |
+| `764` | CERTS/KEYS 写入错误 | 证书/密钥写入失败 |
+| `765` | CERTS/KEYS 其它证书/密钥正在写入中 | 写入忙，等待当前写入完成 |
+| `766` | CERTS/KEYS 读取错误 | 证书读取失败 |
+| `767` | CERTS/KEYS 删除错误 | 删除失败；确认未被连接使用 |
+| `768` | CERTS/KEYS 过大 | 证书/密钥超过大小限制 |
+| `769` | CERTS/KEYS 加载失败 | SSL context 加载证书/密钥失败 |
 
 ## MQTT 相关指令
 
@@ -232,7 +276,7 @@ MQTT 使用 ML307R `MQTT*` 命令族。`connect_id` 范围 `0..5`；MQTT 协议�
 |------|---------|----------|----------------|----------|----------|----------|
 | MQTT 协议版本 | `AT+MQTTCFG="version",<connect_id>[,<version>]` | `+MQTTCFG: "version",<version>` + `OK` 或 `OK` | `version=4`，默认 4 | 9s | `mqtt_client_configure()` | 仅连接未创建时可配置 |
 | MQTT PDP 绑定 | `AT+MQTTCFG="cid",<connect_id>[,<cid>]` | `+MQTTCFG: "cid"[,<cid>]` + `OK` 或 `OK` | ML307R `cid=1..15`，默认 1 | 9s | MQTT transport 绑定数据面 | 需先完成 `MIPCALL`；仅连接未创建时可配置 |
-| MQTT SSL 配置 | `AT+MQTTCFG="ssl",<connect_id>[,<ssl_enable>[,<ssl_id>]]` | `+MQTTCFG: "ssl",<ssl_enable>[,<ssl_id>]` + `OK` 或 `OK` | `ssl_enable=0/1`，默认 0；`ssl_id` 指 SSL context | 9s | MQTTS 配置 | 证书和认证先用 `MSSLCFG` 配置 |
+| MQTT SSL 配置 | `AT+MQTTCFG="ssl",<connect_id>[,<ssl_enable>[,<ssl_id>]]` | `+MQTTCFG: "ssl",<ssl_enable>[,<ssl_id>]` + `OK` 或 `OK` | `ssl_enable=0/1`，默认 0；`ssl_id=0..5`，指 SSL context | 9s | MQTTS 配置 | 证书、认证方式、TLS 版本和证书校验策略先用 `MSSLCFG` 配置；MQTT 连接创建前配置，掉电不保存 |
 | Keepalive | `AT+MQTTCFG="keepalive",<connect_id>[,<keepalive_time>]` | `+MQTTCFG: "keepalive",<keepalive_time>` + `OK` 或 `OK` | `0` 永不断开；`60..65535s`，默认 120s | 9s | MQTT keepalive | 与 TCP keepalive 不同；1.5 倍超时后服务器断开 |
 | Clean session | `AT+MQTTCFG="clean",<connect_id>[,<clean_session>]` | `+MQTTCFG: "clean",<clean_session>` + `OK` 或 `OK` | `0` 保留会话；`1` 清除会话，默认 0 | 9s | MQTT connect options | 连接前配置 |
 | 重传参数 | `AT+MQTTCFG="retrans",<connect_id>[,<retrans_interval>[,<retry_times>]]` | `+MQTTCFG: "retrans",...` + `OK` 或 `OK` | `retrans_interval=20..60s`，默认 20；`retry_times=0..3`，默认 0；间隔随次数加倍 | 9s | QoS 重传策略 | 重传失败上报 `timeout`；仅连接未创建时可配置 |
@@ -244,7 +288,7 @@ MQTT 使用 ML307R `MQTT*` 命令族。`connect_id` 范围 `0..5`；MQTT 协议�
 | 缓存模式 | `AT+MQTTCFG="cached",<connect_id>[,<cached_mode>]` | `+MQTTCFG: "cached",<cached_mode>` + `OK` 或 `OK` | `0` 直接上报；`1` 缓存后读取 | 9s | MQTT RX 模式配置 | 二进制/长消息建议缓存模式 |
 | 自动重连 | `AT+MQTTCFG="reconn",<connect_id>[,<reconn_times>[,<reconn_interval>[,<mode>]]]` | `+MQTTCFG: "reconn",...` + `OK` 或 `OK` | `reconn_times=0..3`，默认 3；`reconn_interval=20..60s`，默认 20；`mode=0` 固定间隔 / `1` 递增间隔 | 9s | 断线恢复策略 | 仍需 Core 侧状态机兜底 |
 | 查询全部配置 | `AT+MQTTCFG="query",<connect_id>` | 13 行 `+MQTTCFG: "<key>",...` + `OK` | 返回该连接的全部配置项 | 9s | 配置诊断/调试 | ML307R 支持；MN316/MN316A/MN318/MN319/MN326 不支持 |
-| 建立 MQTT 连接 | `AT+MQTTCONN=<connect_id>,"<host>"[,<port>[,"<clientID>"[,"<user>","<passwd>"]]]` | `OK`，随后 `+MQTTURC: "conn",<connect_id>,<conn_state>` | `host`/`clientID`/`user` 最长 128；`passwd` 最长 256；`port=0..65535`，默认 1883；`conn_state=0` 才表示连接成功 | 命令 9s；连接按业务预算 | `mqtt_client_connect()` | `host` 之后参数均可省略；只等待并接受 `conn_state=0`；重复连接同一 `connect_id` 返回错误 |
+| 建立 MQTT 连接 | `AT+MQTTCONN=<connect_id>,"<host>"[,<port>[,"<clientID>"[,"<user>","<passwd>"]]]` | `OK`，随后 `+MQTTURC: "conn",<connect_id>,<conn_state>` | `host`/`clientID`/`user` 最长 128；`passwd` 最长 256；`port=0..65535`，默认 1883；`conn_state=0` 才表示连接成功 | 命令 9s；连接按业务预算 | `mqtt_client_connect()` | `host` 之后参数均可省略；MQTTS 需先执行 `MQTTCFG="ssl"` 并显式使用 TLS broker 端口（常见 `8883`），省略端口仍默认 `1883`；只等待并接受 `conn_state=0`；重复连接同一 `connect_id` 返回错误 |
 | 订阅主题 | `AT+MQTTSUB=<connect_id>,"<topic>",<qos>[,"<topic1>",<qos1>...]` | `+MQTTSUB: <connect_id>,<mid>` + `OK`，随后 `+MQTTURC: "suback",...` | `qos=0..2`；`topic` 最长 256 字节；最多同时 3 个主题 | 9s 或按 ACK 预算 | `mqtt_client_subscribe()` | 查询订阅用 `AT+MQTTSUB=<connect_id>`；多主题 suback code 顺序对应 |
 | 取消订阅 | `AT+MQTTUNSUB=<connect_id>,"<topic>"[,"<topic1>"...]` | `+MQTTUNSUB: <connect_id>,<mid>` + `OK`，随后 `+MQTTURC: "unsuback",...` | `topic` 最长 256 字节；最多同时 3 个主题 | 9s 或按 ACK 预算 | `mqtt_client_unsubscribe()` | 失败/超时由 URC 表示 |
 | 发布消息 | `AT+MQTTPUB=<connect_id>,"<topic>",<qos>,<retain>,<dup>,<msg_len>[,"<message>"]` | `+MQTTPUB: <connect_id>,<mid>,<length>` + `OK`，随后 QoS URC | `qos=0..2`；retain `0/1`；`dup=0/1` 重发标志；`msg_len=0..1024`（ML307R）；省略 `<message>` 进入数据模式 `>` | 9s 或按 QoS 预算 | `mqtt_client_publish()` | QoS1/2 需等待 `puback/pubrec/pubcomp` |
@@ -325,7 +369,8 @@ MQTT 命令错误以 `+CME ERROR:<err>` 上报（需 `AT+CMEE=1`），手册定�
 | `+MDNSGIP:` | DNS | 域名解析完成 | DNS result | 异步结果 |
 | `+MPING:` | PING | 单包结果和统计结果 | ping result/statistics | 按 `result` 区分成功、DNS 错误、超时等 |
 | `+MNTP:` | NTP | 网络时间同步完成 | time sync result | `result=0` 成功 |
-| `+MHTTPURC:` | HTTP/HTTPS | 请求完成、响应头/体、chunked 输入、下载或关闭 | HTTP response/data/closed/download | 具体事件由字符串参数区分 |
+| `+MHTTPURC:` | HTTP/HTTPS | 响应头/体、缓存请求完成、chunked 输入、请求错误或 `MHTTPREQUEST` 下载 | HTTP response/data/error/download | 具体事件由字符串参数区分；V6.1.1 定义 `header/content/recv/ind/err/download` |
+| `+MHTTPDLFILE:` | HTTP/HTTPS 下载 | `MHTTPDLFILE` 独立下载进度或完成 | HTTP download progress/done | 格式 `+MHTTPDLFILE:<downloaded>,<content_length>,<percent>[,<entity_length>]` |
 | `+MQTTURC:` | MQTT | 连接状态、消息、ACK、超时、drop、ping | MQTT event | MQTT 连接层集中处理 |
 
 ## 推荐初始化与联网流程
@@ -378,21 +423,21 @@ HTTP/HTTPS 推荐流程：
 5. HTTPS 执行 `AT+MHTTPCFG="ssl",<httpid>,1,<ssl_id>`。
 6. 可选 `AT+MHTTPCFG="timeout",<httpid>,<conn_timeout>,<rsp_timeout>,<input_timeout>`。
 7. 可选 `AT+MHTTPHEADER=<httpid>,...` 设置请求头。
-8. POST/PUT 普通模式先 `AT+MHTTPCONTENT=<httpid>,...` 写入 body。
-9. `AT+MHTTPREQUEST=<httpid>,<method>[,<length>,"<path>"]`，等待 `+MHTTPURC: "rsp",<httpid>,<status>,<len>`。
-10. `AT+MHTTPREAD=<httpid>[,<read_len>]` 按长度读取响应。
+8. POST/PUT 普通模式先 `AT+MHTTPCONTENT=<httpid>,...` 写入 body；chunked 模式先请求，收到 `+MHTTPURC: "ind",<httpid>` 后再写 content。
+9. `AT+MHTTPREQUEST=<httpid>,<method>[,<length>,"<path>"[,"<local_path>"]]`，其中 `method=1..5` 分别为 GET/POST/PUT/DELETE/HEAD。
+10. 非缓存模式等待 `+MHTTPURC: "header",<httpid>,<status>,...` 和 `+MHTTPURC: "content",...`；缓存模式等待 `+MHTTPURC: "recv",<httpid>,<status>,<header_len>,<content_len>` 后执行 `AT+MHTTPREAD=<httpid>,0,<header_len>` 和 `AT+MHTTPREAD=<httpid>,1,<content_len>` 按长度读取响应。
 11. `AT+MHTTPDEL=<httpid>` 删除实例；错误中断时可先 `AT+MHTTPTERM=<httpid>`。
 
 MQTT 推荐流程：
 
 1. 完成 `MIPCALL` 应用层拨号。
-2. TLS 场景先配置 SSL context，再执行 `AT+MQTTCFG="ssl",0,1,<ssl_id>`。
+2. TLS 场景先按认证需求写入 CA/客户端证书/私钥，配置 `AT+MSSLCFG="auth",<ssl_id>,<cert_verify>` 和 `AT+MSSLCFG="cert",<ssl_id>,<srv_cert>,<cli_cert>,<prv_key>`，可选配置 `version/ciphersuite/ignorestamp/ignoreverify/negotime`，再执行 `AT+MQTTCFG="ssl",0,1,<ssl_id>`。
 3. `AT+MQTTCFG="version",0,4`。
 4. `AT+MQTTCFG="cid",0,1`。
 5. `AT+MQTTCFG="keepalive",0,<keepalive>`，默认可使用 120s；按业务需要调整。
 6. `AT+MQTTCFG="clean",0,<clean_session>`。
 7. 二进制或长下行建议 `AT+MQTTCFG="cached",0,1`。
-8. `AT+MQTTCONN=0,"<host>",<port>,"<client_id>","<user>","<password>"`，等待 `+MQTTURC: "conn",0,0` 表示连接成功；`conn_state` 为其他值时按连接失败或断链处理。
+8. `AT+MQTTCONN=0,"<host>",<port>,"<client_id>","<user>","<password>"`，MQTTS 通常使用 `<port>=8883` 且不能省略端口；等待 `+MQTTURC: "conn",0,0` 表示连接成功，`conn_state` 为其他值时按连接失败或断链处理。
 9. 发布使用 `AT+MQTTPUB=0,"<topic>",<qos>,<retain>,<dup>,<msg_len>,"<message>"`，按 QoS 等待对应 `+MQTTURC`。
 10. 订阅使用 `AT+MQTTSUB=0,"<topic>",<qos>`，等待 `+MQTTURC: "suback",0,...`。
 11. 缓存模式收到 `+MQTTURC: "pubnmi",0,...` 后执行 `AT+MQTTREAD=0` 或 `AT+MQTTREAD=0,<count>`。
