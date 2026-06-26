@@ -487,7 +487,7 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
             "core_socket_result_t",
             ".error_code = ret",
             ".modem_error_code = modem_error_code",
-            "ret != ESP_OK ? &result : NULL",
+            "socket_cmd && ret != ESP_OK ? (const void *)&result",
             "socket_result->error_code",
             "socket_result->modem_error_code",
             "esp_err_from_core_result(sig->core_result)",
@@ -507,7 +507,8 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
         self.assertNotIn("post_error_event(conn, ESP_FAIL, 0, 0);",
                          tcp_handle_done_body)
         self.assertIn("CORE_CMD_SOCKET_RECV", core_fsm_body)
-        self.assertIn("ret != ESP_OK ? &result : NULL", core_fsm_body)
+        self.assertIn("socket_cmd && ret != ESP_OK ? (const void *)&result",
+                      core_fsm_body)
 
     def test_air780ep_send_close_failures_preserve_modem_error_code(self):
         core_fsm_body = self.assert_function_body(self.core_fsm_c,

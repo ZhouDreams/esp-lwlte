@@ -103,8 +103,8 @@ TCP client v1 已在 Air780EP 和 ML307R 上实现 plain TCP，当前限定一�
 
 | 项 | 内容 |
 |----|------|
-| 新增 ops | `ssl_configure`、`ssl_write_cert`、`ssl_write_key` |
-| 新增参数结构 | `modem_ssl_config_t`（context id、认证级别、TLS 版本、cipher suite、cacert/clientcert/clientkey 引用） |
+| 新增 ops | `ssl_provision`、`ssl_get_context_status` |
+| 新增参数结构 | `modem_ssl_context_config_t`（context id、认证级别、TLS 版本、协商超时、证书时间/SNI 选项）、`modem_ssl_credentials_t`（CA/client cert/client key PEM 数据） |
 | Air780EP AT | `AT+SSLCFG="<tag>",<ctx>[,<value>]`（ctx：0..5 TCP / 88 MQTT / 153 HTTP）；证书需先写入文件系统 |
 | ML307R AT | `AT+MSSLCFG="<cmd>",<ssl_id>`、`AT+MSSLCERTWR`、`AT+MSSLKEYWR`（`>` 数据下载） |
 | 建模要点 | SSL context id 被其它协议引用，**TLS 本身不建连**；ops 只负责配置与证书写入，连接由各协议 ops 在 open 时引用 ctx。 |
@@ -157,8 +157,11 @@ Service 层职责：通过 `core_submit_cmd()` 串行驱动 `modem_ops`，管理
 | 项 | 内容 |
 |----|------|
 | 归属 | 不新建 service。证书/配置写入走 Core 命令，连接时由各协议 service 引用已配好的 context。 |
-| 新增命令 | `CORE_CMD_SSL_PROVISION`（一次性写证书 + 配 context）。 |
+| 新增命令 | `CORE_CMD_SSL_PROVISION`、`CORE_CMD_SSL_GET_CONTEXT_STATUS` |
+| 新增公开 API | `lwlte_ssl_provision()`、`lwlte_ssl_get_context_status()` |
+| 查询语义 | 查询模块端证书/密钥对象是否存在；Air780EP 用文件系统查询，ML307R 用 `MSSLLIST`/`MSSLCHECK`。 |
 | 编排逻辑 | 证书与安全参数一次性下发并绑定 context id；各协议 config 增加 `transport=TLS` + ssl context 引用。 |
+| MQTT TLS 验证目标 | 使用当前 MQTT example server，端口切换为 `8883`，验证实机连接、订阅和 telemetry 发布。 |
 | 复用现状 | 打通 `mqtt_client_config_t` 已预留的 `MQTT_CLIENT_TRANSPORT_TLS`；socket/http config 引用 ssl context。 |
 
 #### P4 HTTP/HTTPS —— Core 同步命令（v1）

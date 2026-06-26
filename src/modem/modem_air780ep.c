@@ -60,6 +60,11 @@
 #define AIR780EP_MQTT_CMD_TIMEOUT_MS     9000
 #define AIR780EP_MQTT_CONNECT_TIMEOUT_MS 60000
 #define AIR780EP_MQTT_PAYLOAD_PROMPT     ">"
+#define AIR780EP_SSL_MQTT_CONTEXT_ID       88
+#define AIR780EP_SSL_MAX_PEM_LEN           10240U
+#define AIR780EP_SSL_CMD_TIMEOUT_MS        9000
+#define AIR780EP_SSL_WRITE_TIMEOUT_S       30U
+#define AIR780EP_SSL_CONTEXT_BITMAP_BITS   256U
 #define AIR780EP_TCP_CONN_ID                 0
 #define AIR780EP_TCP_MAX_HEX_READ_BYTES      730
 #define AIR780EP_TCP_PAYLOAD_PROMPT          ">"
@@ -111,6 +116,10 @@ typedef struct {
     modem_signal_t last_signal;
     modem_pdp_context_t pdp[AIR780EP_MAX_PDP_CONTEXTS];
     modem_mqtt_config_t mqtt_config;
+    uint32_t ssl_provisioned_bitmap[(AIR780EP_SSL_CONTEXT_BITMAP_BITS + 31U) / 32U];
+    modem_ssl_auth_mode_t ssl_auth_modes[AIR780EP_SSL_CONTEXT_BITMAP_BITS];
+    modem_mqtt_transport_t mqtt_transport;
+    uint8_t mqtt_ssl_context_id;
     bool urc_registered;
     bool initialized;
     bool mqtt_configured;
@@ -531,6 +540,139 @@ static esp_err_t air780ep_mqtt_publish(modem_handle_t *me,
  */
 static esp_err_t air780ep_mqtt_get_status(modem_handle_t *me,
                                            modem_mqtt_status_t *status);
+/**
+ * @brief 写入并配置 Air780EP SSL context
+ * @details Provision Air780EP SSL context
+ * @param[in] me 调制解调器句柄
+ * @param[in] config SSL context 配置
+ * @param[in] credentials SSL 证书材料
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
+                                         const modem_ssl_context_config_t *config,
+                                         const modem_ssl_credentials_t *credentials);
+/**
+ * @brief 查询 Air780EP SSL context 状态
+ * @details Query Air780EP SSL context status
+ * @param[in] me 调制解调器句柄
+ * @param[in] context_id SSL context ID
+ * @param[out] status SSL context 状态
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_ssl_get_context_status(modem_handle_t *me,
+                                                 uint8_t context_id,
+                                                 modem_ssl_context_status_t *status);
+/**
+ * @brief 标记 SSL context 缓存状态
+ * @details Mark cached SSL context state
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] context_id SSL context ID
+ * @param[in] auth_mode SSL 认证模式
+ * @param[in] provisioned 是否已配置
+ */
+static void ssl_mark_context(modem_air780ep_t *self, uint8_t context_id,
+                             modem_ssl_auth_mode_t auth_mode, bool provisioned);
+/**
+ * @brief 查询 SSL context 缓存标记
+ * @details Query cached SSL context mark
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] context_id SSL context ID
+ * @return true: 已标记； false: 未标记
+ */
+static bool ssl_context_marked(modem_air780ep_t *self, uint8_t context_id);
+/**
+ * @brief 生成 SSL 文件对象名
+ * @details Generate SSL file object names
+ * @param[in] context_id SSL context ID
+ * @param[out] ca_name CA 文件名
+ * @param[in] ca_name_size CA 文件名缓冲区大小
+ * @param[out] client_cert_name 客户端证书文件名
+ * @param[in] client_cert_name_size 客户端证书文件名缓冲区大小
+ * @param[out] client_key_name 客户端私钥文件名
+ * @param[in] client_key_name_size 客户端私钥文件名缓冲区大小
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_ssl_object_names(uint8_t context_id,
+                                           char *ca_name, size_t ca_name_size,
+                                           char *client_cert_name,
+                                           size_t client_cert_name_size,
+                                           char *client_key_name,
+                                           size_t client_key_name_size);
+/**
+ * @brief 删除文件并忽略不存在错误
+ * @details Delete file and ignore missing-file error
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] name 文件名
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_delete_file_ignore_missing(modem_air780ep_t *self,
+                                                     const char *name);
+/**
+ * @brief 写入 Air780EP 文件系统文件
+ * @details Write file into Air780EP filesystem
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] name 文件名
+ * @param[in] payload 文件内容
+ * @param[in] len 文件内容长度
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_write_file(modem_air780ep_t *self, const char *name,
+                                     const uint8_t *payload, size_t len);
+/**
+ * @brief 绑定 SSL 文件到 context
+ * @details Bind SSL file to context
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] tag SSL 配置标签
+ * @param[in] context_id SSL context ID
+ * @param[in] name 文件名
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_bind_ssl_file(modem_air780ep_t *self,
+                                        const char *tag, uint8_t context_id,
+                                        const char *name);
+/**
+ * @brief 查询 Air780EP 文件是否存在
+ * @details Query whether Air780EP file exists
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] name 文件名
+ * @param[out] exists 是否存在
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_file_exists(modem_air780ep_t *self, const char *name,
+                                      bool *exists);
+/**
+ * @brief 查询 SSL 认证模式
+ * @details Query SSL authentication mode
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] context_id SSL context ID
+ * @param[out] auth_mode SSL 认证模式
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_query_ssl_auth_mode(modem_air780ep_t *self,
+                                              uint8_t context_id,
+                                              modem_ssl_auth_mode_t *auth_mode);
+/**
+ * @brief 失效 SSL context 及其 TLS MQTT 依赖状态
+ * @details Invalidate SSL context and dependent TLS MQTT state
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] context_id SSL context ID
+ */
+static void air780ep_invalidate_ssl_context(modem_air780ep_t *self,
+                                            uint8_t context_id);
+/**
+ * @brief 清除依赖指定 SSL context 的 TLS MQTT 配置
+ * @details Clear TLS MQTT config depending on the given SSL context; caller holds lock
+ * @param[in] self Air780EP 调制解调器实例
+ * @param[in] context_id SSL context ID
+ */
+static void air780ep_clear_tls_mqtt_config_if_context_locked(modem_air780ep_t *self,
+                                                            uint8_t context_id);
+/**
+ * @brief 清除 SSL 内存状态
+ * @details Clear SSL in-memory state
+ * @param[in] self Air780EP 调制解调器实例
+ */
+static void air780ep_clear_ssl_state(modem_air780ep_t *self);
 /**
  * @brief 复位 MQTT 模式为直连 ASCII
  * @details Reset MQTT mode via AT+MQTTMSGSET=0 then AT+MQTTMODE=0
@@ -1216,6 +1358,8 @@ static const modem_ops_t s_air780ep_ops = {
     .activate_pdp = air780ep_activate_pdp,
     .deactivate_pdp = air780ep_deactivate_pdp,
     .get_pdp_context = air780ep_get_pdp_context,
+    .ssl_provision = air780ep_ssl_provision,
+    .ssl_get_context_status = air780ep_ssl_get_context_status,
     .socket_open = air780ep_socket_open,
     .socket_send = air780ep_socket_send,
     .socket_recv = air780ep_socket_recv,
@@ -1279,6 +1423,8 @@ modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
     self->last_signal.ber = 99;
     self->last_signal.rssi_dbm = 0;
     self->last_signal.rssi_dbm_valid = false;
+    self->mqtt_transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    self->mqtt_ssl_context_id = 0;
 
     /* PDP 上下文槽位：cid 从 1 开始编号，默认类型 "IP" */
     for (int i = 0; i < AIR780EP_MAX_PDP_CONTEXTS; i++) {
@@ -2438,6 +2584,8 @@ static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
         .password = src->password ? clone_mqtt_string(src->password) : NULL,
         .host = clone_mqtt_string(src->host),
         .port = src->port,
+        .transport = src->transport,
+        .ssl_context_id = src->ssl_context_id,
         .clean_session = src->clean_session,
         .keepalive_s = src->keepalive_s,
     };
@@ -2467,6 +2615,362 @@ static void free_mqtt_config(modem_mqtt_config_t *config)
 
 static void clear_mqtt_state(modem_air780ep_t *self)
 {
+    air780ep_clear_ssl_state(self);
+}
+
+static void ssl_mark_context(modem_air780ep_t *self, uint8_t context_id,
+                             modem_ssl_auth_mode_t auth_mode, bool provisioned)
+{
+    uint32_t index = context_id;
+    if (!self || index >= AIR780EP_SSL_CONTEXT_BITMAP_BITS) {
+        return;
+    }
+
+    uint32_t mask = 1U << (index % 32U);
+    uint32_t *word = &self->ssl_provisioned_bitmap[index / 32U];
+    if (provisioned) {
+        *word |= mask;
+        self->ssl_auth_modes[index] = auth_mode;
+    } else {
+        *word &= ~mask;
+        self->ssl_auth_modes[index] = MODEM_SSL_AUTH_NONE;
+    }
+}
+
+static bool ssl_context_marked(modem_air780ep_t *self, uint8_t context_id)
+{
+    uint32_t index = context_id;
+    if (!self || index >= AIR780EP_SSL_CONTEXT_BITMAP_BITS) {
+        return false;
+    }
+
+    uint32_t mask = 1U << (index % 32U);
+    return (self->ssl_provisioned_bitmap[index / 32U] & mask) != 0;
+}
+
+static void air780ep_clear_tls_mqtt_config_if_context_locked(modem_air780ep_t *self,
+                                                            uint8_t context_id)
+{
+    if (!self || context_id != AIR780EP_SSL_MQTT_CONTEXT_ID) {
+        return;
+    }
+
+    bool mqtt_uses_context = self->mqtt_transport == MODEM_MQTT_TRANSPORT_TLS &&
+                             self->mqtt_ssl_context_id == context_id;
+    if (self->mqtt_config.transport == MODEM_MQTT_TRANSPORT_TLS &&
+        self->mqtt_config.ssl_context_id == context_id) {
+        mqtt_uses_context = true;
+    }
+    if (!mqtt_uses_context) {
+        return;
+    }
+
+    self->mqtt_configured = false;
+    self->mqtt_tcp_connected = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_data_enabled = false;
+    free_mqtt_config(&self->mqtt_config);
+    self->mqtt_transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    self->mqtt_ssl_context_id = 0;
+}
+
+static void air780ep_invalidate_ssl_context(modem_air780ep_t *self,
+                                            uint8_t context_id)
+{
+    if (!self) {
+        return;
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    ssl_mark_context(self, context_id, MODEM_SSL_AUTH_NONE, false);
+    air780ep_clear_tls_mqtt_config_if_context_locked(self, context_id);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+}
+
+static esp_err_t air780ep_ssl_object_names(uint8_t context_id,
+                                           char *ca_name, size_t ca_name_size,
+                                           char *client_cert_name,
+                                           size_t client_cert_name_size,
+                                           char *client_key_name,
+                                           size_t client_key_name_size)
+{
+    ESP_RETURN_ON_FALSE(ca_name && client_cert_name && client_key_name,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    int written = snprintf(ca_name, ca_name_size, "lwlte_ca_%u.crt",
+                           (unsigned int)context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < ca_name_size,
+                        ESP_ERR_INVALID_ARG, TAG, "CA object name truncated");
+
+    written = snprintf(client_cert_name, client_cert_name_size,
+                       "lwlte_client_%u.crt", (unsigned int)context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < client_cert_name_size,
+                        ESP_ERR_INVALID_ARG, TAG, "client cert object name truncated");
+
+    written = snprintf(client_key_name, client_key_name_size,
+                       "lwlte_client_%u.key", (unsigned int)context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < client_key_name_size,
+                        ESP_ERR_INVALID_ARG, TAG, "client key object name truncated");
+
+    return ESP_OK;
+}
+
+static esp_err_t air780ep_delete_file_ignore_missing(modem_air780ep_t *self,
+                                                     const char *name)
+{
+    ESP_RETURN_ON_FALSE(self && name, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+
+    char *escaped_name = escape_at_string(name);
+    ESP_RETURN_ON_FALSE(escaped_name, ESP_ERR_NO_MEM, TAG, "escape file name failed");
+
+    char cmd[96];
+    int written = snprintf(cmd, sizeof(cmd), "AT+FSDEL=\"%s\"", escaped_name);
+    free(escaped_name);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+FSDEL command truncated");
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+FSDEL failed");
+
+    if (ctx.response.status == AT_RESP_OK ||
+        (ctx.response.status == AT_RESP_CME_ERROR &&
+         (ctx.response.error_code == 62 || ctx.response.error_code == 100))) {
+        return ESP_OK;
+    }
+    return ensure_at_ok(&ctx.response, "AT+FSDEL");
+}
+
+static esp_err_t air780ep_write_file(modem_air780ep_t *self, const char *name,
+                                     const uint8_t *payload, size_t len)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.at && name && payload && len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(len <= AIR780EP_SSL_MAX_PEM_LEN, ESP_ERR_INVALID_SIZE,
+                        TAG, "SSL PEM too large");
+
+    esp_err_t ret = air780ep_delete_file_ignore_missing(self, name);
+    ESP_RETURN_ON_ERROR(ret, TAG, "delete existing SSL file failed");
+
+    char *escaped_name = escape_at_string(name);
+    ESP_RETURN_ON_FALSE(escaped_name, ESP_ERR_NO_MEM, TAG, "escape file name failed");
+
+    char cmd[128];
+    int written = snprintf(cmd, sizeof(cmd), "AT+FSCREATE=\"%s\"", escaped_name);
+    if (written < 0 || (size_t)written >= sizeof(cmd)) {
+        free(escaped_name);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    air780ep_cmd_ctx_t ctx;
+    ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+FSCREATE");
+    }
+    if (ret != ESP_OK) {
+        free(escaped_name);
+        return ret;
+    }
+
+    written = snprintf(cmd, sizeof(cmd), "AT+FSWRITE=\"%s\",0,%u,%u",
+                       escaped_name, (unsigned int)len,
+                       (unsigned int)AIR780EP_SSL_WRITE_TIMEOUT_S);
+    free(escaped_name);
+    if (written < 0 || (size_t)written >= sizeof(cmd)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const at_cmd_options_t options = {
+        .timeout_ms = AIR780EP_SSL_CMD_TIMEOUT_MS + AIR780EP_SSL_WRITE_TIMEOUT_S * 1000U,
+        .flags = 0,
+        .success_matches = NULL,
+        .success_match_count = 0,
+    };
+    init_cmd_ctx(&ctx);
+    ret = at_engine_send_cmd_with_payload(self->base.at, cmd, payload, len,
+                                          ">", &ctx.response, &options);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+FSWRITE");
+    }
+    return ret;
+}
+
+static esp_err_t air780ep_bind_ssl_file(modem_air780ep_t *self,
+                                        const char *tag, uint8_t context_id,
+                                        const char *name)
+{
+    ESP_RETURN_ON_FALSE(self && tag && name, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
+
+    char *escaped_name = escape_at_string(name);
+    ESP_RETURN_ON_FALSE(escaped_name, ESP_ERR_NO_MEM, TAG, "escape file name failed");
+
+    char cmd[128];
+    /* Air780EP command token: AT+SSLCFG="cacert",88. */
+    int written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"%s\",88,\"%s\"",
+                           tag, escaped_name);
+    free(escaped_name);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG file command truncated");
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG file");
+    }
+    return ret;
+}
+
+static esp_err_t air780ep_file_exists(modem_air780ep_t *self, const char *name,
+                                      bool *exists)
+{
+    ESP_RETURN_ON_FALSE(self && name && exists, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    *exists = false;
+
+    char *escaped_name = escape_at_string(name);
+    ESP_RETURN_ON_FALSE(escaped_name, ESP_ERR_NO_MEM, TAG, "escape file name failed");
+
+    char cmd[96];
+    int written = snprintf(cmd, sizeof(cmd), "AT+FSFLSIZE=\"%s\"", escaped_name);
+    free(escaped_name);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+FSFLSIZE command truncated");
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+FSFLSIZE failed");
+
+    if (ctx.response.status == AT_RESP_OK) {
+        const char *line = find_line_with_prefix(&ctx.response, "+FSFLSIZE:");
+        ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE,
+                            TAG, "+FSFLSIZE line missing");
+
+        const char *cursor = skip_prefix_value(line, "+FSFLSIZE:");
+        ESP_RETURN_ON_FALSE(cursor, ESP_ERR_INVALID_RESPONSE,
+                            TAG, "invalid +FSFLSIZE line");
+        if (*cursor == '"') {
+            cursor = strchr(cursor + 1, '"');
+            ESP_RETURN_ON_FALSE(cursor, ESP_ERR_INVALID_RESPONSE,
+                                TAG, "unterminated +FSFLSIZE name");
+            cursor++;
+            while (isspace((unsigned char)*cursor)) {
+                cursor++;
+            }
+            ESP_RETURN_ON_FALSE(*cursor == ',', ESP_ERR_INVALID_RESPONSE,
+                                TAG, "missing +FSFLSIZE size separator");
+            cursor++;
+        } else if (!isdigit((unsigned char)*cursor)) {
+            cursor = strchr(cursor, ',');
+            ESP_RETURN_ON_FALSE(cursor, ESP_ERR_INVALID_RESPONSE,
+                                TAG, "missing +FSFLSIZE size field");
+            cursor++;
+        }
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        ESP_RETURN_ON_FALSE(isdigit((unsigned char)*cursor),
+                            ESP_ERR_INVALID_RESPONSE, TAG,
+                            "invalid +FSFLSIZE size start");
+
+        errno = 0;
+        char *end = NULL;
+        unsigned long parsed_size = strtoul(cursor, &end, 10);
+        ESP_RETURN_ON_FALSE(end != cursor && errno != ERANGE &&
+                            parsed_size <= (unsigned long)SIZE_MAX,
+                            ESP_ERR_INVALID_RESPONSE, TAG, "invalid +FSFLSIZE size");
+        cursor = end;
+        while (isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        ESP_RETURN_ON_FALSE(*cursor == '\0', ESP_ERR_INVALID_RESPONSE,
+                            TAG, "unexpected +FSFLSIZE suffix");
+
+        *exists = parsed_size > 0;
+        return ESP_OK;
+    }
+    if (ctx.response.status == AT_RESP_CME_ERROR &&
+        (ctx.response.error_code == 62 || ctx.response.error_code == 100)) {
+        return ESP_OK;
+    }
+    return ensure_at_ok(&ctx.response, "AT+FSFLSIZE");
+}
+
+static esp_err_t air780ep_query_ssl_auth_mode(modem_air780ep_t *self,
+                                              uint8_t context_id,
+                                              modem_ssl_auth_mode_t *auth_mode)
+{
+    ESP_RETURN_ON_FALSE(self && auth_mode, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, "AT+SSLCFG=\"seclevel\",88", &ctx,
+                             AIR780EP_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG=\"seclevel\",88");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "query SSL seclevel failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, "+SSLCFG:");
+    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG, "+SSLCFG line missing");
+
+    const char *cursor = skip_prefix_value(line, "+SSLCFG:");
+    ESP_RETURN_ON_FALSE(cursor && strncmp(cursor, "\"seclevel\"",
+                                         sizeof("\"seclevel\"") - 1) == 0,
+                        ESP_ERR_INVALID_RESPONSE, TAG, "invalid +SSLCFG seclevel line");
+    cursor += sizeof("\"seclevel\"") - 1;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    ESP_RETURN_ON_FALSE(*cursor == ',', ESP_ERR_INVALID_RESPONSE,
+                        TAG, "missing +SSLCFG context separator");
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed_context = strtol(cursor, &end, 10);
+    ESP_RETURN_ON_FALSE(end != cursor && errno != ERANGE &&
+                        parsed_context == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        ESP_ERR_INVALID_RESPONSE, TAG, "invalid +SSLCFG context");
+    cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    ESP_RETURN_ON_FALSE(*cursor == ',', ESP_ERR_INVALID_RESPONSE,
+                        TAG, "missing +SSLCFG mode separator");
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    errno = 0;
+    end = NULL;
+    long parsed_mode = strtol(cursor, &end, 10);
+    ESP_RETURN_ON_FALSE(end != cursor && errno != ERANGE &&
+                        parsed_mode >= (long)MODEM_SSL_AUTH_NONE &&
+                        parsed_mode <= (long)MODEM_SSL_AUTH_MUTUAL,
+                        ESP_ERR_INVALID_RESPONSE, TAG, "invalid +SSLCFG auth mode");
+    cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    ESP_RETURN_ON_FALSE(*cursor == '\0', ESP_ERR_INVALID_RESPONSE,
+                        TAG, "unexpected +SSLCFG suffix");
+
+    *auth_mode = (modem_ssl_auth_mode_t)parsed_mode;
+    return ESP_OK;
+}
+
+static void air780ep_clear_ssl_state(modem_air780ep_t *self)
+{
     if (!self) {
         return;
     }
@@ -2479,9 +2983,227 @@ static void clear_mqtt_state(modem_air780ep_t *self)
     self->mqtt_session_connected = false;
     self->mqtt_data_enabled = false;
     free_mqtt_config(&self->mqtt_config);
+    memset(self->ssl_provisioned_bitmap, 0, sizeof(self->ssl_provisioned_bitmap));
+    for (size_t i = 0; i < sizeof(self->ssl_auth_modes) / sizeof(self->ssl_auth_modes[0]); i++) {
+        self->ssl_auth_modes[i] = MODEM_SSL_AUTH_NONE;
+    }
+    self->mqtt_transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    self->mqtt_ssl_context_id = 0;
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+}
+
+static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
+                                         const modem_ssl_context_config_t *config,
+                                         const modem_ssl_credentials_t *credentials)
+{
+    ESP_RETURN_ON_FALSE(me && config && credentials, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(config->context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
+    ESP_RETURN_ON_FALSE(config->auth_mode >= MODEM_SSL_AUTH_NONE &&
+                        config->auth_mode <= MODEM_SSL_AUTH_MUTUAL,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid SSL auth mode");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    char ca_name[32];
+    char client_cert_name[32];
+    char client_key_name[32];
+    esp_err_t ret = air780ep_ssl_object_names(config->context_id,
+                                              ca_name, sizeof(ca_name),
+                                              client_cert_name,
+                                              sizeof(client_cert_name),
+                                              client_key_name,
+                                              sizeof(client_key_name));
+    ESP_RETURN_ON_ERROR(ret, TAG, "generate SSL object names failed");
+
+    air780ep_invalidate_ssl_context(self, config->context_id);
+
+    switch (config->auth_mode) {
+    case MODEM_SSL_AUTH_NONE:
+        break;
+    case MODEM_SSL_AUTH_SERVER:
+        ESP_RETURN_ON_FALSE(credentials->ca_cert_pem && credentials->ca_cert_len > 0,
+                            ESP_ERR_INVALID_ARG, TAG, "CA certificate missing");
+        ret = air780ep_write_file(self, ca_name, credentials->ca_cert_pem,
+                                  credentials->ca_cert_len);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write CA certificate failed");
+        ret = air780ep_bind_ssl_file(self, "cacert", config->context_id, ca_name);
+        ESP_RETURN_ON_ERROR(ret, TAG, "bind CA certificate failed");
+        break;
+    case MODEM_SSL_AUTH_MUTUAL:
+        ESP_RETURN_ON_FALSE(credentials->ca_cert_pem && credentials->ca_cert_len > 0 &&
+                            credentials->client_cert_pem && credentials->client_cert_len > 0 &&
+                            credentials->client_key_pem && credentials->client_key_len > 0,
+                            ESP_ERR_INVALID_ARG, TAG, "mutual SSL credentials missing");
+        ret = air780ep_write_file(self, ca_name, credentials->ca_cert_pem,
+                                  credentials->ca_cert_len);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write CA certificate failed");
+        ret = air780ep_write_file(self, client_cert_name, credentials->client_cert_pem,
+                                  credentials->client_cert_len);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write client certificate failed");
+        ret = air780ep_write_file(self, client_key_name, credentials->client_key_pem,
+                                  credentials->client_key_len);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write client key failed");
+        ret = air780ep_bind_ssl_file(self, "cacert", config->context_id, ca_name);
+        ESP_RETURN_ON_ERROR(ret, TAG, "bind CA certificate failed");
+        ret = air780ep_bind_ssl_file(self, "clientcert", config->context_id,
+                                     client_cert_name);
+        ESP_RETURN_ON_ERROR(ret, TAG, "bind client certificate failed");
+        ret = air780ep_bind_ssl_file(self, "clientkey", config->context_id,
+                                     client_key_name);
+        ESP_RETURN_ON_ERROR(ret, TAG, "bind client key failed");
+        break;
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char cmd[128];
+    /* Air780EP command token: AT+SSLCFG="seclevel",88. */
+    int written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"seclevel\",88,%u",
+                           (unsigned int)config->auth_mode);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG seclevel command truncated");
+    air780ep_cmd_ctx_t ctx;
+    ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG=\"seclevel\",88");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "set SSL seclevel failed");
+
+    if (config->auth_mode != MODEM_SSL_AUTH_NONE) {
+        ret = send_cmd(self, "AT+SSLCFG=\"verifymode\",88,0", &ctx,
+                       AIR780EP_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+SSLCFG verifymode");
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "set SSL verify mode failed");
+    }
+
+    written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"ignorelocaltime\",88,%u",
+                       config->ignore_cert_time ? 1U : 0U);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG ignorelocaltime command truncated");
+    ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG ignorelocaltime");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "set SSL ignorelocaltime failed");
+
+    if (config->tls_version != 0) {
+        written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"sslversion\",88,%u",
+                           (unsigned int)config->tls_version);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG sslversion command truncated");
+        ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+SSLCFG sslversion");
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "set SSL version failed");
+    }
+
+    if (config->hostname && config->hostname[0] != '\0') {
+        char *hostname = escape_at_string(config->hostname);
+        ESP_RETURN_ON_FALSE(hostname, ESP_ERR_NO_MEM, TAG, "escape SSL hostname failed");
+        int needed = snprintf(NULL, 0, "AT+SSLCFG=\"hostname\",88,\"%s\"", hostname);
+        if (needed < 0) {
+            free(hostname);
+            return ESP_ERR_INVALID_ARG;
+        }
+        char *hostname_cmd = malloc((size_t)needed + 1U);
+        if (!hostname_cmd) {
+            free(hostname);
+            return ESP_ERR_NO_MEM;
+        }
+        snprintf(hostname_cmd, (size_t)needed + 1U,
+                 "AT+SSLCFG=\"hostname\",88,\"%s\"", hostname);
+        free(hostname);
+        ret = send_cmd(self, hostname_cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+SSLCFG hostname");
+        }
+        free(hostname_cmd);
+        ESP_RETURN_ON_ERROR(ret, TAG, "set SSL hostname failed");
+    }
+
+    if (config->negotiate_timeout_s != 0) {
+        written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"negotiatetimeout\",88,%u",
+                           (unsigned int)config->negotiate_timeout_s);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG,
+                            TAG, "AT+SSLCFG negotiatetimeout command truncated");
+        ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+SSLCFG negotiatetimeout");
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "set SSL negotiate timeout failed");
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    ssl_mark_context(self, config->context_id, config->auth_mode, true);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t air780ep_ssl_get_context_status(modem_handle_t *me,
+                                                 uint8_t context_id,
+                                                 modem_ssl_context_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
+
+    modem_air780ep_t *self = to_air780ep(me);
+    memset(status, 0, sizeof(*status));
+
+    modem_ssl_auth_mode_t auth_mode = MODEM_SSL_AUTH_NONE;
+    esp_err_t ret = air780ep_query_ssl_auth_mode(self, context_id, &auth_mode);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query SSL auth mode failed");
+
+    char ca_name[32];
+    char client_cert_name[32];
+    char client_key_name[32];
+    ret = air780ep_ssl_object_names(context_id, ca_name, sizeof(ca_name),
+                                    client_cert_name, sizeof(client_cert_name),
+                                    client_key_name, sizeof(client_key_name));
+    ESP_RETURN_ON_ERROR(ret, TAG, "generate SSL object names failed");
+
+    bool ca_exists = false;
+    bool cert_exists = false;
+    bool key_exists = false;
+    ret = air780ep_file_exists(self, ca_name, &ca_exists);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query CA certificate failed");
+    ret = air780ep_file_exists(self, client_cert_name, &cert_exists);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query client certificate failed");
+    ret = air780ep_file_exists(self, client_key_name, &key_exists);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query client key failed");
+
+    status->auth_mode = auth_mode;
+    status->ca_cert_present = ca_exists;
+    status->client_cert_present = cert_exists;
+    status->client_key_present = key_exists;
+    status->check_valid = false;
+    status->provisioned = status->auth_mode == MODEM_SSL_AUTH_NONE ||
+                          (status->auth_mode == MODEM_SSL_AUTH_SERVER && ca_exists) ||
+                          (status->auth_mode == MODEM_SSL_AUTH_MUTUAL && ca_exists &&
+                           cert_exists && key_exists);
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    ssl_mark_context(self, context_id, status->auth_mode, status->provisioned);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    if (!status->provisioned) {
+        air780ep_invalidate_ssl_context(self, context_id);
+    }
+    return ESP_OK;
 }
 
 static uint32_t now_ms(void)
@@ -2827,6 +3549,7 @@ static esp_err_t air780ep_start(modem_handle_t *me)
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+    air780ep_clear_ssl_state(self);
     set_initialized(self, false);
 
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2909,6 +3632,7 @@ static esp_err_t air780ep_reset(modem_handle_t *me)
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+    air780ep_clear_ssl_state(self);
     set_initialized(self, false);
 
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
@@ -2963,6 +3687,7 @@ static esp_err_t air780ep_stop(modem_handle_t *me)
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+    air780ep_clear_ssl_state(self);
     set_initialized(self, false);
 
     esp_err_t ret = ESP_OK;
@@ -3804,19 +4529,27 @@ static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
                                           const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host &&
-                        config->port > 0,
+                        config->port > 0 &&
+                        (config->transport == MODEM_MQTT_TRANSPORT_PLAIN_TCP ||
+                         config->transport == MODEM_MQTT_TRANSPORT_TLS),
                         ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
+    ESP_RETURN_ON_FALSE(config->transport != MODEM_MQTT_TRANSPORT_TLS ||
+                        config->ssl_context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        ESP_ERR_INVALID_ARG, TAG, "unsupported MQTT SSL context");
 
     modem_air780ep_t *self = to_air780ep(me);
     if (self->base.lock) {
         xSemaphoreTake(self->base.lock, portMAX_DELAY);
     }
     bool connected = self->mqtt_tcp_connected || self->mqtt_session_connected;
+    bool ssl_provisioned = ssl_context_marked(self, AIR780EP_SSL_MQTT_CONTEXT_ID);
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
     ESP_RETURN_ON_FALSE(!connected,
                         ESP_ERR_INVALID_STATE, TAG, "MQTT is connected");
+    ESP_RETURN_ON_FALSE(config->transport != MODEM_MQTT_TRANSPORT_TLS || ssl_provisioned,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT SSL context not provisioned");
 
     esp_err_t ret = reset_mqtt_modes(self);
     ESP_RETURN_ON_ERROR(ret, TAG, "reset MQTT modes failed");
@@ -3869,6 +4602,8 @@ static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
         self->mqtt_config = new_config;
         memset(&new_config, 0, sizeof(new_config));
         self->mqtt_configured = true;
+        self->mqtt_transport = self->mqtt_config.transport;
+        self->mqtt_ssl_context_id = self->mqtt_config.ssl_context_id;
         if (self->base.lock) {
             xSemaphoreGive(self->base.lock);
         }
@@ -3891,6 +4626,9 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me)
     modem_air780ep_t *self = to_air780ep(me);
     char *host_copy = NULL;
     uint16_t port = 0;
+    modem_mqtt_transport_t transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    uint8_t ssl_context_id = 0;
+    bool tls_context_marked = false;
     bool configured = false;
     bool tcp_connected = false;
     if (self->base.lock) {
@@ -3899,8 +4637,16 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me)
     configured = self->mqtt_configured;
     tcp_connected = self->mqtt_tcp_connected;
     if (configured && !tcp_connected) {
-        host_copy = clone_mqtt_string(self->mqtt_config.host);
         port = self->mqtt_config.port;
+        transport = self->mqtt_transport;
+        ssl_context_id = self->mqtt_ssl_context_id;
+        if (transport == MODEM_MQTT_TRANSPORT_TLS &&
+            ssl_context_id == AIR780EP_SSL_MQTT_CONTEXT_ID) {
+            tls_context_marked = ssl_context_marked(self, AIR780EP_SSL_MQTT_CONTEXT_ID);
+        }
+        if (transport == MODEM_MQTT_TRANSPORT_PLAIN_TCP || tls_context_marked) {
+            host_copy = clone_mqtt_string(self->mqtt_config.host);
+        }
     }
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
@@ -3909,14 +4655,22 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me)
                         TAG, "MQTT not configured");
     ESP_RETURN_ON_FALSE(!tcp_connected, ESP_ERR_INVALID_STATE,
                         TAG, "MQTT TCP already connected");
+    ESP_RETURN_ON_FALSE(transport != MODEM_MQTT_TRANSPORT_TLS ||
+                        ssl_context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        ESP_ERR_INVALID_STATE, TAG, "invalid MQTT SSL context");
+    ESP_RETURN_ON_FALSE(transport != MODEM_MQTT_TRANSPORT_TLS || tls_context_marked,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT SSL context not provisioned");
     ESP_RETURN_ON_FALSE(host_copy, ESP_ERR_NO_MEM, TAG, "copy MQTT host failed");
 
     char *host = escape_at_string(host_copy);
     free(host_copy);
     ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape host failed");
 
-    int needed = snprintf(NULL, 0, "AT+MIPSTART=\"%s\",%u",
-                          host, (unsigned int)port);
+    /* Air780EP TLS MQTT command token: AT+SSLMIPSTART=. */
+    const char *start_cmd = transport == MODEM_MQTT_TRANSPORT_TLS ?
+                            "AT+SSLMIPSTART" : "AT+MIPSTART";
+    int needed = snprintf(NULL, 0, "%s=\"%s\",%u",
+                          start_cmd, host, (unsigned int)port);
     if (needed < 0) {
         free(host);
         return ESP_ERR_INVALID_ARG;
@@ -3926,8 +4680,8 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me)
         free(host);
         return ESP_ERR_NO_MEM;
     }
-    snprintf(cmd, (size_t)needed + 1U, "AT+MIPSTART=\"%s\",%u",
-             host, (unsigned int)port);
+    snprintf(cmd, (size_t)needed + 1U, "%s=\"%s\",%u",
+             start_cmd, host, (unsigned int)port);
 
     const at_cmd_success_match_t matches[] = {
         { .type = AT_CMD_SUCCESS_MATCH_EXACT, .value = "CONNECT OK" },
@@ -3943,7 +4697,7 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me)
     air780ep_cmd_ctx_t ctx;
     esp_err_t ret = send_cmd_with_options(self, cmd, &ctx, &options);
     if (ret == ESP_OK) {
-        ret = ensure_at_ok(&ctx.response, "AT+MIPSTART");
+        ret = ensure_at_ok(&ctx.response, start_cmd);
     }
     if (ret == ESP_OK) {
         if (self->base.lock) {

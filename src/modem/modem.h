@@ -164,6 +164,64 @@ typedef struct {
 } modem_pdp_context_t;
 
 /**
+ * @brief SSL 认证模式
+ * @details SSL authentication mode
+ */
+typedef enum {
+    MODEM_SSL_AUTH_NONE = 0,             /**< 不认证； No authentication */
+    MODEM_SSL_AUTH_SERVER,               /**< 服务器认证； Server authentication */
+    MODEM_SSL_AUTH_MUTUAL,               /**< 双向认证； Mutual authentication */
+} modem_ssl_auth_mode_t;
+
+/**
+ * @brief MQTT 传输类型
+ * @details MQTT transport type
+ */
+typedef enum {
+    MODEM_MQTT_TRANSPORT_PLAIN_TCP = 0,  /**< 明文 TCP； Plain TCP */
+    MODEM_MQTT_TRANSPORT_TLS,            /**< TLS； TLS */
+} modem_mqtt_transport_t;
+
+/**
+ * @brief SSL context 配置
+ * @details SSL context configuration
+ */
+typedef struct {
+    uint8_t context_id;                  /**< SSL context ID； SSL context ID */
+    modem_ssl_auth_mode_t auth_mode;     /**< 认证模式； Authentication mode */
+    uint8_t tls_version;                 /**< TLS 版本； TLS version */
+    uint32_t negotiate_timeout_s;        /**< 协商超时秒数； Negotiation timeout seconds */
+    bool ignore_cert_time;               /**< 是否忽略证书时间； Whether to ignore certificate time */
+    const char *hostname;                /**< 主机名/SNI； Hostname/SNI */
+} modem_ssl_context_config_t;
+
+/**
+ * @brief SSL 证书材料
+ * @details SSL credential material
+ */
+typedef struct {
+    const uint8_t *ca_cert_pem;          /**< CA 证书 PEM； CA certificate PEM */
+    size_t ca_cert_len;                  /**< CA 证书长度； CA certificate length */
+    const uint8_t *client_cert_pem;      /**< 客户端证书 PEM； Client certificate PEM */
+    size_t client_cert_len;              /**< 客户端证书长度； Client certificate length */
+    const uint8_t *client_key_pem;       /**< 客户端私钥 PEM； Client private key PEM */
+    size_t client_key_len;               /**< 客户端私钥长度； Client key length */
+} modem_ssl_credentials_t;
+
+/**
+ * @brief SSL context 状态
+ * @details SSL context status
+ */
+typedef struct {
+    bool provisioned;                    /**< 必需对象是否已存在； Whether required objects exist */
+    bool ca_cert_present;                /**< CA 证书是否存在； Whether CA certificate exists */
+    bool client_cert_present;            /**< 客户端证书是否存在； Whether client certificate exists */
+    bool client_key_present;             /**< 客户端私钥是否存在； Whether client key exists */
+    bool check_valid;                    /**< 模块校验是否通过； Whether module check passed */
+    modem_ssl_auth_mode_t auth_mode;     /**< 认证模式； Authentication mode */
+} modem_ssl_context_status_t;
+
+/**
  * @brief MQTT 配置参数
  * @details MQTT configuration parameters
  */
@@ -173,6 +231,8 @@ typedef struct {
     const char *password;         /**< 密码，可为 NULL； Password, can be NULL */
     const char *host;             /**< Broker 主机名或 IP； Broker host name or IP */
     uint16_t port;                /**< Broker 端口号； Broker port */
+    modem_mqtt_transport_t transport; /**< MQTT 传输； MQTT transport */
+    uint8_t ssl_context_id;       /**< SSL context ID； SSL context ID */
     bool clean_session;           /**< 是否使用 clean session； Whether to use clean session */
     uint16_t keepalive_s;         /**< 保活时间（秒）； Keepalive in seconds */
 } modem_mqtt_config_t;
@@ -580,6 +640,40 @@ esp_err_t modem_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  */
 esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
+
+/**
+ * @brief 写入并配置 SSL context
+ * @details Provision SSL context
+ * @param[in] me 调制解调器句柄
+ * @param[in] config SSL context 配置
+ * @param[in] credentials SSL 证书材料
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t modem_ssl_provision(modem_handle_t *me,
+                              const modem_ssl_context_config_t *config,
+                              const modem_ssl_credentials_t *credentials);
+
+/**
+ * @brief 查询 SSL context 状态
+ * @details Query SSL context status
+ * @param[in] me 调制解调器句柄
+ * @param[in] context_id SSL context ID
+ * @param[out] status SSL context 状态
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t modem_ssl_get_context_status(modem_handle_t *me,
+                                       uint8_t context_id,
+                                       modem_ssl_context_status_t *status);
 
 /**
  * @brief 配置 MQTT 参数

@@ -629,6 +629,52 @@ static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
     esp_err_t ret = ESP_ERR_INVALID_ARG;
     int modem_error_code = 0;
     switch (cmd->type) {
+    case CORE_CMD_SSL_PROVISION: {
+        modem_ssl_auth_mode_t auth_mode = MODEM_SSL_AUTH_NONE;
+        if (cmd->data.ssl_provision.config.auth_mode == LWLTE_SSL_AUTH_SERVER) {
+            auth_mode = MODEM_SSL_AUTH_SERVER;
+        } else if (cmd->data.ssl_provision.config.auth_mode == LWLTE_SSL_AUTH_MUTUAL) {
+            auth_mode = MODEM_SSL_AUTH_MUTUAL;
+        }
+        modem_ssl_context_config_t config = {
+            .context_id = cmd->data.ssl_provision.config.context_id,
+            .auth_mode = auth_mode,
+            .tls_version = cmd->data.ssl_provision.config.tls_version,
+            .negotiate_timeout_s = cmd->data.ssl_provision.config.negotiate_timeout_s,
+            .ignore_cert_time = cmd->data.ssl_provision.config.ignore_cert_time,
+            .hostname = cmd->data.ssl_provision.config.hostname,
+        };
+        modem_ssl_credentials_t credentials = {
+            .ca_cert_pem = cmd->data.ssl_provision.credentials.ca_cert_pem,
+            .ca_cert_len = cmd->data.ssl_provision.credentials.ca_cert_len,
+            .client_cert_pem = cmd->data.ssl_provision.credentials.client_cert_pem,
+            .client_cert_len = cmd->data.ssl_provision.credentials.client_cert_len,
+            .client_key_pem = cmd->data.ssl_provision.credentials.client_key_pem,
+            .client_key_len = cmd->data.ssl_provision.credentials.client_key_len,
+        };
+        ret = modem_ssl_provision(me->modem, &config, &credentials);
+        break;
+    }
+    case CORE_CMD_SSL_GET_CONTEXT_STATUS: {
+        modem_ssl_context_status_t modem_status = {0};
+        ret = modem_ssl_get_context_status(me->modem,
+                                           cmd->data.ssl_get_context_status.context_id,
+                                           &modem_status);
+        if (ret == ESP_OK && cmd->data.ssl_get_context_status.status) {
+            cmd->data.ssl_get_context_status.status->provisioned = modem_status.provisioned;
+            cmd->data.ssl_get_context_status.status->ca_cert_present = modem_status.ca_cert_present;
+            cmd->data.ssl_get_context_status.status->client_cert_present = modem_status.client_cert_present;
+            cmd->data.ssl_get_context_status.status->client_key_present = modem_status.client_key_present;
+            cmd->data.ssl_get_context_status.status->check_valid = modem_status.check_valid;
+            cmd->data.ssl_get_context_status.status->auth_mode = LWLTE_SSL_AUTH_NONE;
+            if (modem_status.auth_mode == MODEM_SSL_AUTH_SERVER) {
+                cmd->data.ssl_get_context_status.status->auth_mode = LWLTE_SSL_AUTH_SERVER;
+            } else if (modem_status.auth_mode == MODEM_SSL_AUTH_MUTUAL) {
+                cmd->data.ssl_get_context_status.status->auth_mode = LWLTE_SSL_AUTH_MUTUAL;
+            }
+        }
+        break;
+    }
     case CORE_CMD_MQTT_CONFIGURE: {
         modem_mqtt_config_t config = {
             .client_id = cmd->data.mqtt_config.client_id,
@@ -636,6 +682,9 @@ static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
             .password = cmd->data.mqtt_config.password,
             .host = cmd->data.mqtt_config.host,
             .port = cmd->data.mqtt_config.port,
+            .transport = cmd->data.mqtt_config.transport == LWLTE_MQTT_TRANSPORT_TLS ?
+                         MODEM_MQTT_TRANSPORT_TLS : MODEM_MQTT_TRANSPORT_PLAIN_TCP,
+            .ssl_context_id = cmd->data.mqtt_config.ssl_context_id,
             .clean_session = cmd->data.mqtt_config.clean_session,
             .keepalive_s = cmd->data.mqtt_config.keepalive_s,
         };
@@ -762,8 +811,11 @@ static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
     };
     bool socket_cmd = cmd->type >= CORE_CMD_SOCKET_OPEN &&
                       cmd->type <= CORE_CMD_SOCKET_CLOSE;
+    bool ssl_cmd = cmd->type == CORE_CMD_SSL_PROVISION ||
+                   cmd->type == CORE_CMD_SSL_GET_CONTEXT_STATUS;
     finish_service_cmd(me, cmd, result_from_esp_err(ret),
-                       socket_cmd && ret != ESP_OK ? &result : NULL);
+                       socket_cmd && ret != ESP_OK ? (const void *)&result :
+                       ssl_cmd && ret != ESP_OK ? (const void *)&ret : NULL);
 }
 
 static esp_err_t ensure_net_online(core_handle_t *me)

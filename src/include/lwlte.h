@@ -277,6 +277,71 @@ typedef struct {
 } lwlte_tcp_event_data_t;
 
 /**
+ * @brief LTE SSL 认证模式
+ * @details LTE SSL authentication mode
+ */
+typedef enum {
+    LWLTE_SSL_AUTH_NONE = 0,        /**< 不认证； No authentication */
+    LWLTE_SSL_AUTH_SERVER,          /**< 服务器认证； Server authentication */
+    LWLTE_SSL_AUTH_MUTUAL,          /**< 双向认证； Mutual authentication */
+} lwlte_ssl_auth_mode_t;
+
+/**
+ * @brief LTE MQTT 传输类型
+ * @details LTE MQTT transport type
+ */
+typedef enum {
+    LWLTE_MQTT_TRANSPORT_PLAIN_TCP = 0,  /**< 明文 TCP； Plain TCP */
+    LWLTE_MQTT_TRANSPORT_TLS,            /**< TLS； TLS */
+} lwlte_mqtt_transport_t;
+
+/**
+ * @brief LTE SSL context 配置
+ * @details LTE SSL context configuration
+ * @note tls_version 为 0 时使用模块默认版本；非 0 值为模块特定编码。
+ * @note ignore_cert_time 会写入模块 SSL context 状态，可能影响后续使用同一 context 的连接。
+ * @note hostname 可为 NULL；非 NULL 时作为可选主机名/SNI 传递给下层模块适配器。
+ */
+typedef struct {
+    uint8_t context_id;                  /**< SSL context ID； SSL context ID */
+    lwlte_ssl_auth_mode_t auth_mode;     /**< 认证模式； Authentication mode */
+    uint8_t tls_version;                 /**< TLS 版本，0 使用模块默认； TLS version, 0 uses module default */
+    uint32_t negotiate_timeout_s;        /**< 协商超时秒数，0 使用模块默认； Negotiation timeout seconds, 0 uses module default */
+    bool ignore_cert_time;               /**< 是否忽略证书时间； Whether to ignore certificate time */
+    const char *hostname;                /**< 可选主机名/SNI； Optional hostname/SNI */
+} lwlte_ssl_context_config_t;
+
+/**
+ * @brief LTE SSL 证书材料
+ * @details LTE SSL credential material
+ * @note LWLTE_SSL_AUTH_NONE 不需要 PEM 数据，但 lwlte_ssl_provision() 的 credentials 指针仍必须非 NULL。
+ * @note LWLTE_SSL_AUTH_SERVER 需要 CA PEM 指针和长度；LWLTE_SSL_AUTH_MUTUAL 还需要客户端证书和私钥指针及长度。
+ * @note 可选证书材料的指针/长度必须同时存在或同时为空；仅提供指针或仅提供长度均为无效参数。
+ * @note PEM 缓冲仅在 lwlte_ssl_provision() 调用期间借用；下层会在异步执行前复制需要的数据。
+ */
+typedef struct {
+    const uint8_t *ca_cert_pem;          /**< CA 证书 PEM； CA certificate PEM */
+    size_t ca_cert_len;                  /**< CA 证书长度； CA certificate length */
+    const uint8_t *client_cert_pem;      /**< 客户端证书 PEM； Client certificate PEM */
+    size_t client_cert_len;              /**< 客户端证书长度； Client certificate length */
+    const uint8_t *client_key_pem;       /**< 客户端私钥 PEM； Client private key PEM */
+    size_t client_key_len;               /**< 客户端私钥长度； Client private key length */
+} lwlte_ssl_credentials_t;
+
+/**
+ * @brief LTE SSL context 状态
+ * @details LTE SSL context status
+ */
+typedef struct {
+    bool provisioned;                    /**< 必需对象是否已存在； Whether required objects exist */
+    bool ca_cert_present;                /**< CA 证书是否存在； Whether CA certificate exists */
+    bool client_cert_present;            /**< 客户端证书是否存在； Whether client certificate exists */
+    bool client_key_present;             /**< 客户端私钥是否存在； Whether client key exists */
+    bool check_valid;                    /**< 模块校验是否通过； Whether module check passed */
+    lwlte_ssl_auth_mode_t auth_mode;     /**< 查询到的认证模式； Queried authentication mode */
+} lwlte_ssl_context_status_t;
+
+/**
  * @brief MQTT 客户端配置
  * @details MQTT client configuration
  * @note host、port 和 client_id 为必填字段；任务字段为 0 时使用下层默认值，非 0 值必须大于 0。
@@ -285,6 +350,8 @@ typedef struct {
 typedef struct {
     const char *host;                     /**< 必填 MQTT 服务器地址； Required MQTT broker host */
     uint16_t port;                        /**< 必填 MQTT 服务器端口； Required MQTT broker port */
+    lwlte_mqtt_transport_t transport;     /**< 传输类型，0 为明文 TCP； Transport, 0 is plain TCP */
+    uint8_t ssl_context_id;               /**< TLS 使用的 SSL context ID； SSL context ID for TLS */
     const char *client_id;                /**< 必填 MQTT 客户端 ID； Required MQTT client ID */
     const char *username;                 /**< 可选用户名； Optional username */
     const char *password;                 /**< 可选密码； Optional password */
@@ -534,6 +601,43 @@ esp_err_t lwlte_ping(lwlte_handle_t *me,
                      lwlte_ping_reply_t *replies,
                      size_t max_replies,
                      lwlte_ping_summary_t *summary);
+
+/**
+ * @brief 写入并配置 LTE SSL context
+ * @details Provision and configure LTE SSL context
+ * @note credentials 不能为 NULL；LWLTE_SSL_AUTH_NONE 使用空 credentials 结构体表示不提供 PEM 数据。
+ * @note 证书材料要求由 config->auth_mode 决定；认证模式无效或缺少必需 PEM 数据时返回 ESP_ERR_INVALID_ARG。
+ * @note PEM 数据超过模块或适配器限制时返回 ESP_ERR_INVALID_SIZE；当前模块不支持 SSL provisioning 时返回 ESP_ERR_NOT_SUPPORTED。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] config SSL context 配置
+ * @param[in] credentials SSL 证书材料
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_SIZE: PEM 数据超过限制
+ *         - ESP_ERR_INVALID_STATE: 当前状态不允许操作或门面正在销毁
+ *         - ESP_ERR_NOT_SUPPORTED: 当前模块不支持该操作
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t lwlte_ssl_provision(lwlte_handle_t *me,
+                              const lwlte_ssl_context_config_t *config,
+                              const lwlte_ssl_credentials_t *credentials);
+
+/**
+ * @brief 查询 LTE SSL context 状态
+ * @details Query LTE SSL context status
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] context_id SSL context ID
+ * @param[out] status SSL context 状态输出指针
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 当前状态不允许操作或门面正在销毁
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t lwlte_ssl_get_context_status(lwlte_handle_t *me,
+                                       uint8_t context_id,
+                                       lwlte_ssl_context_status_t *status);
 
 /**
  * @brief 释放 MQTT_DATA 事件的堆缓冲

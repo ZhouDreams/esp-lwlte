@@ -64,6 +64,18 @@ static bool event_task_should_stop(modem_handle_t *me);
 static esp_err_t check_ready(modem_handle_t *me, bool allow_created);
 
 /**
+ * @brief 检查 SSL 证书材料是否匹配认证模式
+ * @details Check whether SSL credentials match authentication mode
+ * @param[in] auth SSL 认证模式
+ * @param[in] credentials SSL 证书材料
+ * @return
+ *         - true: 有效
+ *         - false: 无效
+ */
+static bool ssl_credentials_valid(modem_ssl_auth_mode_t auth,
+                                  const modem_ssl_credentials_t *credentials);
+
+/**
  * @brief 调用无额外参数的 ops 方法
  * @details Call ops method without extra arguments
  * @param[in] me 调制解调器句柄
@@ -537,11 +549,39 @@ esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
     return me->ops->get_pdp_context(me, cid, pdp);
 }
 
+esp_err_t modem_ssl_provision(modem_handle_t *me,
+                              const modem_ssl_context_config_t *config,
+                              const modem_ssl_credentials_t *credentials)
+{
+    ESP_RETURN_ON_FALSE(me && config && ssl_credentials_valid(config->auth_mode, credentials),
+                        ESP_ERR_INVALID_ARG, TAG, "invalid SSL provision args");
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->ssl_provision,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "ssl_provision not supported");
+    return me->ops->ssl_provision(me, config, credentials);
+}
+
+esp_err_t modem_ssl_get_context_status(modem_handle_t *me,
+                                       uint8_t context_id,
+                                       modem_ssl_context_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    memset(status, 0, sizeof(*status));
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->ssl_get_context_status,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "ssl_get_context_status not supported");
+    return me->ops->ssl_get_context_status(me, context_id, status);
+}
+
 esp_err_t modem_mqtt_configure(modem_handle_t *me,
                                const modem_mqtt_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host && config->port > 0,
-                        ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host && config->port > 0 &&
+                        (config->transport == MODEM_MQTT_TRANSPORT_PLAIN_TCP ||
+                         config->transport == MODEM_MQTT_TRANSPORT_TLS),
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_configure,
@@ -793,6 +833,34 @@ static bool event_task_should_stop(modem_handle_t *me)
     xSemaphoreGive(me->lock);
 
     return should_stop;
+}
+
+static bool ssl_credentials_valid(modem_ssl_auth_mode_t auth,
+                                  const modem_ssl_credentials_t *credentials)
+{
+    int auth_value = (int)auth;
+    if (!credentials || auth_value < (int)MODEM_SSL_AUTH_NONE ||
+        auth_value > (int)MODEM_SSL_AUTH_MUTUAL) {
+        return false;
+    }
+    bool ca_pair = (!credentials->ca_cert_pem && credentials->ca_cert_len == 0) ||
+                   (credentials->ca_cert_pem && credentials->ca_cert_len > 0);
+    bool cert_pair = (!credentials->client_cert_pem && credentials->client_cert_len == 0) ||
+                     (credentials->client_cert_pem && credentials->client_cert_len > 0);
+    bool key_pair = (!credentials->client_key_pem && credentials->client_key_len == 0) ||
+                    (credentials->client_key_pem && credentials->client_key_len > 0);
+    if (!ca_pair || !cert_pair || !key_pair) {
+        return false;
+    }
+    if (auth == MODEM_SSL_AUTH_SERVER) {
+        return credentials->ca_cert_pem && credentials->ca_cert_len > 0;
+    }
+    if (auth == MODEM_SSL_AUTH_MUTUAL) {
+        return credentials->ca_cert_pem && credentials->ca_cert_len > 0 &&
+               credentials->client_cert_pem && credentials->client_cert_len > 0 &&
+               credentials->client_key_pem && credentials->client_key_len > 0;
+    }
+    return true;
 }
 
 static esp_err_t check_ready(modem_handle_t *me, bool allow_created)

@@ -532,6 +532,10 @@ static esp_err_t submit_core_cmd(mqtt_client_handle_t *me, core_cmd_type_t type,
         cmd.data.mqtt_config.password = me->config.auth.password;
         cmd.data.mqtt_config.host = me->config.endpoint.host;
         cmd.data.mqtt_config.port = me->config.endpoint.port;
+        cmd.data.mqtt_config.transport =
+            me->config.endpoint.transport == MQTT_CLIENT_TRANSPORT_TLS ?
+            LWLTE_MQTT_TRANSPORT_TLS : LWLTE_MQTT_TRANSPORT_PLAIN_TCP;
+        cmd.data.mqtt_config.ssl_context_id = me->config.endpoint.ssl_context_id;
         cmd.data.mqtt_config.clean_session = me->config.session.clean_session;
         cmd.data.mqtt_config.keepalive_s = me->config.session.keepalive_s;
         break;
@@ -902,11 +906,6 @@ mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
                                   core_handle_t *core)
 {
     if (!config_valid(config, core)) {
-        return NULL;
-    }
-    /* TLS is reserved in the API, but the first service implementation only
-     * supports plain TCP and rejects TLS consistently at creation time. */
-    if (config->endpoint.transport == MQTT_CLIENT_TRANSPORT_TLS) {
         return NULL;
     }
 

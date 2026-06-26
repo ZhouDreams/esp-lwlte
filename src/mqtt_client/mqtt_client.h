@@ -41,6 +41,7 @@ typedef struct {
     mqtt_client_transport_t transport;
     const char *host;
     uint16_t port;
+    uint8_t ssl_context_id;
 } mqtt_client_endpoint_config_t;
 
 typedef struct {

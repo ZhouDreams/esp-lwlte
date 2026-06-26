@@ -12,6 +12,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -51,6 +53,14 @@
 #define TB_TOPIC_TELEMETRY                       "v1/devices/me/telemetry"
 #define TB_TOPIC_ATTRIBUTES                      "v1/devices/me/attributes"
 
+#ifndef CONFIG_EXAMPLE_MQTT_TLS_ENABLE
+#define CONFIG_EXAMPLE_MQTT_TLS_ENABLE           0
+#endif
+
+#ifndef CONFIG_EXAMPLE_MQTT_TLS_CA_CERT_PEM
+#define CONFIG_EXAMPLE_MQTT_TLS_CA_CERT_PEM      ""
+#endif
+
 /**********************
  *      TYPEDEFS
  **********************/
@@ -87,6 +97,14 @@ static void mqtt_event_cb(void *arg, esp_event_base_t base,
  * @param[in] lte LTE 用户门面句柄
  */
 static void publish_telemetry(lwlte_handle_t *lte);
+
+/**
+ * @brief 规范化 PEM 字符串中的转义换行
+ * @details Normalize escaped newlines in a PEM string
+ * @param[in] pem PEM 字符串
+ * @return 规范化后的堆内存字符串，调用方释放； Normalized heap string, caller frees
+ */
+static char *example_normalize_pem_newlines(const char *pem);
 
 /**
  * @brief 进入常驻等待
@@ -131,6 +149,9 @@ void example_air780ep_mqtt_client_run(void)
     const lwlte_mqtt_config_t mqtt_config = {
         .host = CONFIG_EXAMPLE_MQTT_HOST,
         .port = CONFIG_EXAMPLE_MQTT_PORT,
+        .transport = CONFIG_EXAMPLE_MQTT_TLS_ENABLE ?
+                     LWLTE_MQTT_TRANSPORT_TLS : LWLTE_MQTT_TRANSPORT_PLAIN_TCP,
+        .ssl_context_id = 88,
         .client_id = CONFIG_EXAMPLE_MQTT_CLIENT_ID,
         .username = mqtt_username,
         .password = NULL,
@@ -165,6 +186,11 @@ void example_air780ep_mqtt_client_run(void)
     ESP_LOGI(TAG, "MQTT host=%s port=%d client_id=%s",
              CONFIG_EXAMPLE_MQTT_HOST, CONFIG_EXAMPLE_MQTT_PORT,
              CONFIG_EXAMPLE_MQTT_CLIENT_ID);
+    ESP_LOGI(TAG,
+             "MQTT transport=%s port=%d ssl_context=%u auth=%s (TLS default port 8883)",
+             CONFIG_EXAMPLE_MQTT_TLS_ENABLE ? "TLS" : "plain TCP",
+             CONFIG_EXAMPLE_MQTT_PORT, 88U,
+             CONFIG_EXAMPLE_MQTT_TLS_ENABLE ? "server" : "none");
 
     /* 创建 Air780EP 门面（不含 MQTT；MQTT 由后续 lwlte_mqtt_init 创建）。 */
     esp_err_t ret = lwlte_air780ep_init(&config, &lte);
@@ -207,7 +233,50 @@ void example_air780ep_mqtt_client_run(void)
         idle_forever();
     }
 
-    /* 网络 online 后启动 MQTT 客户端。 */
+    if (CONFIG_EXAMPLE_MQTT_TLS_ENABLE) {
+        const char *ca_pem = CONFIG_EXAMPLE_MQTT_TLS_CA_CERT_PEM;
+        if (ca_pem[0] == '\0') {
+            ESP_LOGE(TAG,
+                     "MQTT TLS enabled but CONFIG_EXAMPLE_MQTT_TLS_CA_CERT_PEM is empty");
+            idle_forever();
+        }
+        char *ca_pem_normalized = example_normalize_pem_newlines(ca_pem);
+        if (!ca_pem_normalized) {
+            ESP_LOGE(TAG, "MQTT TLS CA PEM normalization failed");
+            idle_forever();
+        }
+        const lwlte_ssl_context_config_t ssl_config = {
+            .context_id = 88,
+            .auth_mode = LWLTE_SSL_AUTH_SERVER,
+            .tls_version = 3,
+            .ignore_cert_time = true,
+            .hostname = CONFIG_EXAMPLE_MQTT_HOST,
+        };
+        const lwlte_ssl_credentials_t credentials = {
+            .ca_cert_pem = (const uint8_t *)ca_pem_normalized,
+            .ca_cert_len = strlen(ca_pem_normalized),
+        };
+        ret = lwlte_ssl_provision(lte, &ssl_config, &credentials);
+        free(ca_pem_normalized);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "SSL provision failed: %s", esp_err_to_name(ret));
+            idle_forever();
+        }
+        lwlte_ssl_context_status_t status = {0};
+        ret = lwlte_ssl_get_context_status(lte, 88, &status);
+        const bool ssl_status_valid = ret == ESP_OK &&
+                                      status.provisioned &&
+                                      status.auth_mode == LWLTE_SSL_AUTH_SERVER &&
+                                      status.ca_cert_present;
+        if (!ssl_status_valid) {
+            ESP_LOGE(TAG, "SSL status invalid: ret=%s provisioned=%d auth=%d ca=%d",
+                     esp_err_to_name(ret), (int)status.provisioned,
+                     (int)status.auth_mode, (int)status.ca_cert_present);
+            idle_forever();
+        }
+    }
+
+    /* 网络 online 后完成可选 TLS provisioning，再启动 MQTT 客户端。 */
     ret = lwlte_mqtt_start(lte);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "MQTT start failed: %s", esp_err_to_name(ret));
@@ -359,6 +428,34 @@ static void publish_telemetry(lwlte_handle_t *lte)
 
     ESP_LOGI(TAG, "telemetry published: %s", payload);
     s_counter++;
+}
+
+static char *example_normalize_pem_newlines(const char *pem)
+{
+    if (!pem) {
+        return NULL;
+    }
+
+    char *normalized = malloc(strlen(pem) + 1U);
+    if (!normalized) {
+        return NULL;
+    }
+
+    const char *src = pem;
+    char *dst = normalized;
+    while (*src != '\0') {
+        if (src[0] == '\\' && src[1] == 'n') {
+            *dst++ = '\n';
+            src += 2;
+        } else if (src[0] == '\\' && src[1] == 'r') {
+            *dst++ = '\r';
+            src += 2;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0';
+    return normalized;
 }
 
 static void idle_forever(void)

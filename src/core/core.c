@@ -934,6 +934,32 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
     *clone = *cmd;
 
     switch (cmd->type) {
+    case CORE_CMD_SSL_PROVISION:
+        clone->data.ssl_provision.config.hostname =
+            clone_optional_string(cmd->data.ssl_provision.config.hostname);
+        clone->data.ssl_provision.credentials.ca_cert_pem =
+            clone_payload(cmd->data.ssl_provision.credentials.ca_cert_pem,
+                          cmd->data.ssl_provision.credentials.ca_cert_len);
+        clone->data.ssl_provision.credentials.client_cert_pem =
+            clone_payload(cmd->data.ssl_provision.credentials.client_cert_pem,
+                          cmd->data.ssl_provision.credentials.client_cert_len);
+        clone->data.ssl_provision.credentials.client_key_pem =
+            clone_payload(cmd->data.ssl_provision.credentials.client_key_pem,
+                          cmd->data.ssl_provision.credentials.client_key_len);
+        if ((cmd->data.ssl_provision.config.hostname &&
+             !clone->data.ssl_provision.config.hostname) ||
+            (cmd->data.ssl_provision.credentials.ca_cert_pem &&
+             !clone->data.ssl_provision.credentials.ca_cert_pem) ||
+            (cmd->data.ssl_provision.credentials.client_cert_pem &&
+             !clone->data.ssl_provision.credentials.client_cert_pem) ||
+            (cmd->data.ssl_provision.credentials.client_key_pem &&
+             !clone->data.ssl_provision.credentials.client_key_pem)) {
+            free_core_cmd(clone);
+            return NULL;
+        }
+        break;
+    case CORE_CMD_SSL_GET_CONTEXT_STATUS:
+        break;
     case CORE_CMD_MQTT_CONFIGURE:
         clone->data.mqtt_config.client_id = clone_optional_string(cmd->data.mqtt_config.client_id);
         clone->data.mqtt_config.username = clone_optional_string(cmd->data.mqtt_config.username);
@@ -942,6 +968,8 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
         clone->data.mqtt_config.port = cmd->data.mqtt_config.port;
         clone->data.mqtt_config.clean_session = cmd->data.mqtt_config.clean_session;
         clone->data.mqtt_config.keepalive_s = cmd->data.mqtt_config.keepalive_s;
+        clone->data.mqtt_config.transport = cmd->data.mqtt_config.transport;
+        clone->data.mqtt_config.ssl_context_id = cmd->data.mqtt_config.ssl_context_id;
         if (!clone->data.mqtt_config.client_id ||
             (cmd->data.mqtt_config.username && !clone->data.mqtt_config.username) ||
             (cmd->data.mqtt_config.password && !clone->data.mqtt_config.password) ||
@@ -1018,6 +1046,12 @@ static void free_core_cmd(core_cmd_t *cmd)
     }
 
     switch (cmd->type) {
+    case CORE_CMD_SSL_PROVISION:
+        free((void *)cmd->data.ssl_provision.config.hostname);
+        free((void *)cmd->data.ssl_provision.credentials.ca_cert_pem);
+        free((void *)cmd->data.ssl_provision.credentials.client_cert_pem);
+        free((void *)cmd->data.ssl_provision.credentials.client_key_pem);
+        break;
     case CORE_CMD_MQTT_CONFIGURE:
         free((void *)cmd->data.mqtt_config.client_id);
         free((void *)cmd->data.mqtt_config.username);
@@ -1082,7 +1116,7 @@ static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len)
 
 static bool core_cmd_type_valid(core_cmd_type_t type)
 {
-    return type >= CORE_CMD_MQTT_CONFIGURE && type <= CORE_CMD_SOCKET_CLOSE;
+    return type >= CORE_CMD_SSL_PROVISION && type <= CORE_CMD_SOCKET_CLOSE;
 }
 
 static bool core_cmd_valid(const core_cmd_t *cmd)
@@ -1095,10 +1129,45 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
     }
 
     switch (cmd->type) {
+    case CORE_CMD_SSL_PROVISION: {
+        const core_ssl_context_config_t *config =
+            &cmd->data.ssl_provision.config;
+        const core_ssl_credentials_t *credentials =
+            &cmd->data.ssl_provision.credentials;
+        int auth_mode = (int)config->auth_mode;
+        bool ca_pair_valid = (credentials->ca_cert_pem != NULL) ==
+                             (credentials->ca_cert_len > 0);
+        bool client_cert_pair_valid =
+            (credentials->client_cert_pem != NULL) ==
+            (credentials->client_cert_len > 0);
+        bool client_key_pair_valid =
+            (credentials->client_key_pem != NULL) ==
+            (credentials->client_key_len > 0);
+
+        if (auth_mode < (int)LWLTE_SSL_AUTH_NONE ||
+            auth_mode > (int)LWLTE_SSL_AUTH_MUTUAL ||
+            !ca_pair_valid || !client_cert_pair_valid ||
+            !client_key_pair_valid) {
+            return false;
+        }
+        if (auth_mode == (int)LWLTE_SSL_AUTH_SERVER) {
+            return credentials->ca_cert_pem != NULL;
+        }
+        if (auth_mode == (int)LWLTE_SSL_AUTH_MUTUAL) {
+            return credentials->ca_cert_pem != NULL &&
+                   credentials->client_cert_pem != NULL &&
+                   credentials->client_key_pem != NULL;
+        }
+        return true;
+    }
+    case CORE_CMD_SSL_GET_CONTEXT_STATUS:
+        return cmd->data.ssl_get_context_status.status != NULL;
     case CORE_CMD_MQTT_CONFIGURE:
         return cmd->data.mqtt_config.client_id &&
                cmd->data.mqtt_config.host &&
-               cmd->data.mqtt_config.port > 0;
+               cmd->data.mqtt_config.port > 0 &&
+               (cmd->data.mqtt_config.transport == LWLTE_MQTT_TRANSPORT_PLAIN_TCP ||
+                cmd->data.mqtt_config.transport == LWLTE_MQTT_TRANSPORT_TLS);
     case CORE_CMD_MQTT_TCP_CONNECT:
     case CORE_CMD_MQTT_CONNECT:
     case CORE_CMD_MQTT_DISCONNECT:

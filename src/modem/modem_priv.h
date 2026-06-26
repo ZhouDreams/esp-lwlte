@@ -100,6 +100,22 @@ typedef esp_err_t (*modem_get_pdp_context_fn)(modem_handle_t *me, uint8_t cid,
                                               modem_pdp_context_t *pdp);
 
 /**
+ * @brief 写入并配置 SSL context 操作函数
+ * @details Provision SSL context operation function
+ */
+typedef esp_err_t (*modem_ssl_provision_fn)(modem_handle_t *me,
+                                            const modem_ssl_context_config_t *config,
+                                            const modem_ssl_credentials_t *credentials);
+
+/**
+ * @brief 查询 SSL context 状态操作函数
+ * @details Query SSL context status operation function
+ */
+typedef esp_err_t (*modem_ssl_get_context_status_fn)(modem_handle_t *me,
+                                                     uint8_t context_id,
+                                                     modem_ssl_context_status_t *status);
+
+/**
  * @brief 配置 MQTT 操作函数
  * @details Configure MQTT operation function
  */
@@ -189,6 +205,10 @@ typedef struct modem_ops {
     modem_pdp_cid_fn activate_pdp;                   /**< 激活 PDP； Activate PDP */
     modem_pdp_cid_fn deactivate_pdp;                 /**< 去激活 PDP； Deactivate PDP */
     modem_get_pdp_context_fn get_pdp_context;        /**< 获取 PDP 上下文； Get PDP context */
+
+    /* ── SSL/TLS context； SSL/TLS context ─────────────────── */
+    modem_ssl_provision_fn ssl_provision;            /**< 写入并配置 SSL context； Provision SSL context */
+    modem_ssl_get_context_status_fn ssl_get_context_status; /**< 查询 SSL context 状态； Query SSL context status */
 
     /* ── MQTT 客户端； MQTT client ───────────────────────── */
     modem_mqtt_configure_fn mqtt_configure;          /**< 配置 MQTT； Configure MQTT */

@@ -782,11 +782,30 @@ class MqttEndToEndContractTest(unittest.TestCase):
     def test_facade_mqtt_wrappers_use_mqtt_client_layer_only(self):
         self.assertIn("esp_err_t lwlte_mqtt_start", self.lwlte_c)
         self.assertIn("esp_err_t lwlte_mqtt_init", self.lwlte_c)
-        api_start = self.lwlte_c.index("esp_err_t lwlte_mqtt_init")
-        api_body = self.lwlte_c[
-            api_start:
-            self.lwlte_c.index("esp_err_t lwlte_mqtt_destroy", api_start)
-        ]
+
+        def facade_api_body(start_marker, end_marker):
+            start = self.lwlte_c.index(start_marker)
+            end = self.lwlte_c.index(end_marker, start + len(start_marker))
+            return self.lwlte_c[start:end]
+
+        api_body = "".join([
+            facade_api_body("esp_err_t lwlte_mqtt_init",
+                            "esp_err_t lwlte_mqtt_destroy"),
+            facade_api_body("esp_err_t lwlte_mqtt_destroy",
+                            "esp_err_t lwlte_tcp_init"),
+            facade_api_body("esp_err_t lwlte_mqtt_start",
+                            "esp_err_t lwlte_mqtt_stop"),
+            facade_api_body("esp_err_t lwlte_mqtt_stop",
+                            "esp_err_t lwlte_mqtt_get_state"),
+            facade_api_body("esp_err_t lwlte_mqtt_get_state",
+                            "esp_err_t lwlte_mqtt_subscribe"),
+            facade_api_body("esp_err_t lwlte_mqtt_subscribe",
+                            "esp_err_t lwlte_mqtt_unsubscribe"),
+            facade_api_body("esp_err_t lwlte_mqtt_unsubscribe",
+                            "esp_err_t lwlte_mqtt_publish"),
+            facade_api_body("esp_err_t lwlte_mqtt_publish",
+                            "esp_err_t lwlte_wait_ready"),
+        ])
 
         for token in [
             "static esp_err_t begin_mqtt_api_call",
@@ -832,7 +851,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "CORE_CMD_MQTT_PUBLISH",
             "CORE_CMD_MQTT_DISCONNECT",
         ]:
-            self.assertNotIn(forbidden, self.lwlte_c)
+            self.assertNotIn(forbidden, api_body)
 
     def test_facade_mqtt_destroyed_before_core(self):
         destroy_body = self.lwlte_c[
@@ -997,7 +1016,8 @@ class MqttEndToEndContractTest(unittest.TestCase):
         for token in [
             "AIR780EP_MQTT_PAYLOAD_PROMPT",
             "AT+MCONFIG=\\\"%s\\\",\\\"%s\\\",\\\"%s\\\"",
-            "AT+MIPSTART=\\\"%s\\\",%u",
+            "AT+MIPSTART",
+            "AT+SSLMIPSTART",
             "AT+MCONNECT=%u,%u",
             "AT+MDISCONNECT",
             "AT+MSUB=\\\"%s\\\",%u",

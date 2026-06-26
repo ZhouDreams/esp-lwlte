@@ -229,12 +229,41 @@ typedef struct {
     int modem_error_code;                /**< 模块原始错误码； Raw modem error code */
 } core_socket_result_t;
 
+typedef struct {
+    uint8_t context_id;                  /**< SSL context ID； SSL context ID */
+    lwlte_ssl_auth_mode_t auth_mode;     /**< 认证模式； Authentication mode */
+    uint8_t tls_version;                 /**< TLS 版本； TLS version */
+    uint32_t negotiate_timeout_s;        /**< 协商超时秒数； Negotiation timeout seconds */
+    bool ignore_cert_time;               /**< 是否忽略证书时间； Whether to ignore certificate time */
+    const char *hostname;                /**< 主机名/SNI； Hostname/SNI */
+} core_ssl_context_config_t;
+
+typedef struct {
+    const uint8_t *ca_cert_pem;          /**< CA 证书 PEM； CA certificate PEM */
+    size_t ca_cert_len;                  /**< CA 证书长度； CA certificate length */
+    const uint8_t *client_cert_pem;      /**< 客户端证书 PEM； Client certificate PEM */
+    size_t client_cert_len;              /**< 客户端证书长度； Client certificate length */
+    const uint8_t *client_key_pem;       /**< 客户端私钥 PEM； Client private key PEM */
+    size_t client_key_len;               /**< 客户端私钥长度； Client private key length */
+} core_ssl_credentials_t;
+
+typedef struct {
+    bool provisioned;                    /**< 必需对象是否已存在； Whether required objects exist */
+    bool ca_cert_present;                /**< CA 证书是否存在； Whether CA certificate exists */
+    bool client_cert_present;            /**< 客户端证书是否存在； Whether client certificate exists */
+    bool client_key_present;             /**< 客户端私钥是否存在； Whether client key exists */
+    bool check_valid;                    /**< 模块校验是否通过； Whether module check passed */
+    lwlte_ssl_auth_mode_t auth_mode;     /**< 认证模式； Authentication mode */
+} core_ssl_context_status_t;
+
 /**
  * @brief Core 服务命令类型
  * @details Core service command type
  */
 typedef enum {
-    CORE_CMD_MQTT_CONFIGURE = 0,         /**< 配置 MQTT； Configure MQTT */
+    CORE_CMD_SSL_PROVISION = 0,          /**< 写入并配置 SSL context； Provision SSL context */
+    CORE_CMD_SSL_GET_CONTEXT_STATUS,     /**< 查询 SSL context 状态； Query SSL context status */
+    CORE_CMD_MQTT_CONFIGURE,             /**< 配置 MQTT； Configure MQTT */
     CORE_CMD_MQTT_TCP_CONNECT,           /**< 建立 MQTT TCP 通道； Connect MQTT TCP channel */
     CORE_CMD_MQTT_CONNECT,               /**< 连接 MQTT； Connect MQTT */
     CORE_CMD_MQTT_DISCONNECT,            /**< 断开 MQTT； Disconnect MQTT */
@@ -305,7 +334,17 @@ typedef struct {
             uint16_t port;               /**< 端口； Port */
             bool clean_session;          /**< 清理会话； Clean session */
             uint16_t keepalive_s;        /**< 保活秒数； Keepalive seconds */
+            lwlte_mqtt_transport_t transport; /**< MQTT 传输； MQTT transport */
+            uint8_t ssl_context_id;      /**< SSL context ID； SSL context ID */
         } mqtt_config;                   /**< MQTT 配置； MQTT config */
+        struct {
+            core_ssl_context_config_t config;
+            core_ssl_credentials_t credentials;
+        } ssl_provision;                 /**< SSL provision 参数； SSL provision args */
+        struct {
+            uint8_t context_id;          /**< SSL context ID； SSL context ID */
+            core_ssl_context_status_t *status; /**< 状态输出； Status output */
+        } ssl_get_context_status;        /**< SSL status 参数； SSL status args */
         struct {
             const char *topic;           /**< 主题； Topic */
             uint8_t qos;                 /**< QoS； QoS */

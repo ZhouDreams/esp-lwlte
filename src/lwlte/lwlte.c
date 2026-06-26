@@ -26,6 +26,11 @@
 /**********************
  *      TYPEDEFS
  **********************/
+typedef struct {
+    SemaphoreHandle_t done;
+    core_cmd_result_t result;
+    esp_err_t error_code;
+} lwlte_sync_cmd_ctx_t;
 
 /**********************
  *  STATIC PROTOTYPES
@@ -62,6 +67,21 @@ static lwlte_mqtt_state_t map_mqtt_state(mqtt_client_state_t state);
  * @return LTE TCP 连接状态
  */
 static lwlte_tcp_conn_state_t map_tcp_conn_state(tcp_conn_state_t state);
+
+/**
+ * @brief 处理同步 Core 命令完成回调
+ * @details Handle synchronous Core command done callback
+ * @param[in] core Core 句柄
+ * @param[in] type Core 命令类型
+ * @param[in] result Core 命令结果
+ * @param[in] result_data 结果数据
+ * @param[in] user_ctx 用户上下文
+ */
+static void facade_core_cmd_done_cb(core_handle_t *core,
+                                    core_cmd_type_t type,
+                                    core_cmd_result_t result,
+                                    const void *result_data,
+                                    void *user_ctx);
 
 /**
  * @brief 进入门面 API 调用
@@ -428,6 +448,116 @@ esp_err_t lwlte_ping(lwlte_handle_t *me,
     return ret;
 }
 
+esp_err_t lwlte_ssl_provision(lwlte_handle_t *me,
+                              const lwlte_ssl_context_config_t *config,
+                              const lwlte_ssl_credentials_t *credentials)
+{
+    ESP_RETURN_ON_FALSE(config && credentials, ESP_ERR_INVALID_ARG, TAG,
+                        "NULL argument");
+
+    core_handle_t *core = NULL;
+    esp_err_t ret = begin_api_call(me, true, &core);
+    ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
+
+    lwlte_sync_cmd_ctx_t ctx = {
+        .done = xSemaphoreCreateBinary(),
+        .result = CORE_CMD_RESULT_ERROR,
+        .error_code = ESP_FAIL,
+    };
+    if (!ctx.done) {
+        end_api_call(me);
+        return ESP_ERR_NO_MEM;
+    }
+
+    core_cmd_t cmd = {
+        .type = CORE_CMD_SSL_PROVISION,
+        .done_cb = facade_core_cmd_done_cb,
+        .user_ctx = &ctx,
+        .timeout_ms = 60000,
+        .data.ssl_provision = {
+            .config = {
+                .context_id = config->context_id,
+                .auth_mode = config->auth_mode,
+                .tls_version = config->tls_version,
+                .negotiate_timeout_s = config->negotiate_timeout_s,
+                .ignore_cert_time = config->ignore_cert_time,
+                .hostname = config->hostname,
+            },
+            .credentials = {
+                .ca_cert_pem = credentials->ca_cert_pem,
+                .ca_cert_len = credentials->ca_cert_len,
+                .client_cert_pem = credentials->client_cert_pem,
+                .client_cert_len = credentials->client_cert_len,
+                .client_key_pem = credentials->client_key_pem,
+                .client_key_len = credentials->client_key_len,
+            },
+        },
+    };
+
+    ret = core_submit_cmd(core, &cmd);
+    if (ret == ESP_OK) {
+        xSemaphoreTake(ctx.done, portMAX_DELAY);
+        ret = ctx.error_code;
+    }
+
+    vSemaphoreDelete(ctx.done);
+    end_api_call(me);
+    return ret;
+}
+
+esp_err_t lwlte_ssl_get_context_status(lwlte_handle_t *me,
+                                       uint8_t context_id,
+                                       lwlte_ssl_context_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(status, ESP_ERR_INVALID_ARG, TAG, "status is NULL");
+    memset(status, 0, sizeof(*status));
+
+    core_handle_t *core = NULL;
+    esp_err_t ret = begin_api_call(me, true, &core);
+    ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
+
+    lwlte_sync_cmd_ctx_t ctx = {
+        .done = xSemaphoreCreateBinary(),
+        .result = CORE_CMD_RESULT_ERROR,
+        .error_code = ESP_FAIL,
+    };
+    if (!ctx.done) {
+        end_api_call(me);
+        return ESP_ERR_NO_MEM;
+    }
+
+    core_ssl_context_status_t core_status = {0};
+    core_cmd_t cmd = {
+        .type = CORE_CMD_SSL_GET_CONTEXT_STATUS,
+        .done_cb = facade_core_cmd_done_cb,
+        .user_ctx = &ctx,
+        .timeout_ms = 30000,
+        .data.ssl_get_context_status = {
+            .context_id = context_id,
+            .status = &core_status,
+        },
+    };
+
+    ret = core_submit_cmd(core, &cmd);
+    if (ret == ESP_OK) {
+        xSemaphoreTake(ctx.done, portMAX_DELAY);
+        ret = ctx.error_code;
+    }
+
+    if (ret == ESP_OK) {
+        status->provisioned = core_status.provisioned;
+        status->ca_cert_present = core_status.ca_cert_present;
+        status->client_cert_present = core_status.client_cert_present;
+        status->client_key_present = core_status.client_key_present;
+        status->check_valid = core_status.check_valid;
+        status->auth_mode = core_status.auth_mode;
+    }
+
+    vSemaphoreDelete(ctx.done);
+    end_api_call(me);
+    return ret;
+}
+
 esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -437,6 +567,9 @@ esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config)
                         ESP_ERR_INVALID_ARG, TAG, "MQTT port is required");
     ESP_RETURN_ON_FALSE(config->client_id && config->client_id[0],
                         ESP_ERR_INVALID_ARG, TAG, "MQTT client_id is required");
+    ESP_RETURN_ON_FALSE((int)config->transport == LWLTE_MQTT_TRANSPORT_PLAIN_TCP ||
+                        (int)config->transport == LWLTE_MQTT_TRANSPORT_TLS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT transport");
     ESP_RETURN_ON_FALSE(non_negative_int(config->fsm_queue_size) &&
                         non_negative_int(config->fsm_task_stack) &&
                         non_negative_int(config->fsm_task_priority),
@@ -455,11 +588,12 @@ esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config)
         return ESP_ERR_INVALID_STATE;
     }
 
-    const mqtt_client_config_t mqtt_config = {
+    mqtt_client_config_t mqtt_config = {
         .endpoint = {
             .transport = MQTT_CLIENT_TRANSPORT_PLAIN_TCP,
             .host = config->host,
             .port = config->port,
+            .ssl_context_id = config->ssl_context_id,
         },
         .auth = {
             .client_id = config->client_id,
@@ -479,6 +613,9 @@ esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config)
             .loop = me->event_loop,
         },
     };
+    if (config->transport == LWLTE_MQTT_TRANSPORT_TLS) {
+        mqtt_config.endpoint.transport = MQTT_CLIENT_TRANSPORT_TLS;
+    }
     mqtt_client_handle_t *mqtt = mqtt_client_create(&mqtt_config, core);
     if (!mqtt) {
         end_api_call(me);
@@ -888,6 +1025,31 @@ static lwlte_tcp_conn_state_t map_tcp_conn_state(tcp_conn_state_t state)
     case TCP_CONN_STATE_CLOSED:      return LWLTE_TCP_CONN_STATE_CLOSED;
     case TCP_CONN_STATE_ERROR:
     default:                         return LWLTE_TCP_CONN_STATE_ERROR;
+    }
+}
+
+static void facade_core_cmd_done_cb(core_handle_t *core,
+                                    core_cmd_type_t type,
+                                    core_cmd_result_t result,
+                                    const void *result_data,
+                                    void *user_ctx)
+{
+    (void)core;
+    (void)type;
+    lwlte_sync_cmd_ctx_t *ctx = (lwlte_sync_cmd_ctx_t *)user_ctx;
+    if (!ctx) {
+        return;
+    }
+    ctx->result = result;
+    if (result == CORE_CMD_RESULT_OK) {
+        ctx->error_code = ESP_OK;
+    } else if (result_data) {
+        ctx->error_code = *(const esp_err_t *)result_data;
+    } else {
+        ctx->error_code = ESP_FAIL;
+    }
+    if (ctx->done) {
+        xSemaphoreGive(ctx->done);
     }
 }
 

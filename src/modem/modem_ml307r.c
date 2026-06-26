@@ -47,6 +47,10 @@
 #define ML307R_MQTT_CMD_TIMEOUT_MS       9000
 #define ML307R_MQTT_CONNECT_TIMEOUT_MS   60000
 #define ML307R_MQTT_MAX_PAYLOAD_LEN      1024U
+#define ML307R_SSL_MAX_CONTEXTS          6U
+#define ML307R_SSL_MAX_PEM_LEN           8192U
+#define ML307R_SSL_CMD_TIMEOUT_MS        9000
+#define ML307R_SSL_PAYLOAD_PROMPT        ">"
 #define ML307R_MPING_PREFIX              "+MPING:"
 #define ML307R_MPING_STATISTICS_PREFIX   "+MPING: \"statistics\""
 #define ML307R_MPING_MAX_COUNT           100
@@ -95,6 +99,10 @@ typedef struct {
     modem_signal_t last_signal;
     modem_pdp_context_t pdp[ML307R_MAX_PDP_CONTEXTS];
     modem_mqtt_config_t mqtt_config;
+    uint8_t ssl_provisioned_bitmap;
+    modem_ssl_auth_mode_t ssl_auth_modes[ML307R_SSL_MAX_CONTEXTS];
+    modem_mqtt_transport_t mqtt_transport;
+    uint8_t mqtt_ssl_context_id;
     bool urc_registered;
     bool initialized;
     bool mqtt_configured;
@@ -263,7 +271,107 @@ static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  *         - 其他: AT 命令错误
  */
 static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
-                                          modem_pdp_context_t *pdp);
+                                           modem_pdp_context_t *pdp);
+
+/**
+ * @brief 写入并配置 ML307R SSL context
+ * @details Provision ML307R SSL context
+ * @param[in] me 调制解调器句柄
+ * @param[in] config SSL context 配置
+ * @param[in] credentials SSL 证书材料
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_ssl_provision(modem_handle_t *me,
+                                      const modem_ssl_context_config_t *config,
+                                      const modem_ssl_credentials_t *credentials);
+
+/**
+ * @brief 查询 ML307R SSL context 状态
+ * @details Query ML307R SSL context status
+ * @param[in] me 调制解调器句柄
+ * @param[in] context_id SSL context ID
+ * @param[out] status SSL context 状态
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_ssl_get_context_status(modem_handle_t *me,
+                                               uint8_t context_id,
+                                               modem_ssl_context_status_t *status);
+
+/**
+ * @brief 写入证书或私钥对象
+ * @details Write certificate or private-key object
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] name 对象名
+ * @param[in] data PEM 数据
+ * @param[in] len PEM 长度
+ * @param[in] private_key 是否为私钥
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_write_cert_object(modem_ml307r_t *self, const char *name,
+                                          const uint8_t *data, size_t len,
+                                          bool private_key);
+
+/**
+ * @brief 删除 SSL 对象并忽略不存在错误
+ * @details Remove SSL object and ignore missing-object errors
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] name 对象名
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_remove_ssl_object_ignore_missing(modem_ml307r_t *self,
+                                                        const char *name);
+
+/**
+ * @brief 查询 SSL 对象是否存在
+ * @details Query whether SSL object is present
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] name 对象名
+ * @param[in] type MSSLLIST 类型
+ * @param[out] present 是否存在
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_ssl_object_present(modem_ml307r_t *self,
+                                           const char *name, int type,
+                                           bool *present);
+
+/**
+ * @brief 查询 SSL 认证模式
+ * @details Query SSL authentication mode
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] context_id SSL context ID
+ * @param[out] auth_mode 认证模式
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_query_ssl_auth_mode(modem_ml307r_t *self,
+                                            uint8_t context_id,
+                                            modem_ssl_auth_mode_t *auth_mode);
+
+/**
+ * @brief 查询 SSL context 缓存标记
+ * @details Query cached SSL context mark
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] context_id SSL context ID
+ * @return true: 已标记； false: 未标记
+ */
+static bool ml307r_ssl_context_marked(modem_ml307r_t *self, uint8_t context_id);
+
+/**
+ * @brief 标记 SSL context 缓存状态
+ * @details Mark cached SSL context state
+ * @param[in] self ML307R 调制解调器实例
+ * @param[in] context_id SSL context ID
+ * @param[in] auth_mode 认证模式
+ * @param[in] provisioned 是否已配置
+ */
+static void ml307r_ssl_mark_context(modem_ml307r_t *self, uint8_t context_id,
+                                    modem_ssl_auth_mode_t auth_mode, bool provisioned);
+
+/**
+ * @brief 清除 SSL 内存状态
+ * @details Clear SSL in-memory state
+ * @param[in] self ML307R 调制解调器实例
+ */
+static void ml307r_clear_ssl_state(modem_ml307r_t *self);
 /**
  * @brief 打开 ML307R TCP Socket
  * @details Open ML307R TCP socket
@@ -1359,6 +1467,8 @@ static const modem_ops_t s_ml307r_ops = {
     .activate_pdp = ml307r_activate_pdp,
     .deactivate_pdp = ml307r_deactivate_pdp,
     .get_pdp_context = ml307r_get_pdp_context,
+    .ssl_provision = ml307r_ssl_provision,
+    .ssl_get_context_status = ml307r_ssl_get_context_status,
     .socket_open = ml307r_socket_open,
     .socket_send = ml307r_socket_send,
     .socket_recv = ml307r_socket_recv,
@@ -1410,6 +1520,8 @@ modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
     self->last_signal.ber = 99;
     self->pdp[0].cid = ML307R_PRIMARY_CID;
     strlcpy(self->pdp[0].pdp_type, "IPV4V6", sizeof(self->pdp[0].pdp_type));
+    self->mqtt_transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    self->mqtt_ssl_context_id = 0;
 
     esp_err_t ret = modem_base_init(&self->base, "ml307r", at, &s_ml307r_ops,
                                     self->config.base.event.event_queue_size,
@@ -2450,6 +2562,9 @@ static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
 {
     ESP_RETURN_ON_FALSE(dst && src && src->client_id && src->host && src->port > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
+    ESP_RETURN_ON_FALSE(src->transport == MODEM_MQTT_TRANSPORT_PLAIN_TCP ||
+                        src->transport == MODEM_MQTT_TRANSPORT_TLS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT transport");
 
     modem_mqtt_config_t copy = {
         .client_id = clone_mqtt_string(src->client_id),
@@ -2457,6 +2572,8 @@ static esp_err_t copy_mqtt_config(modem_mqtt_config_t *dst,
         .password = src->password ? clone_mqtt_string(src->password) : NULL,
         .host = clone_mqtt_string(src->host),
         .port = src->port,
+        .transport = src->transport,
+        .ssl_context_id = src->ssl_context_id,
         .clean_session = src->clean_session,
         .keepalive_s = src->keepalive_s ? src->keepalive_s : 120,
     };
@@ -2486,6 +2603,60 @@ static void free_mqtt_config(modem_mqtt_config_t *config)
 
 static void clear_mqtt_state(modem_ml307r_t *self)
 {
+    ml307r_clear_ssl_state(self);
+}
+
+static void ml307r_ssl_mark_context(modem_ml307r_t *self, uint8_t context_id,
+                                    modem_ssl_auth_mode_t auth_mode, bool provisioned)
+{
+    if (!self) {
+        return;
+    }
+
+    if (context_id >= ML307R_SSL_MAX_CONTEXTS) {
+        return;
+    }
+
+    uint8_t mask = (uint8_t)(1U << context_id);
+    if (provisioned) {
+        self->ssl_provisioned_bitmap |= mask;
+        self->ssl_auth_modes[context_id] = auth_mode;
+        return;
+    }
+
+    self->ssl_provisioned_bitmap &= (uint8_t)~mask;
+    self->ssl_auth_modes[context_id] = MODEM_SSL_AUTH_NONE;
+
+    bool mqtt_uses_context = self->mqtt_transport == MODEM_MQTT_TRANSPORT_TLS &&
+                             self->mqtt_ssl_context_id == context_id;
+    if (self->mqtt_config.transport == MODEM_MQTT_TRANSPORT_TLS &&
+        self->mqtt_config.ssl_context_id == context_id) {
+        mqtt_uses_context = true;
+    }
+    if (!mqtt_uses_context) {
+        return;
+    }
+
+    self->mqtt_configured = false;
+    self->mqtt_session_connected = false;
+    self->mqtt_data_enabled = false;
+    free_mqtt_config(&self->mqtt_config);
+    self->mqtt_transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    self->mqtt_ssl_context_id = 0;
+}
+
+static bool ml307r_ssl_context_marked(modem_ml307r_t *self, uint8_t context_id)
+{
+    if (!self || context_id >= ML307R_SSL_MAX_CONTEXTS) {
+        return false;
+    }
+
+    uint8_t mask = (uint8_t)(1U << context_id);
+    return (self->ssl_provisioned_bitmap & mask) != 0;
+}
+
+static void ml307r_clear_ssl_state(modem_ml307r_t *self)
+{
     if (!self) {
         return;
     }
@@ -2497,9 +2668,480 @@ static void clear_mqtt_state(modem_ml307r_t *self)
     self->mqtt_session_connected = false;
     self->mqtt_data_enabled = false;
     free_mqtt_config(&self->mqtt_config);
+    self->ssl_provisioned_bitmap = 0;
+    for (size_t i = 0; i < sizeof(self->ssl_auth_modes) / sizeof(self->ssl_auth_modes[0]); i++) {
+        self->ssl_auth_modes[i] = MODEM_SSL_AUTH_NONE;
+    }
+    self->mqtt_transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    self->mqtt_ssl_context_id = 0;
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+}
+
+static esp_err_t ml307r_remove_ssl_object_ignore_missing(modem_ml307r_t *self,
+                                                        const char *name)
+{
+    ESP_RETURN_ON_FALSE(self && name && at_arg_safe(name), ESP_ERR_INVALID_ARG,
+                        TAG, "invalid SSL object name");
+
+    char cmd[96];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MSSLRM=%s", name);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MSSLRM command truncated");
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+MSSLRM failed");
+
+    if (ctx.response.status == AT_RESP_OK ||
+        (ctx.response.status == AT_RESP_CME_ERROR &&
+         (ctx.response.error_code == 762 || ctx.response.error_code == 767))) {
+        return ESP_OK;
+    }
+    return ensure_at_ok(&ctx.response, "AT+MSSLRM");
+}
+
+static esp_err_t ml307r_write_cert_object(modem_ml307r_t *self, const char *name,
+                                          const uint8_t *data, size_t len,
+                                          bool private_key)
+{
+    ESP_RETURN_ON_FALSE(self && self->base.at && name && at_arg_safe(name) &&
+                        data && len > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid SSL object args");
+    ESP_RETURN_ON_FALSE(len <= ML307R_SSL_MAX_PEM_LEN, ESP_ERR_INVALID_SIZE,
+                        TAG, "SSL PEM too large");
+
+    esp_err_t ret = ml307r_remove_ssl_object_ignore_missing(self, name);
+    ESP_RETURN_ON_ERROR(ret, TAG, "remove existing SSL object failed");
+
+    char cmd[128];
+    if (private_key) {
+        int written = snprintf(cmd, sizeof(cmd), "AT+MSSLKEYWR=%s,0,%u",
+                               name, (unsigned int)len);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+MSSLKEYWR command truncated");
+    } else {
+        int written = snprintf(cmd, sizeof(cmd), "AT+MSSLCERTWR=%s,0,%u",
+                               name, (unsigned int)len);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCERTWR command truncated");
+    }
+
+    const at_cmd_options_t options = {
+        .timeout_ms = ML307R_SSL_CMD_TIMEOUT_MS,
+        .flags = 0,
+        .success_matches = NULL,
+        .success_match_count = 0,
+    };
+    ml307r_cmd_ctx_t ctx;
+    init_cmd_ctx(&ctx);
+    ret = at_engine_send_cmd_with_payload(self->base.at, cmd, data, len,
+                                          ML307R_SSL_PAYLOAD_PROMPT,
+                                          &ctx.response, &options);
+    dispatch_tcp_urcs_from_response(self, &ctx.response);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response,
+                           private_key ? "AT+MSSLKEYWR" : "AT+MSSLCERTWR");
+    }
+    return ret;
+}
+
+static esp_err_t ml307r_ssl_object_present(modem_ml307r_t *self,
+                                           const char *name, int type,
+                                           bool *present)
+{
+    ESP_RETURN_ON_FALSE(self && name && at_arg_safe(name) && present,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid SSL object query args");
+    ESP_RETURN_ON_FALSE(type == 1 || type == 2, ESP_ERR_INVALID_ARG,
+                        TAG, "invalid MSSLLIST type");
+    *present = false;
+
+    char cmd[32];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MSSLLIST=%d", type);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MSSLLIST command truncated");
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+    ESP_RETURN_ON_ERROR(ret, TAG, "send AT+MSSLLIST failed");
+    ret = ensure_at_ok(&ctx.response, "AT+MSSLLIST");
+    ESP_RETURN_ON_ERROR(ret, TAG, "AT+MSSLLIST failed");
+
+    int count = ctx.response.line_count;
+    if (count > ctx.response.max_lines) {
+        count = ctx.response.max_lines;
+    }
+    size_t name_len = strlen(name);
+    for (int i = 0; i < count; i++) {
+        const char *line = ctx.response.lines[i];
+        if (!line || strncmp(line, "+MSSLLIST:", sizeof("+MSSLLIST:") - 1) != 0) {
+            continue;
+        }
+
+        const char *match = line;
+        while ((match = strstr(match, name)) != NULL) {
+            char before = match == line ? '\0' : *(match - 1);
+            char after = match[name_len];
+            bool before_ok = match == line || before == ':' || before == ',' ||
+                             before == '"' || isspace((unsigned char)before);
+            bool after_ok = after == '\0' || after == ',' || after == '"' ||
+                            isspace((unsigned char)after);
+            if (before_ok && after_ok) {
+                *present = true;
+                return ESP_OK;
+            }
+            match += name_len;
+        }
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_query_ssl_auth_mode(modem_ml307r_t *self,
+                                            uint8_t context_id,
+                                            modem_ssl_auth_mode_t *auth_mode)
+{
+    ESP_RETURN_ON_FALSE(self && auth_mode, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(context_id < ML307R_SSL_MAX_CONTEXTS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ML307R ssl_id");
+
+    char cmd[48];
+    int written = snprintf(cmd, sizeof(cmd), "AT+MSSLCFG=\"auth\",%u",
+                           (unsigned int)context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG auth query truncated");
+
+    ml307r_cmd_ctx_t ctx;
+    esp_err_t ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG auth query");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "query SSL auth mode failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, "+MSSLCFG:");
+    ESP_RETURN_ON_FALSE(line, ESP_ERR_INVALID_RESPONSE, TAG, "+MSSLCFG line missing");
+
+    const char *cursor = skip_prefix_value(line, "+MSSLCFG:");
+    ESP_RETURN_ON_FALSE(cursor && strncmp(cursor, "\"auth\"", sizeof("\"auth\"") - 1) == 0,
+                        ESP_ERR_INVALID_RESPONSE, TAG, "invalid +MSSLCFG auth line");
+    cursor += sizeof("\"auth\"") - 1;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    ESP_RETURN_ON_FALSE(*cursor == ',', ESP_ERR_INVALID_RESPONSE,
+                        TAG, "missing +MSSLCFG context separator");
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed_context = strtol(cursor, &end, 10);
+    ESP_RETURN_ON_FALSE(end != cursor && errno != ERANGE &&
+                        parsed_context == context_id,
+                        ESP_ERR_INVALID_RESPONSE, TAG, "invalid +MSSLCFG context");
+    cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    ESP_RETURN_ON_FALSE(*cursor == ',', ESP_ERR_INVALID_RESPONSE,
+                        TAG, "missing +MSSLCFG auth separator");
+    cursor++;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    errno = 0;
+    end = NULL;
+    long parsed_mode = strtol(cursor, &end, 10);
+    ESP_RETURN_ON_FALSE(end != cursor && errno != ERANGE &&
+                        parsed_mode >= (long)MODEM_SSL_AUTH_NONE &&
+                        parsed_mode <= (long)MODEM_SSL_AUTH_MUTUAL,
+                        ESP_ERR_INVALID_RESPONSE, TAG, "invalid +MSSLCFG auth mode");
+    cursor = end;
+    while (isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    ESP_RETURN_ON_FALSE(*cursor == '\0', ESP_ERR_INVALID_RESPONSE,
+                        TAG, "unexpected +MSSLCFG auth suffix");
+
+    *auth_mode = (modem_ssl_auth_mode_t)parsed_mode;
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_ssl_provision(modem_handle_t *me,
+                                      const modem_ssl_context_config_t *config,
+                                      const modem_ssl_credentials_t *credentials)
+{
+    ESP_RETURN_ON_FALSE(me && config && credentials, ESP_ERR_INVALID_ARG,
+                        TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(config->context_id < ML307R_SSL_MAX_CONTEXTS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ML307R ssl_id");
+    ESP_RETURN_ON_FALSE(config->auth_mode >= MODEM_SSL_AUTH_NONE &&
+                        config->auth_mode <= MODEM_SSL_AUTH_MUTUAL,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid SSL auth mode");
+
+    char ca_name[32];
+    char client_cert_name[32];
+    char client_key_name[32];
+    int written = snprintf(ca_name, sizeof(ca_name), "lwlte_ca_%u.crt",
+                           (unsigned int)config->context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(ca_name),
+                        ESP_ERR_INVALID_ARG, TAG, "CA object name truncated");
+    written = snprintf(client_cert_name, sizeof(client_cert_name),
+                       "lwlte_client_%u.crt", (unsigned int)config->context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(client_cert_name),
+                        ESP_ERR_INVALID_ARG, TAG, "client cert object name truncated");
+    written = snprintf(client_key_name, sizeof(client_key_name),
+                       "lwlte_client_%u.key", (unsigned int)config->context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(client_key_name),
+                        ESP_ERR_INVALID_ARG, TAG, "client key object name truncated");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    bool active_tls_uses_context = false;
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    active_tls_uses_context = self->mqtt_transport == MODEM_MQTT_TRANSPORT_TLS &&
+                              self->mqtt_ssl_context_id == config->context_id &&
+                              (self->mqtt_session_connected || self->mqtt_data_enabled);
+    if (active_tls_uses_context) {
+        if (self->base.lock) {
+            xSemaphoreGive(self->base.lock);
+        }
+        return ESP_ERR_INVALID_STATE;
+    }
+    ml307r_ssl_mark_context(self, config->context_id, MODEM_SSL_AUTH_NONE, false);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+
+    esp_err_t ret = ESP_OK;
+    switch (config->auth_mode) {
+    case MODEM_SSL_AUTH_NONE:
+        break;
+    case MODEM_SSL_AUTH_SERVER:
+        ESP_RETURN_ON_FALSE(credentials->ca_cert_pem && credentials->ca_cert_len > 0,
+                            ESP_ERR_INVALID_ARG, TAG, "CA certificate missing");
+        ret = ml307r_write_cert_object(self, ca_name, credentials->ca_cert_pem,
+                                       credentials->ca_cert_len, false);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write CA certificate failed");
+        break;
+    case MODEM_SSL_AUTH_MUTUAL:
+        ESP_RETURN_ON_FALSE(credentials->ca_cert_pem && credentials->ca_cert_len > 0 &&
+                            credentials->client_cert_pem && credentials->client_cert_len > 0 &&
+                            credentials->client_key_pem && credentials->client_key_len > 0,
+                            ESP_ERR_INVALID_ARG, TAG, "mutual SSL credentials missing");
+        ret = ml307r_write_cert_object(self, ca_name, credentials->ca_cert_pem,
+                                       credentials->ca_cert_len, false);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write CA certificate failed");
+        ret = ml307r_write_cert_object(self, client_cert_name,
+                                       credentials->client_cert_pem,
+                                       credentials->client_cert_len, false);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write client certificate failed");
+        ret = ml307r_write_cert_object(self, client_key_name,
+                                       credentials->client_key_pem,
+                                       credentials->client_key_len, true);
+        ESP_RETURN_ON_ERROR(ret, TAG, "write client key failed");
+        break;
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char cmd[160];
+    /* ML307R SSL command token: AT+MSSLCFG="auth". */
+    written = snprintf(cmd, sizeof(cmd), "AT+MSSLCFG=\"auth\",%u,%u",
+                       (unsigned int)config->context_id,
+                       (unsigned int)config->auth_mode);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG auth command truncated");
+    ml307r_cmd_ctx_t ctx;
+    ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG auth");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "set SSL auth mode failed");
+
+    if (config->auth_mode == MODEM_SSL_AUTH_SERVER) {
+        /* ML307R SSL command token: AT+MSSLCFG="cert". */
+        written = snprintf(cmd, sizeof(cmd),
+                           "AT+MSSLCFG=\"cert\",%u,%s,\"\",\"\"",
+                           (unsigned int)config->context_id, ca_name);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG cert command truncated");
+        ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG cert");
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "bind server certificate failed");
+    } else if (config->auth_mode == MODEM_SSL_AUTH_MUTUAL) {
+        /* ML307R SSL command token: AT+MSSLCFG="cert". */
+        written = snprintf(cmd, sizeof(cmd), "AT+MSSLCFG=\"cert\",%u,%s,%s,%s",
+                           (unsigned int)config->context_id, ca_name,
+                           client_cert_name, client_key_name);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG cert command truncated");
+        ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG cert");
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "bind mutual certificates failed");
+    }
+
+    written = snprintf(cmd, sizeof(cmd), "AT+MSSLCFG=\"ignorestamp\",%u,%u",
+                       (unsigned int)config->context_id,
+                       config->ignore_cert_time ? 1U : 0U);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG ignorestamp truncated");
+    ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG ignorestamp");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "set SSL ignorestamp failed");
+
+    /* ML307R SSL command token: AT+MSSLCFG="ignoreverify". */
+    written = snprintf(cmd, sizeof(cmd), "AT+MSSLCFG=\"ignoreverify\",%u,0",
+                       (unsigned int)config->context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                        ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG ignoreverify truncated");
+    ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG ignoreverify");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "set SSL ignoreverify failed");
+
+    if (config->tls_version != 0) {
+        written = snprintf(cmd, sizeof(cmd), "AT+MSSLCFG=\"version\",%u,%u",
+                           (unsigned int)config->context_id,
+                           (unsigned int)config->tls_version);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG version truncated");
+        ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG version");
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "set SSL version failed");
+    }
+
+    if (config->negotiate_timeout_s != 0) {
+        written = snprintf(cmd, sizeof(cmd), "AT+MSSLCFG=\"negotime\",%u,%u",
+                           (unsigned int)config->context_id,
+                           (unsigned int)config->negotiate_timeout_s);
+        ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+MSSLCFG negotime truncated");
+        ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+MSSLCFG negotime");
+        }
+        ESP_RETURN_ON_ERROR(ret, TAG, "set SSL negotiate timeout failed");
+    }
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    ml307r_ssl_mark_context(self, config->context_id, config->auth_mode, true);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_ssl_get_context_status(modem_handle_t *me,
+                                               uint8_t context_id,
+                                               modem_ssl_context_status_t *status)
+{
+    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(context_id < ML307R_SSL_MAX_CONTEXTS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid ML307R ssl_id");
+
+    modem_ml307r_t *self = to_ml307r(me);
+    memset(status, 0, sizeof(*status));
+
+    modem_ssl_auth_mode_t auth_mode = MODEM_SSL_AUTH_NONE;
+    esp_err_t ret = ml307r_query_ssl_auth_mode(self, context_id, &auth_mode);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query SSL auth mode failed");
+
+    char ca_name[32];
+    char client_cert_name[32];
+    char client_key_name[32];
+    int written = snprintf(ca_name, sizeof(ca_name), "lwlte_ca_%u.crt",
+                           (unsigned int)context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(ca_name),
+                        ESP_ERR_INVALID_ARG, TAG, "CA object name truncated");
+    written = snprintf(client_cert_name, sizeof(client_cert_name),
+                       "lwlte_client_%u.crt", (unsigned int)context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(client_cert_name),
+                        ESP_ERR_INVALID_ARG, TAG, "client cert object name truncated");
+    written = snprintf(client_key_name, sizeof(client_key_name),
+                       "lwlte_client_%u.key", (unsigned int)context_id);
+    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(client_key_name),
+                        ESP_ERR_INVALID_ARG, TAG, "client key object name truncated");
+
+    bool ca_exists = false;
+    bool cert_exists = false;
+    bool key_exists = false;
+    ret = ml307r_ssl_object_present(self, ca_name, 1, &ca_exists);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query CA certificate failed");
+    ret = ml307r_ssl_object_present(self, client_cert_name, 1, &cert_exists);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query client certificate failed");
+    ret = ml307r_ssl_object_present(self, client_key_name, 2, &key_exists);
+    ESP_RETURN_ON_ERROR(ret, TAG, "query client key failed");
+
+    status->auth_mode = auth_mode;
+    status->ca_cert_present = ca_exists;
+    status->client_cert_present = cert_exists;
+    status->client_key_present = key_exists;
+    status->provisioned = status->auth_mode == MODEM_SSL_AUTH_NONE ||
+                          (status->auth_mode == MODEM_SSL_AUTH_SERVER && ca_exists) ||
+                          (status->auth_mode == MODEM_SSL_AUTH_MUTUAL && ca_exists &&
+                           cert_exists && key_exists);
+
+    const char *required_checks[3];
+    size_t required_count = 0;
+    if (status->auth_mode == MODEM_SSL_AUTH_SERVER && ca_exists) {
+        required_checks[required_count++] = ca_name;
+    } else if (status->auth_mode == MODEM_SSL_AUTH_MUTUAL) {
+        if (ca_exists) {
+            required_checks[required_count++] = ca_name;
+        }
+        if (cert_exists) {
+            required_checks[required_count++] = client_cert_name;
+        }
+        if (key_exists) {
+            required_checks[required_count++] = client_key_name;
+        }
+    }
+
+    bool checks_ok = status->provisioned && required_count > 0;
+    for (size_t i = 0; i < required_count; i++) {
+        char cmd[96];
+        written = snprintf(cmd, sizeof(cmd), "AT+MSSLCHECK=%s", required_checks[i]);
+        if (written < 0 || (size_t)written >= sizeof(cmd)) {
+            checks_ok = false;
+            break;
+        }
+
+        ml307r_cmd_ctx_t ctx;
+        esp_err_t check_ret = send_cmd(self, cmd, &ctx, ML307R_SSL_CMD_TIMEOUT_MS);
+        if (check_ret == ESP_OK) {
+            check_ret = ensure_at_ok(&ctx.response, "AT+MSSLCHECK");
+        }
+        if (check_ret != ESP_OK) {
+            checks_ok = false;
+        }
+    }
+    status->check_valid = checks_ok;
+
+    if (self->base.lock) {
+        xSemaphoreTake(self->base.lock, portMAX_DELAY);
+    }
+    ml307r_ssl_mark_context(self, context_id, status->auth_mode, status->provisioned);
+    if (self->base.lock) {
+        xSemaphoreGive(self->base.lock);
+    }
+    return ESP_OK;
 }
 
 static char *escape_at_string(const char *value)
@@ -2941,6 +3583,7 @@ static esp_err_t ml307r_start(modem_handle_t *me)
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+    ml307r_clear_ssl_state(self);
     set_initialized(self, false);
 
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
@@ -2998,6 +3641,7 @@ static esp_err_t ml307r_reset(modem_handle_t *me)
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+    ml307r_clear_ssl_state(self);
     set_initialized(self, false);
 
     ret = modem_set_state(me, MODEM_STATE_INITIALIZING);
@@ -3052,6 +3696,7 @@ static esp_err_t ml307r_stop(modem_handle_t *me)
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
+    ml307r_clear_ssl_state(self);
     set_initialized(self, false);
 
     esp_err_t ret = ESP_OK;
@@ -3828,18 +4473,27 @@ static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
                                         const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host &&
-                        config->port > 0,
+                        config->port > 0 &&
+                        (config->transport == MODEM_MQTT_TRANSPORT_PLAIN_TCP ||
+                         config->transport == MODEM_MQTT_TRANSPORT_TLS),
                         ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
+    ESP_RETURN_ON_FALSE(config->transport != MODEM_MQTT_TRANSPORT_TLS ||
+                        config->ssl_context_id < ML307R_SSL_MAX_CONTEXTS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid MQTT SSL context");
 
     modem_ml307r_t *self = to_ml307r(me);
     if (self->base.lock) {
         xSemaphoreTake(self->base.lock, portMAX_DELAY);
     }
     bool connected = self->mqtt_session_connected || self->mqtt_data_enabled;
+    bool ssl_provisioned = config->transport != MODEM_MQTT_TRANSPORT_TLS ||
+                           ml307r_ssl_context_marked(self, config->ssl_context_id);
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
     ESP_RETURN_ON_FALSE(!connected, ESP_ERR_INVALID_STATE, TAG, "MQTT is connected");
+    ESP_RETURN_ON_FALSE(config->transport != MODEM_MQTT_TRANSPORT_TLS || ssl_provisioned,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT SSL context not provisioned");
 
     modem_mqtt_config_t new_config = {0};
     esp_err_t ret = copy_mqtt_config(&new_config, config);
@@ -3903,6 +4557,26 @@ static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
         goto cleanup;
     }
 
+    if (new_config.transport == MODEM_MQTT_TRANSPORT_TLS) {
+        /* ML307R MQTT TLS command token: AT+MQTTCFG="ssl",0,1. */
+        written = snprintf(cmd, sizeof(cmd), "AT+MQTTCFG=\"ssl\",0,1,%u",
+                           (unsigned int)new_config.ssl_context_id);
+    } else {
+        /* ML307R MQTT plain command token: AT+MQTTCFG="ssl",0,0. */
+        written = snprintf(cmd, sizeof(cmd), "AT+MQTTCFG=\"ssl\",0,0");
+    }
+    if (written < 0 || (size_t)written >= sizeof(cmd)) {
+        ret = ESP_ERR_INVALID_ARG;
+        goto cleanup;
+    }
+    ret = send_cmd(self, cmd, &ctx, ML307R_MQTT_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MQTTCFG ssl");
+    }
+    if (ret != ESP_OK) {
+        goto cleanup;
+    }
+
     if (self->base.lock) {
         xSemaphoreTake(self->base.lock, portMAX_DELAY);
     }
@@ -3912,6 +4586,9 @@ static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
     self->mqtt_configured = true;
     self->mqtt_session_connected = false;
     self->mqtt_data_enabled = false;
+    self->mqtt_transport = self->mqtt_config.transport;
+    self->mqtt_ssl_context_id = self->mqtt_transport == MODEM_MQTT_TRANSPORT_TLS ?
+                                self->mqtt_config.ssl_context_id : 0;
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
@@ -3926,15 +4603,31 @@ static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me)
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
     modem_ml307r_t *self = to_ml307r(me);
+    modem_mqtt_transport_t transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    uint8_t ssl_context_id = 0;
+    bool tls_context_marked = false;
     if (self->base.lock) {
         xSemaphoreTake(self->base.lock, portMAX_DELAY);
     }
     bool configured = self->mqtt_configured;
+    if (configured) {
+        transport = self->mqtt_transport;
+        ssl_context_id = self->mqtt_ssl_context_id;
+        if (transport == MODEM_MQTT_TRANSPORT_TLS &&
+            ssl_context_id < ML307R_SSL_MAX_CONTEXTS) {
+            tls_context_marked = ml307r_ssl_context_marked(self, ssl_context_id);
+        }
+    }
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
     }
 
     ESP_RETURN_ON_FALSE(configured, ESP_ERR_INVALID_STATE, TAG, "MQTT not configured");
+    ESP_RETURN_ON_FALSE(transport != MODEM_MQTT_TRANSPORT_TLS ||
+                        ssl_context_id < ML307R_SSL_MAX_CONTEXTS,
+                        ESP_ERR_INVALID_STATE, TAG, "invalid MQTT SSL context");
+    ESP_RETURN_ON_FALSE(transport != MODEM_MQTT_TRANSPORT_TLS || tls_context_marked,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT SSL context not provisioned");
     return ESP_OK;
 }
 
@@ -3945,6 +4638,9 @@ static esp_err_t ml307r_mqtt_connect(modem_handle_t *me)
     modem_ml307r_t *self = to_ml307r(me);
     bool configured = false;
     bool session_connected = false;
+    modem_mqtt_transport_t transport = MODEM_MQTT_TRANSPORT_PLAIN_TCP;
+    uint8_t ssl_context_id = 0;
+    bool tls_context_marked = false;
     modem_mqtt_config_t snapshot = {0};
     esp_err_t ret = ESP_OK;
 
@@ -3954,7 +4650,15 @@ static esp_err_t ml307r_mqtt_connect(modem_handle_t *me)
     configured = self->mqtt_configured;
     session_connected = self->mqtt_session_connected;
     if (configured && !session_connected) {
-        ret = copy_mqtt_config(&snapshot, &self->mqtt_config);
+        transport = self->mqtt_transport;
+        ssl_context_id = self->mqtt_ssl_context_id;
+        if (transport == MODEM_MQTT_TRANSPORT_TLS &&
+            ssl_context_id < ML307R_SSL_MAX_CONTEXTS) {
+            tls_context_marked = ml307r_ssl_context_marked(self, ssl_context_id);
+        }
+        if (transport == MODEM_MQTT_TRANSPORT_PLAIN_TCP || tls_context_marked) {
+            ret = copy_mqtt_config(&snapshot, &self->mqtt_config);
+        }
     }
     if (self->base.lock) {
         xSemaphoreGive(self->base.lock);
@@ -3962,6 +4666,11 @@ static esp_err_t ml307r_mqtt_connect(modem_handle_t *me)
     ESP_RETURN_ON_FALSE(configured, ESP_ERR_INVALID_STATE, TAG, "MQTT not configured");
     ESP_RETURN_ON_FALSE(!session_connected, ESP_ERR_INVALID_STATE,
                         TAG, "MQTT session already connected");
+    ESP_RETURN_ON_FALSE(transport != MODEM_MQTT_TRANSPORT_TLS ||
+                        ssl_context_id < ML307R_SSL_MAX_CONTEXTS,
+                        ESP_ERR_INVALID_STATE, TAG, "invalid MQTT SSL context");
+    ESP_RETURN_ON_FALSE(transport != MODEM_MQTT_TRANSPORT_TLS || tls_context_marked,
+                        ESP_ERR_INVALID_STATE, TAG, "MQTT SSL context not provisioned");
     ESP_RETURN_ON_ERROR(ret, TAG, "copy MQTT config failed");
 
     char *host = escape_at_string(snapshot.host);

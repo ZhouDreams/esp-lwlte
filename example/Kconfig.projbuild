@@ -4,10 +4,23 @@ config EXAMPLE_MQTT_HOST
     string "MQTT broker host"
     default "admin.jovisdreams.site"
 
+config EXAMPLE_MQTT_TLS_ENABLE
+    bool "Enable MQTT TLS"
+    default n
+
 config EXAMPLE_MQTT_PORT
     int "MQTT broker port"
     range 1 65535
+    default 8883 if EXAMPLE_MQTT_TLS_ENABLE
     default 1883
+
+config EXAMPLE_MQTT_TLS_CA_CERT_PEM
+    string "MQTT TLS CA certificate PEM"
+    default ""
+    depends on EXAMPLE_MQTT_TLS_ENABLE
+    help
+        Paste the server CA PEM used by the MQTT TLS broker. The first TLS example path uses server authentication.
+        Non-empty CA PEM is required when TLS is enabled.
 
 config EXAMPLE_MQTT_CLIENT_ID
     string "MQTT client ID"
