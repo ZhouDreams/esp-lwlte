@@ -191,12 +191,23 @@ typedef enum {
     CORE_SOCKET_PROTO_TCP = 0,           /**< TCP socket； TCP socket */
 } core_socket_proto_t;
 
+/**
+ * @brief Socket 传输类型
+ * @details Socket transport type
+ */
+typedef enum {
+    CORE_SOCKET_TRANSPORT_PLAIN_TCP = 0,  /**< 明文 TCP； Plain TCP */
+    CORE_SOCKET_TRANSPORT_TLS,            /**< TLS； TLS */
+} core_socket_transport_t;
+
 typedef struct {
     core_socket_proto_t proto;           /**< Socket 协议； Socket protocol */
     uint8_t conn_id;                     /**< 连接 ID； Connection ID */
     const char *host;                    /**< 主机； Host */
     uint16_t port;                       /**< 端口； Port */
     uint32_t timeout_ms;                 /**< 打开超时； Open timeout */
+    core_socket_transport_t transport;   /**< 传输类型，0 为明文 TCP； Transport, 0 is plain TCP */
+    uint8_t ssl_context_id;              /**< TLS 使用的 SSL context ID； SSL context ID for TLS */
 } core_socket_open_t;
 
 typedef struct {

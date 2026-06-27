@@ -32,8 +32,8 @@ MQTT 是这个哲学的范例：`modem_ops` 把 MQTT 拆成 `mqtt_configure / mq
 | MQTT | 已完成 | — | 专属 service + 自有 FSM（`mqtt_client`） |
 | Ping | 已完成 | — | Core 同步命令（`CORE_CMD_PING`） |
 | 低功耗 / 休眠管理 | 规划 | P1 | Core 策略（跨层） |
-| TCP/UDP Socket | TCP client v1 已完成；UDP/扩展规划 | P2 | 专属 service + 自有 FSM |
-| TLS/SSL 配置 | 规划 | P3 | 横向能力，非独立 service |
+| TCP/UDP Socket | TCP client v1 + TCP-TLS (SSL socket) 已完成；UDP/扩展规划 | P2 | 专属 service + 自有 FSM |
+| TLS/SSL 配置 | 已落地（供 MQTT-TLS / TCP-TLS 复用） | P3 | 横向能力，非独立 service |
 | HTTP/HTTPS | 规划 | P4 | Core 同步命令（v1） |
 
 ### 落地顺序
@@ -87,17 +87,17 @@ TCP client v1 已完成 `MODEM_PROTOCOL_TCP` 和 `conn_id` 维度，`modem_proto
 
 #### P2 TCP/UDP Socket
 
-TCP client v1 已在 Air780EP 和 ML307R 上实现 plain TCP，当前限定一个 client connection，支持 binary-safe TX/RX，并通过 ESP event 投递连接、发送、接收和错误事件。UDP、TLS、server/listen mode、local port binding、multiple simultaneous connections、automatic reconnect 和 high-throughput streaming 仍是后续规划工作。
+TCP client v1 已在 Air780EP 和 ML307R 上实现 plain TCP；TCP-TLS (SSL socket) 复用 `lwlte_ssl_provision()` 配置的 SSL context 亦已完成。当前限定一个 client connection，支持 binary-safe TX/RX，并通过 ESP event 投递连接、发送、接收和错误事件。UDP、server/listen mode、local port binding、multiple simultaneous connections、automatic reconnect 和 high-throughput streaming 仍是后续规划工作。
 
 | 项 | 内容 |
 |----|------|
-| 状态 | TCP client v1 已完成 Air780EP / ML307R plain TCP 单连接；UDP 和高级 socket 能力规划中 |
+| 状态 | TCP client v1 (plain TCP) 与 TCP-TLS (SSL socket) 已完成 Air780EP / ML307R 单连接；UDP 和高级 socket 能力规划中 |
 | 新增 ops | `socket_open`、`socket_send`、`socket_close`、`socket_recv`（缓存读模式） |
 | v1 参数结构 | `modem_socket_open_t`（TCP proto、host、port、conn_id、timeout、原始模块错误码输出）、`modem_socket_send_t`（conn_id、data、len）、`modem_socket_recv_t`、`modem_socket_recv_result_t`、`modem_socket_close_t` |
 | v1 协议类型 | `MODEM_PROTOCOL_TCP`（带 conn_id） |
-| Air780EP AT | TCP client v1 使用 `AT+CIPSTART`、`AT+CIPSEND`、`AT+CIPRXGET=5`、`AT+CIPRXGET=3,<len>`、`AT+CIPCLOSE`；`+RECEIVE` / `+IPD` 属直推 RX 或多连接路径，留作非 v1/后续能力参考 |
-| ML307R AT | `AT+MIPOPEN`、`AT+MIPSEND`、`AT+MIPCLOSE`、`AT+MIPRD`、`AT+MIPCFG`；TCP v1 使用 `+MIPURC: "rtcp"` 接收缓存通知和 `+MIPURC: "disconn"` 断链通知 |
-| 规划工作 | UDP (`MODEM_PROTOCOL_UDP`)、TLS/SSL ctx、server/listen mode、local port binding、multiple simultaneous connections、automatic reconnect、high-throughput streaming。 |
+| Air780EP AT | TCP client v1 使用 `AT+CIPSTART`、`AT+CIPSEND`、`AT+CIPRXGET=5`、`AT+CIPRXGET=3,<len>`、`AT+CIPCLOSE`；TCP-TLS 前置 `AT+CIPSSL=1`（SSL context 0，SNI 经 `AT+SSLCFG="hostname",0,...`），复用 `lwlte_ssl_provision()`；`+RECEIVE` / `+IPD` 属直推 RX 或多连接路径，留作非 v1/后续能力参考 |
+| ML307R AT | `AT+MIPOPEN`、`AT+MIPSEND`、`AT+MIPCLOSE`、`AT+MIPRD`、`AT+MIPCFG`；TCP-TLS 前置 `AT+MIPCFG="ssl",<conn>,1,<ssl_id>` 再 `AT+MIPOPEN`，复用 `lwlte_ssl_provision()`；TCP v1 使用 `+MIPURC: "rtcp"` 接收缓存通知和 `+MIPURC: "disconn"` 断链通知 |
+| 规划工作 | UDP (`MODEM_PROTOCOL_UDP`)、server/listen mode、local port binding、multiple simultaneous connections、automatic reconnect、high-throughput streaming。 |
 
 #### P3 TLS/SSL 配置
 
@@ -149,8 +149,8 @@ Service 层职责：通过 `core_submit_cmd()` 串行驱动 `modem_ops`，管理
 | 归属 | `tcp_client` service（类比 `mqtt_client`），TCP client v1 只管理一个 client connection。 |
 | 新增命令 | `CORE_CMD_SOCKET_OPEN` / `CORE_CMD_SOCKET_SEND` / `CORE_CMD_SOCKET_RECV` / `CORE_CMD_SOCKET_CLOSE`。 |
 | 新增协议数据 | `CORE_PROTOCOL_TCP`；`core_protocol_data_t` 携带 conn_id。 |
-| 编排逻辑 | v1 固定 `conn_id=0`，RX 使用缓存读模式保证二进制安全；后续再扩展多连接、UDP、TLS 和重连策略。 |
-| Facade API | `lwlte_tcp_open/send/close()`；数据事件通过 `LWLTE_TCP_EVENT` 投递。 |
+| 编排逻辑 | v1 固定 `conn_id=0`，RX 使用缓存读模式保证二进制安全；TCP-TLS 复用 `lwlte_ssl_provision()` 配置的 SSL context（Air780EP ctx 0、ML307R ssl_id 0），由 `lwlte_tcp_open_config_t.transport` 选择明文/TLS；后续再扩展多连接、UDP 和重连策略。 |
+| Facade API | `lwlte_tcp_open/send/close()`；`lwlte_tcp_open_config_t` 新增 `transport`（`lwlte_tcp_transport_t`：plain/TLS）与 `ssl_context_id`；数据事件通过 `LWLTE_TCP_EVENT` 投递。 |
 
 #### P3 TLS/SSL 配置 —— 横向能力（非独立 service）
 
@@ -162,7 +162,7 @@ Service 层职责：通过 `core_submit_cmd()` 串行驱动 `modem_ops`，管理
 | 查询语义 | 查询模块端证书/密钥对象是否存在；Air780EP 用文件系统查询，ML307R 用 `MSSLLIST`/`MSSLCHECK`。 |
 | 编排逻辑 | 证书与安全参数一次性下发并绑定 context id；各协议 config 增加 `transport=TLS` + ssl context 引用。 |
 | MQTT TLS 验证目标 | 使用当前 MQTT example server，端口切换为 `8883`，验证实机连接、订阅和 telemetry 发布。 |
-| 复用现状 | 打通 `mqtt_client_config_t` 已预留的 `MQTT_CLIENT_TRANSPORT_TLS`；socket/http config 引用 ssl context。 |
+| 复用现状 | 打通 `mqtt_client_config_t` 已预留的 `MQTT_CLIENT_TRANSPORT_TLS`；TCP-TLS (SSL socket) 已复用 `lwlte_ssl_provision()` 落地（Air780EP ctx 0 / ML307R ssl_id 0）；socket/http config 引用 ssl context。 |
 
 #### P4 HTTP/HTTPS —— Core 同步命令（v1）
 

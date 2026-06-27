@@ -4261,6 +4261,38 @@ static esp_err_t ml307r_socket_open(modem_handle_t *me,
     esp_err_t ret = ml307r_socket_prepare(self);
     ESP_RETURN_ON_ERROR(ret, TAG, "prepare ML307R TCP socket failed");
 
+    /* SSL 绑定：TLS 绑 ssl_id；明文显式解绑清残留。 */
+    {
+        char ssl_cfg_cmd[48];
+        int sn;
+        if (open->transport == MODEM_SOCKET_TRANSPORT_TLS) {
+            ESP_RETURN_ON_FALSE(open->ssl_context_id < ML307R_SSL_MAX_CONTEXTS,
+                                ESP_ERR_INVALID_ARG, TAG,
+                                "ML307R TCP TLS ssl_context_id out of range");
+            ESP_RETURN_ON_FALSE(ml307r_ssl_context_marked(self, open->ssl_context_id),
+                                ESP_ERR_INVALID_STATE, TAG,
+                                "ML307R TCP TLS context not provisioned");
+            /* AT command shape: AT+MIPCFG="ssl",<conn_id>,1,<ssl_id>. */
+            sn = snprintf(ssl_cfg_cmd, sizeof(ssl_cfg_cmd),
+                          "AT+MIPCFG=\"ssl\",%u,1,%u",
+                          (unsigned int)open->conn_id,
+                          (unsigned int)open->ssl_context_id);
+        } else {
+            /* AT command shape: AT+MIPCFG="ssl",<conn_id>,0,0. */
+            sn = snprintf(ssl_cfg_cmd, sizeof(ssl_cfg_cmd),
+                          "AT+MIPCFG=\"ssl\",%u,0,0",
+                          (unsigned int)open->conn_id);
+        }
+        ESP_RETURN_ON_FALSE(sn > 0 && (size_t)sn < sizeof(ssl_cfg_cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "AT+MIPCFG ssl truncated");
+
+        ml307r_cmd_ctx_t sctx;
+        ret = send_cmd(self, ssl_cfg_cmd, &sctx, ML307R_SSL_CMD_TIMEOUT_MS);
+        ESP_RETURN_ON_ERROR(ret, TAG, "set MIPCFG ssl failed");
+        ret = ensure_at_ok(&sctx.response, "AT+MIPCFG ssl");
+        ESP_RETURN_ON_ERROR(ret, TAG, "AT+MIPCFG ssl not OK");
+    }
+
     char *host = escape_at_string(open->host);
     ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape socket host failed");
 

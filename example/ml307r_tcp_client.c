@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -44,6 +45,14 @@
 #define EXAMPLE_IDLE_DELAY_MS                    1000
 #define EXAMPLE_PAYLOAD_BUF_LEN                  256
 
+#ifndef CONFIG_EXAMPLE_TCP_TLS_ENABLE
+#define CONFIG_EXAMPLE_TCP_TLS_ENABLE            0
+#endif
+
+#ifndef CONFIG_EXAMPLE_TCP_TLS_CA_CERT_PEM
+#define CONFIG_EXAMPLE_TCP_TLS_CA_CERT_PEM       ""
+#endif
+
 /**********************
  *  STATIC PROTOTYPES
  **********************/
@@ -53,6 +62,8 @@ static void tcp_event_cb(void *arg, esp_event_base_t base,
                          int32_t event_id, void *event_data);
 static size_t build_payload(uint8_t *out, size_t out_len);
 static int hex_nibble(char c);
+static char *example_normalize_pem_newlines(const char *pem);
+static void idle_forever(void);
 
 /**********************
  *  STATIC VARIABLES
@@ -133,12 +144,60 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
         return;
     }
 
-    const lwlte_tcp_open_config_t open_config = {
+    esp_err_t ret;
+    if (CONFIG_EXAMPLE_TCP_TLS_ENABLE) {
+        const char *ca_pem = CONFIG_EXAMPLE_TCP_TLS_CA_CERT_PEM;
+        if (ca_pem[0] == '\0') {
+            ESP_LOGE(TAG,
+                     "TCP TLS enabled but CONFIG_EXAMPLE_TCP_TLS_CA_CERT_PEM is empty");
+            idle_forever();
+        }
+        char *ca_pem_normalized = example_normalize_pem_newlines(ca_pem);
+        if (!ca_pem_normalized) {
+            ESP_LOGE(TAG, "TCP TLS CA PEM normalization failed");
+            idle_forever();
+        }
+        const lwlte_ssl_context_config_t ssl_config = {
+            .context_id = 0,
+            .auth_mode = LWLTE_SSL_AUTH_SERVER,
+            .ignore_cert_time = true,
+            .hostname = CONFIG_EXAMPLE_TCP_HOST,
+        };
+        const lwlte_ssl_credentials_t credentials = {
+            .ca_cert_pem = (const uint8_t *)ca_pem_normalized,
+            .ca_cert_len = strlen(ca_pem_normalized),
+        };
+        ret = lwlte_ssl_provision(lte, &ssl_config, &credentials);
+        free(ca_pem_normalized);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "SSL provision failed: %s", esp_err_to_name(ret));
+            idle_forever();
+        }
+        lwlte_ssl_context_status_t status = {0};
+        ret = lwlte_ssl_get_context_status(lte, 0, &status);
+        const bool ssl_status_valid = ret == ESP_OK &&
+                                      status.provisioned &&
+                                      status.auth_mode == LWLTE_SSL_AUTH_SERVER &&
+                                      status.ca_cert_present;
+        if (!ssl_status_valid) {
+            ESP_LOGE(TAG,
+                     "SSL status invalid: ret=%s provisioned=%d auth=%d ca=%d",
+                     esp_err_to_name(ret), (int)status.provisioned,
+                     (int)status.auth_mode, (int)status.ca_cert_present);
+            idle_forever();
+        }
+    }
+
+    const lwlte_tcp_open_config_t open_cfg = {
         .host = CONFIG_EXAMPLE_TCP_HOST,
         .port = CONFIG_EXAMPLE_TCP_PORT,
+        .transport = CONFIG_EXAMPLE_TCP_TLS_ENABLE
+                        ? LWLTE_TCP_TRANSPORT_TLS
+                        : LWLTE_TCP_TRANSPORT_PLAIN_TCP,
+        .ssl_context_id = 0,
         .user_ctx = lte,
     };
-    esp_err_t ret = lwlte_tcp_open(lte, &open_config, &s_conn);
+    ret = lwlte_tcp_open(lte, &open_cfg, &s_conn);
     ESP_LOGI(TAG, "TCP open submitted: %s", esp_err_to_name(ret));
 }
 
@@ -226,4 +285,39 @@ static int hex_nibble(char c)
         return c - 'A' + 10;
     }
     return -1;
+}
+
+static char *example_normalize_pem_newlines(const char *pem)
+{
+    if (!pem) {
+        return NULL;
+    }
+
+    char *normalized = malloc(strlen(pem) + 1U);
+    if (!normalized) {
+        return NULL;
+    }
+
+    const char *src = pem;
+    char *dst = normalized;
+    while (*src != '\0') {
+        if (src[0] == '\\' && src[1] == 'n') {
+            *dst++ = '\n';
+            src += 2;
+        } else if (src[0] == '\\' && src[1] == 'r') {
+            *dst++ = '\r';
+            src += 2;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0';
+    return normalized;
+}
+
+static void idle_forever(void)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(EXAMPLE_IDLE_DELAY_MS));
+    }
 }

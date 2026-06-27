@@ -46,7 +46,20 @@ config EXAMPLE_TCP_HOST
 config EXAMPLE_TCP_PORT
     int "TCP server port"
     range 1 65535
+    default 443 if EXAMPLE_TCP_TLS_ENABLE
     default 4242
+
+config EXAMPLE_TCP_TLS_ENABLE
+    bool "Enable TCP TLS (SSL socket)"
+    default n
+
+config EXAMPLE_TCP_TLS_CA_CERT_PEM
+    string "TCP TLS CA certificate PEM"
+    default ""
+    depends on EXAMPLE_TCP_TLS_ENABLE
+    help
+        Paste the server CA PEM used by the TCP TLS endpoint. Required when
+        EXAMPLE_TCP_TLS_ENABLE=y and auth is server authentication.
 
 config EXAMPLE_TCP_PAYLOAD
     string "TCP payload text"

@@ -54,6 +54,8 @@ typedef enum {
 typedef struct tcp_open_owned {
     char *host;
     uint16_t port;
+    core_socket_transport_t transport;
+    uint8_t ssl_context_id;
 } tcp_open_owned_t;
 
 typedef struct tcp_send_item {

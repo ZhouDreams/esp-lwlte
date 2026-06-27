@@ -58,6 +58,8 @@ typedef struct {
     const char *host;
     uint16_t port;
     void *user_ctx;
+    core_socket_transport_t transport;    /**< 传输类型； Transport */
+    uint8_t ssl_context_id;               /**< TLS SSL context ID； SSL context ID for TLS */
 } tcp_client_open_config_t;
 
 /**********************

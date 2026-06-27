@@ -740,6 +740,9 @@ esp_err_t lwlte_tcp_open(lwlte_handle_t *me,
 {
     ESP_RETURN_ON_FALSE(config && out_conn, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
+    ESP_RETURN_ON_FALSE(config->transport == LWLTE_TCP_TRANSPORT_PLAIN_TCP ||
+                        config->transport == LWLTE_TCP_TRANSPORT_TLS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid transport");
     tcp_client_handle_t *tcp = NULL;
     esp_err_t ret = begin_api_call(me, false, NULL);
     ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
@@ -756,6 +759,10 @@ esp_err_t lwlte_tcp_open(lwlte_handle_t *me,
         .host = config->host,
         .port = config->port,
         .user_ctx = config->user_ctx,
+        .transport = (config->transport == LWLTE_TCP_TRANSPORT_TLS)
+                         ? CORE_SOCKET_TRANSPORT_TLS
+                         : CORE_SOCKET_TRANSPORT_PLAIN_TCP,
+        .ssl_context_id = config->ssl_context_id,
     };
     ret = tcp_client_open(tcp, &open_config, (tcp_client_conn_t **)out_conn);
     xSemaphoreGive(me->lock);

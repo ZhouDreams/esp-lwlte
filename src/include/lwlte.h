@@ -249,13 +249,24 @@ typedef struct {
 } lwlte_tcp_config_t;
 
 /**
+ * @brief TCP 传输类型
+ * @details TCP transport type
+ */
+typedef enum {
+    LWLTE_TCP_TRANSPORT_PLAIN_TCP = 0,  /**< 明文 TCP； Plain TCP */
+    LWLTE_TCP_TRANSPORT_TLS,            /**< TLS； TLS */
+} lwlte_tcp_transport_t;
+
+/**
  * @brief TCP 打开连接配置
  * @details TCP open connection configuration
  */
 typedef struct {
-    const char *host;                     /**< 目标主机或 IP； Target host or IP */
-    uint16_t port;                        /**< 目标端口； Target port */
-    void *user_ctx;                       /**< 用户上下文，事件中原样返回； User context returned in events */
+    const char           *host;           /**< 目标主机或 IP； Target host or IP */
+    uint16_t              port;           /**< 目标端口； Target port */
+    lwlte_tcp_transport_t transport;      /**< 传输类型，0 为明文 TCP； Transport, 0 is plain TCP */
+    uint8_t               ssl_context_id; /**< TLS 使用的 SSL context ID； SSL context ID for TLS */
+    void                 *user_ctx;       /**< 用户上下文，事件中原样返回； User context returned in events */
 } lwlte_tcp_open_config_t;
 
 /**

@@ -742,6 +742,10 @@ static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)
                 .host = cmd->data.socket_open.host,
                 .port = cmd->data.socket_open.port,
                 .timeout_ms = cmd->data.socket_open.timeout_ms,
+                .transport = (cmd->data.socket_open.transport == CORE_SOCKET_TRANSPORT_TLS)
+                                 ? MODEM_SOCKET_TRANSPORT_TLS
+                                 : MODEM_SOCKET_TRANSPORT_PLAIN_TCP,
+                .ssl_context_id = cmd->data.socket_open.ssl_context_id,
                 .modem_error_code = &modem_error_code,
             };
             ret = modem_socket_open(me->modem, &request);

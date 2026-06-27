@@ -345,6 +345,15 @@ typedef enum {
 } modem_socket_proto_t;
 
 /**
+ * @brief Socket 传输类型
+ * @details Socket transport type
+ */
+typedef enum {
+    MODEM_SOCKET_TRANSPORT_PLAIN_TCP = 0,  /**< 明文 TCP； Plain TCP */
+    MODEM_SOCKET_TRANSPORT_TLS,            /**< TLS； TLS */
+} modem_socket_transport_t;
+
+/**
  * @brief Socket 打开参数
  * @details Socket open parameters
  */
@@ -355,6 +364,8 @@ typedef struct {
     uint16_t port;                /**< 目标端口； Target port */
     uint32_t timeout_ms;          /**< 打开超时； Open timeout */
     int *modem_error_code;        /**< 模块原始错误码输出，可为 NULL； Raw modem error code output, optional */
+    modem_socket_transport_t transport;  /**< 传输类型，0 为明文 TCP； Transport, 0 is plain TCP */
+    uint8_t ssl_context_id;              /**< TLS 使用的 SSL context ID； SSL context ID for TLS */
 } modem_socket_open_t;
 
 /**

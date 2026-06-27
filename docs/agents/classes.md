@@ -511,6 +511,11 @@ typedef enum {
     MODEM_SOCKET_PROTO_TCP = 0,
 } modem_socket_proto_t;
 
+typedef enum {
+    MODEM_SOCKET_TRANSPORT_PLAIN_TCP = 0,  /**< 明文 TCP； Plain TCP */
+    MODEM_SOCKET_TRANSPORT_TLS,            /**< TLS； TLS */
+} modem_socket_transport_t;
+
 typedef struct {
     modem_socket_proto_t proto;
     uint8_t conn_id;
@@ -518,6 +523,8 @@ typedef struct {
     uint16_t port;
     uint32_t timeout_ms;
     int *modem_error_code;
+    modem_socket_transport_t transport;  /**< 传输类型，0 为明文 TCP； Transport, 0 is plain TCP */
+    uint8_t ssl_context_id;              /**< TLS 使用的 SSL context ID； SSL context ID for TLS */
 } modem_socket_open_t;
 
 typedef struct {
@@ -637,7 +644,7 @@ esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
 | `mqtt_subscribe` | 订阅 MQTT topic | `AT+MSUB`，成功 `SUBACK` |
 | `mqtt_unsubscribe` | 取消订阅 MQTT topic | `AT+MUNSUB`，成功 `UNSUBACK` |
 | `mqtt_publish` | 发布定长 MQTT payload | `AT+MPUBEX` + payload prompt |
-| `socket_open` | 打开模块内置 TCP socket | Air780EP `AT+CIPSTART`；ML307R `AT+MIPOPEN` |
+| `socket_open` | 打开模块内置 TCP socket | Air780EP `AT+CIPSTART`；ML307R `AT+MIPOPEN`；TLS 时分别前置 AT+CIPSSL=1（ctx 0，并先 AT+SSLCFG="hostname",0,...）/ AT+MIPCFG="ssl",<conn>,1,<ssl_id> |
 | `socket_send` | 发送定长 socket payload | Air780EP `AT+CIPSEND`；ML307R `AT+MIPSEND` |
 | `socket_recv` | 从模块缓存读取 socket payload | Air780EP `AT+CIPRXGET=3,<len>`；ML307R `AT+MIPRD` |
 | `socket_close` | 关闭 socket 连接 | Air780EP `AT+CIPCLOSE`；ML307R `AT+MIPCLOSE` |

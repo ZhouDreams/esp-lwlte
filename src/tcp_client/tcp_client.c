@@ -85,7 +85,9 @@ static void handle_protocol_closed(tcp_client_handle_t *me,
                                    const tcp_fsm_sig_t *sig);
 static void handle_deferred_work(tcp_client_handle_t *me, tcp_client_conn_t *conn);
 static esp_err_t submit_socket_open(tcp_client_conn_t *conn, const char *host,
-                                    uint16_t port);
+                                    uint16_t port,
+                                    core_socket_transport_t transport,
+                                    uint8_t ssl_context_id);
 static esp_err_t submit_socket_send(tcp_client_conn_t *conn,
                                     const tcp_send_item_t *item);
 static esp_err_t submit_socket_recv(tcp_client_conn_t *conn);
@@ -292,6 +294,8 @@ esp_err_t tcp_client_open(tcp_client_handle_t *me,
     }
     open->host = clone_string(config->host);
     open->port = config->port;
+    open->transport = config->transport;
+    open->ssl_context_id = config->ssl_context_id;
     if (!open->host) {
         free(open);
         cleanup_conn(conn);
@@ -1145,7 +1149,8 @@ static void handle_open(tcp_client_handle_t *me, tcp_client_conn_t *conn,
     if (!conn || !open || !open->host) {
         return;
     }
-    if (submit_socket_open(conn, open->host, open->port) != ESP_OK) {
+    if (submit_socket_open(conn, open->host, open->port,
+                           open->transport, open->ssl_context_id) != ESP_OK) {
         if (conn_terminal_or_destroyed(conn)) {
             handle_remote_closed_if_latched(me, conn);
             return;
@@ -1441,7 +1446,9 @@ static void handle_deferred_work(tcp_client_handle_t *me, tcp_client_conn_t *con
 }
 
 static esp_err_t submit_socket_open(tcp_client_conn_t *conn, const char *host,
-                                    uint16_t port)
+                                    uint16_t port,
+                                    core_socket_transport_t transport,
+                                    uint8_t ssl_context_id)
 {
     ESP_RETURN_ON_FALSE(conn && conn->client && host, ESP_ERR_INVALID_ARG, TAG,
                         "invalid socket open args");
@@ -1458,6 +1465,8 @@ static esp_err_t submit_socket_open(tcp_client_conn_t *conn, const char *host,
             .host = host,
             .port = port,
             .timeout_ms = me->config.open_timeout_ms,
+            .transport = transport,
+            .ssl_context_id = ssl_context_id,
         },
     };
 

@@ -1010,6 +1010,8 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
         break;
     case CORE_CMD_SOCKET_OPEN:
         clone->data.socket_open.host = clone_optional_string(cmd->data.socket_open.host);
+        clone->data.socket_open.transport = cmd->data.socket_open.transport;
+        clone->data.socket_open.ssl_context_id = cmd->data.socket_open.ssl_context_id;
         if (!clone->data.socket_open.host) {
             free_core_cmd(clone);
             return NULL;
@@ -1196,6 +1198,8 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
                cmd->data.mqtt_publish.qos <= 2;
     case CORE_CMD_SOCKET_OPEN:
         return cmd->data.socket_open.proto == CORE_SOCKET_PROTO_TCP &&
+               (cmd->data.socket_open.transport == CORE_SOCKET_TRANSPORT_PLAIN_TCP ||
+                cmd->data.socket_open.transport == CORE_SOCKET_TRANSPORT_TLS) &&
                cmd->data.socket_open.host &&
                cmd->data.socket_open.host[0] != '\0' &&
                cmd->data.socket_open.port > 0;

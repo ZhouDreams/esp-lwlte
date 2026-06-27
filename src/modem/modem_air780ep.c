@@ -61,6 +61,7 @@
 #define AIR780EP_MQTT_CONNECT_TIMEOUT_MS 60000
 #define AIR780EP_MQTT_PAYLOAD_PROMPT     ">"
 #define AIR780EP_SSL_MQTT_CONTEXT_ID       88
+#define AIR780EP_SSL_TCP_CONTEXT_ID        0   /**< TCP SSL socket 固定 context 0； TCP SSL socket fixed ctx 0 */
 #define AIR780EP_SSL_MAX_PEM_LEN           10240U
 #define AIR780EP_SSL_CMD_TIMEOUT_MS        9000
 #define AIR780EP_SSL_WRITE_TIMEOUT_S       30U
@@ -2804,16 +2805,17 @@ static esp_err_t air780ep_bind_ssl_file(modem_air780ep_t *self,
                                         const char *name)
 {
     ESP_RETURN_ON_FALSE(self && tag && name, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_TCP_CONTEXT_ID ||
+                        context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
                         ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
 
     char *escaped_name = escape_at_string(name);
     ESP_RETURN_ON_FALSE(escaped_name, ESP_ERR_NO_MEM, TAG, "escape file name failed");
 
     char cmd[128];
-    /* Air780EP command token: AT+SSLCFG="cacert",88. */
-    int written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"%s\",88,\"%s\"",
-                           tag, escaped_name);
+    /* Air780EP command token: AT+SSLCFG="<tag>",<context_id>,"<name>". */
+    int written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"%s\",%u,\"%s\"",
+                           tag, (unsigned)context_id, escaped_name);
     free(escaped_name);
     ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
                         ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG file command truncated");
@@ -2905,14 +2907,17 @@ static esp_err_t air780ep_query_ssl_auth_mode(modem_air780ep_t *self,
                                               modem_ssl_auth_mode_t *auth_mode)
 {
     ESP_RETURN_ON_FALSE(self && auth_mode, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_TCP_CONTEXT_ID ||
+                        context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
                         ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
 
+    char cmd[40];
+    snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"seclevel\",%u", (unsigned)context_id);
     air780ep_cmd_ctx_t ctx;
-    esp_err_t ret = send_cmd(self, "AT+SSLCFG=\"seclevel\",88", &ctx,
+    esp_err_t ret = send_cmd(self, cmd, &ctx,
                              AIR780EP_SSL_CMD_TIMEOUT_MS);
     if (ret == ESP_OK) {
-        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG=\"seclevel\",88");
+        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG seclevel");
     }
     ESP_RETURN_ON_ERROR(ret, TAG, "query SSL seclevel failed");
 
@@ -2938,7 +2943,7 @@ static esp_err_t air780ep_query_ssl_auth_mode(modem_air780ep_t *self,
     char *end = NULL;
     long parsed_context = strtol(cursor, &end, 10);
     ESP_RETURN_ON_FALSE(end != cursor && errno != ERANGE &&
-                        parsed_context == AIR780EP_SSL_MQTT_CONTEXT_ID,
+                        parsed_context == (long)context_id,
                         ESP_ERR_INVALID_RESPONSE, TAG, "invalid +SSLCFG context");
     cursor = end;
     while (isspace((unsigned char)*cursor)) {
@@ -3000,7 +3005,8 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
 {
     ESP_RETURN_ON_FALSE(me && config && credentials, ESP_ERR_INVALID_ARG,
                         TAG, "NULL argument");
-    ESP_RETURN_ON_FALSE(config->context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+    ESP_RETURN_ON_FALSE(config->context_id == AIR780EP_SSL_TCP_CONTEXT_ID ||
+                        config->context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
                         ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
     ESP_RETURN_ON_FALSE(config->auth_mode >= MODEM_SSL_AUTH_NONE &&
                         config->auth_mode <= MODEM_SSL_AUTH_MUTUAL,
@@ -3060,20 +3066,23 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
     }
 
     char cmd[128];
-    /* Air780EP command token: AT+SSLCFG="seclevel",88. */
-    int written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"seclevel\",88,%u",
+    /* Air780EP command token: AT+SSLCFG="seclevel",<context_id>,<auth>. */
+    int written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"seclevel\",%u,%u",
+                           (unsigned)config->context_id,
                            (unsigned int)config->auth_mode);
     ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
                         ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG seclevel command truncated");
     air780ep_cmd_ctx_t ctx;
     ret = send_cmd(self, cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
     if (ret == ESP_OK) {
-        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG=\"seclevel\",88");
+        ret = ensure_at_ok(&ctx.response, "AT+SSLCFG seclevel");
     }
     ESP_RETURN_ON_ERROR(ret, TAG, "set SSL seclevel failed");
 
     if (config->auth_mode != MODEM_SSL_AUTH_NONE) {
-        ret = send_cmd(self, "AT+SSLCFG=\"verifymode\",88,0", &ctx,
+        snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"verifymode\",%u,0",
+                 (unsigned)config->context_id);
+        ret = send_cmd(self, cmd, &ctx,
                        AIR780EP_SSL_CMD_TIMEOUT_MS);
         if (ret == ESP_OK) {
             ret = ensure_at_ok(&ctx.response, "AT+SSLCFG verifymode");
@@ -3081,7 +3090,8 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
         ESP_RETURN_ON_ERROR(ret, TAG, "set SSL verify mode failed");
     }
 
-    written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"ignorelocaltime\",88,%u",
+    written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"ignorelocaltime\",%u,%u",
+                       (unsigned)config->context_id,
                        config->ignore_cert_time ? 1U : 0U);
     ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
                         ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG ignorelocaltime command truncated");
@@ -3092,7 +3102,8 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
     ESP_RETURN_ON_ERROR(ret, TAG, "set SSL ignorelocaltime failed");
 
     if (config->tls_version != 0) {
-        written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"sslversion\",88,%u",
+        written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"sslversion\",%u,%u",
+                           (unsigned)config->context_id,
                            (unsigned int)config->tls_version);
         ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
                             ESP_ERR_INVALID_ARG, TAG, "AT+SSLCFG sslversion command truncated");
@@ -3106,7 +3117,8 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
     if (config->hostname && config->hostname[0] != '\0') {
         char *hostname = escape_at_string(config->hostname);
         ESP_RETURN_ON_FALSE(hostname, ESP_ERR_NO_MEM, TAG, "escape SSL hostname failed");
-        int needed = snprintf(NULL, 0, "AT+SSLCFG=\"hostname\",88,\"%s\"", hostname);
+        int needed = snprintf(NULL, 0, "AT+SSLCFG=\"hostname\",%u,\"%s\"",
+                              (unsigned)config->context_id, hostname);
         if (needed < 0) {
             free(hostname);
             return ESP_ERR_INVALID_ARG;
@@ -3117,7 +3129,8 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
             return ESP_ERR_NO_MEM;
         }
         snprintf(hostname_cmd, (size_t)needed + 1U,
-                 "AT+SSLCFG=\"hostname\",88,\"%s\"", hostname);
+                 "AT+SSLCFG=\"hostname\",%u,\"%s\"",
+                 (unsigned)config->context_id, hostname);
         free(hostname);
         ret = send_cmd(self, hostname_cmd, &ctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
         if (ret == ESP_OK) {
@@ -3128,7 +3141,8 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
     }
 
     if (config->negotiate_timeout_s != 0) {
-        written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"negotiatetimeout\",88,%u",
+        written = snprintf(cmd, sizeof(cmd), "AT+SSLCFG=\"negotiatetimeout\",%u,%u",
+                           (unsigned)config->context_id,
                            (unsigned int)config->negotiate_timeout_s);
         ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < sizeof(cmd),
                             ESP_ERR_INVALID_ARG,
@@ -3155,7 +3169,8 @@ static esp_err_t air780ep_ssl_get_context_status(modem_handle_t *me,
                                                  modem_ssl_context_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
-    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
+    ESP_RETURN_ON_FALSE(context_id == AIR780EP_SSL_TCP_CONTEXT_ID ||
+                        context_id == AIR780EP_SSL_MQTT_CONTEXT_ID,
                         ESP_ERR_INVALID_ARG, TAG, "unsupported SSL context");
 
     modem_air780ep_t *self = to_air780ep(me);
@@ -4276,6 +4291,45 @@ static esp_err_t air780ep_socket_open(modem_handle_t *me,
                         ESP_ERR_NOT_SUPPORTED, TAG, "unsupported socket");
 
     modem_air780ep_t *self = to_air780ep(me);
+
+    /* SSL 通道开关：TLS 写 ctx0 hostname + CIPSSL=1；明文显式 CIPSSL=0 清残留。 */
+    if (open->transport == MODEM_SOCKET_TRANSPORT_TLS) {
+        ESP_RETURN_ON_FALSE(open->ssl_context_id == AIR780EP_SSL_TCP_CONTEXT_ID,
+                            ESP_ERR_INVALID_ARG, TAG,
+                            "Air780EP TCP TLS requires ssl_context_id 0");
+        ESP_RETURN_ON_FALSE(ssl_context_marked(self, AIR780EP_SSL_TCP_CONTEXT_ID),
+                            ESP_ERR_INVALID_STATE, TAG,
+                            "Air780EP TCP TLS context 0 not provisioned");
+
+        char *hn_host = escape_at_string(open->host);
+        ESP_RETURN_ON_FALSE(hn_host, ESP_ERR_NO_MEM, TAG, "escape ssl hostname failed");
+
+        char hostname_cmd[160];
+        /* AT command shape: AT+SSLCFG="hostname",0,"%s". */
+        int hn = snprintf(hostname_cmd, sizeof(hostname_cmd),
+                          "AT+SSLCFG=\"hostname\",0,\"%s\"", hn_host);
+        free(hn_host);
+        ESP_RETURN_ON_FALSE(hn > 0 && (size_t)hn < sizeof(hostname_cmd),
+                            ESP_ERR_INVALID_ARG, TAG, "SSLCFG hostname truncated");
+
+        air780ep_cmd_ctx_t hctx;
+        esp_err_t ret = send_cmd(self, hostname_cmd, &hctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+        ESP_RETURN_ON_ERROR(ret, TAG, "set SSL hostname failed");
+        ret = ensure_at_ok(&hctx.response, "AT+SSLCFG hostname");
+        ESP_RETURN_ON_ERROR(ret, TAG, "AT+SSLCFG hostname not OK");
+
+        air780ep_cmd_ctx_t sctx;
+        ret = send_cmd(self, "AT+CIPSSL=1", &sctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+        ESP_RETURN_ON_ERROR(ret, TAG, "set CIPSSL=1 failed");
+        ret = ensure_at_ok(&sctx.response, "AT+CIPSSL=1");
+        ESP_RETURN_ON_ERROR(ret, TAG, "AT+CIPSSL=1 not OK");
+    } else {
+        air780ep_cmd_ctx_t sctx;
+        esp_err_t ret = send_cmd(self, "AT+CIPSSL=0", &sctx, AIR780EP_SSL_CMD_TIMEOUT_MS);
+        ESP_RETURN_ON_ERROR(ret, TAG, "set CIPSSL=0 failed");
+        ret = ensure_at_ok(&sctx.response, "AT+CIPSSL=0");
+        ESP_RETURN_ON_ERROR(ret, TAG, "AT+CIPSSL=0 not OK");
+    }
 
     char *host = escape_at_string(open->host);
     ESP_RETURN_ON_FALSE(host, ESP_ERR_NO_MEM, TAG, "escape socket host failed");

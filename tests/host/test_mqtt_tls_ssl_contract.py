@@ -133,8 +133,8 @@ class MqttTlsSslContractTest(unittest.TestCase):
             "AT+FSCREATE=",
             "AT+FSWRITE=",
             "AT+FSFLSIZE=",
-            "AT+SSLCFG=\"cacert\",88",
-            "AT+SSLCFG=\"seclevel\",88",
+            'air780ep_bind_ssl_file(self, "cacert"',
+            r'AT+SSLCFG=\"seclevel\",%u',
             "AT+SSLMIPSTART=",
             ".ssl_provision = air780ep_ssl_provision",
             ".ssl_get_context_status = air780ep_ssl_get_context_status",
@@ -195,9 +195,9 @@ class MqttTlsSslContractTest(unittest.TestCase):
         )
         self.assertIsNotNone(provision_fn, "missing air780ep_ssl_provision body")
         body = provision_fn.group("body")
-        self.assertIn("AT+SSLCFG=\\\"verifymode\\\",88,0", body)
+        self.assertIn("AT+SSLCFG=\\\"verifymode\\\",%u,0", body)
         self.assertLess(
-            body.index("AT+SSLCFG=\\\"verifymode\\\",88,0"),
+            body.index("AT+SSLCFG=\\\"verifymode\\\",%u,0"),
             body.index("ssl_mark_context"),
         )
 
