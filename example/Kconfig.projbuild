@@ -26,6 +26,20 @@ config EXAMPLE_MQTT_CLIENT_ID
     string "MQTT client ID"
     default "esp-lwlte-mqtt-example"
 
+config EXAMPLE_MQTT_USERNAME
+    string "MQTT username (standard brokers)"
+    default ""
+    help
+        MQTT username for brokers that require login. If empty, the
+        ThingsBoard access token below is used as the username.
+
+config EXAMPLE_MQTT_PASSWORD
+    string "MQTT password (standard brokers)"
+    default ""
+    help
+        MQTT password for brokers that require login. Leave empty for
+        token-only (ThingsBoard) authentication.
+
 config EXAMPLE_MQTT_TOKEN
     string "ThingsBoard device access token (used as MQTT username)"
     default "Air780EP"

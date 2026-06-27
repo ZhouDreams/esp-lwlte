@@ -141,10 +141,12 @@ void example_air780ep_mqtt_client_run(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     lwlte_handle_t *lte = NULL;
-    const char *mqtt_username = CONFIG_EXAMPLE_MQTT_TOKEN;
+    const char *mqtt_username = CONFIG_EXAMPLE_MQTT_USERNAME[0] ? CONFIG_EXAMPLE_MQTT_USERNAME
+                                                                : CONFIG_EXAMPLE_MQTT_TOKEN;
     if (mqtt_username[0] == '\0') {
         mqtt_username = NULL;
     }
+    const char *mqtt_password = CONFIG_EXAMPLE_MQTT_PASSWORD[0] ? CONFIG_EXAMPLE_MQTT_PASSWORD : NULL;
 
     const lwlte_mqtt_config_t mqtt_config = {
         .host = CONFIG_EXAMPLE_MQTT_HOST,
@@ -154,7 +156,7 @@ void example_air780ep_mqtt_client_run(void)
         .ssl_context_id = 88,
         .client_id = CONFIG_EXAMPLE_MQTT_CLIENT_ID,
         .username = mqtt_username,
-        .password = NULL,
+        .password = mqtt_password,
         .keepalive_s = CONFIG_EXAMPLE_MQTT_KEEPALIVE_S,
         .clean_session = true,
     };
