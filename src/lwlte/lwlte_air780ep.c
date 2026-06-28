@@ -84,7 +84,7 @@ static bool non_negative_int(int value);
  * @param[in] original_err 原始错误码
  * @return 原始错误码；若无原始错误则返回清理错误码或 ESP_FAIL
  */
-static esp_err_t cleanup_after_failure(lwlte_handle_t *me, esp_err_t original_err);
+static esp_err_t cleanup_after_failure(lwlte_handle_t me, esp_err_t original_err);
 
 /**********************
  *  STATIC VARIABLES
@@ -99,7 +99,7 @@ static esp_err_t cleanup_after_failure(lwlte_handle_t *me, esp_err_t original_er
  **********************/
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_handle_t **out_lte)
+                              lwlte_handle_t *out_lte)
 {
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 1：参数校验与初始化准备
@@ -113,7 +113,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 2：创建门面壳并创建 AT Engine
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    lwlte_handle_t *me = NULL;
+    lwlte_handle_t me = NULL;
     ret = lwlte_create_empty(&me);
     ESP_RETURN_ON_ERROR(ret, TAG, "create facade failed");
 
@@ -291,7 +291,7 @@ static bool non_negative_int(int value)
     return value >= 0;
 }
 
-static esp_err_t cleanup_after_failure(lwlte_handle_t *me, esp_err_t original_err)
+static esp_err_t cleanup_after_failure(lwlte_handle_t me, esp_err_t original_err)
 {
     esp_err_t ret = original_err;
     if (ret == ESP_OK) {

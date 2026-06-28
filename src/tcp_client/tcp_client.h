@@ -28,8 +28,8 @@ extern "C" {
 /**********************
  *      TYPEDEFS
  **********************/
-typedef struct tcp_client_handle tcp_client_handle_t;
-typedef struct tcp_client_conn tcp_client_conn_t;
+typedef struct tcp_client_t *tcp_client_handle_t;
+typedef struct tcp_client_conn_t *tcp_client_conn_t;
 
 typedef enum {
     TCP_CONN_STATE_CREATED = 0,
@@ -65,20 +65,20 @@ typedef struct {
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
-tcp_client_handle_t *tcp_client_create(const tcp_client_config_t *config,
-                                       core_handle_t *core);
-esp_err_t tcp_client_destroy(tcp_client_handle_t *me);
-esp_err_t tcp_client_open(tcp_client_handle_t *me,
+tcp_client_handle_t tcp_client_create(const tcp_client_config_t *config,
+                                       core_handle_t core);
+esp_err_t tcp_client_destroy(tcp_client_handle_t me);
+esp_err_t tcp_client_open(tcp_client_handle_t me,
                           const tcp_client_open_config_t *config,
-                          tcp_client_conn_t **out_conn);
-esp_err_t tcp_client_send(tcp_client_conn_t *conn,
+                          tcp_client_conn_t *out_conn);
+esp_err_t tcp_client_send(tcp_client_conn_t conn,
                           const uint8_t *data,
                           size_t len);
-esp_err_t tcp_client_close(tcp_client_conn_t *conn);
-esp_err_t tcp_client_conn_get_state(tcp_client_conn_t *conn,
+esp_err_t tcp_client_close(tcp_client_conn_t conn);
+esp_err_t tcp_client_conn_get_state(tcp_client_conn_t conn,
                                     tcp_conn_state_t *state);
-esp_err_t tcp_client_conn_destroy(tcp_client_conn_t *conn);
-void tcp_client_conn_release_event(tcp_client_conn_t *conn);
+esp_err_t tcp_client_conn_destroy(tcp_client_conn_t conn);
+void tcp_client_conn_release_event(tcp_client_conn_t conn);
 
 /**********************
  *      MACROS

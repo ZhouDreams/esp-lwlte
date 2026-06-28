@@ -100,8 +100,8 @@ class Air780EpCommandGatedInitTest(unittest.TestCase):
 
     def test_start_and_reset_sequence_is_command_gated(self):
         for signature in [
-            "static esp_err_t air780ep_start(modem_handle_t *me)",
-            "static esp_err_t air780ep_reset(modem_handle_t *me)",
+            "static esp_err_t air780ep_start(modem_handle_t me)",
+            "static esp_err_t air780ep_reset(modem_handle_t me)",
         ]:
             body = function_body(self.air780ep, signature)
             for token in [
@@ -133,7 +133,7 @@ class Air780EpCommandGatedInitTest(unittest.TestCase):
             self.assertNotIn("begin_wait_rdy", body)
 
     def test_core_start_comment_describes_blocking_modem_start_then_network_activation(self):
-        handle_start = function_body(self.core_fsm, "static void handle_start(core_handle_t *me)")
+        handle_start = function_body(self.core_fsm, "static void handle_start(core_handle_t me)")
         self.assertIn("modem_start", handle_start)
         self.assertIn("AT OK", handle_start)
         self.assertIn("基础 AT", handle_start)

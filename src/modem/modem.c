@@ -49,7 +49,7 @@ static void event_task(void *arg);
  *         - true: 应停止
  *         - false: 继续运行
  */
-static bool event_task_should_stop(modem_handle_t *me);
+static bool event_task_should_stop(modem_handle_t me);
 
 /**
  * @brief 检查调制解调器是否可操作
@@ -61,7 +61,7 @@ static bool event_task_should_stop(modem_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 状态错误
  */
-static esp_err_t check_ready(modem_handle_t *me, bool allow_created);
+static esp_err_t check_ready(modem_handle_t me, bool allow_created);
 
 /**
  * @brief 检查 SSL 证书材料是否匹配认证模式
@@ -85,7 +85,7 @@ static bool ssl_credentials_valid(modem_ssl_auth_mode_t auth,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: ops 方法返回值
  */
-static esp_err_t call_no_arg(modem_handle_t *me, modem_no_arg_fn fn);
+static esp_err_t call_no_arg(modem_handle_t me, modem_no_arg_fn fn);
 
 /**
  * @brief 释放协议数据事件负载
@@ -99,7 +99,7 @@ static void release_event_payload(modem_event_t *event);
  * @details Drain event queue and release all PROTOCOL_DATA payloads
  * @param[in] me 调制解调器句柄
  */
-static void drain_event_queue_payloads(modem_handle_t *me);
+static void drain_event_queue_payloads(modem_handle_t me);
 
 /**********************
  *  STATIC VARIABLES
@@ -113,7 +113,7 @@ static void drain_event_queue_payloads(modem_handle_t *me);
  *   GLOBAL FUNCTIONS
  **********************/
 
-esp_err_t modem_base_init(modem_handle_t *me, const char *name, at_engine_handle_t *at,
+esp_err_t modem_base_init(modem_handle_t me, const char *name, at_engine_handle_t at,
                           const modem_ops_t *ops, int event_queue_size,
                           int event_task_stack, int event_task_priority)
 {
@@ -179,7 +179,7 @@ err:
     return ret;
 }
 
-esp_err_t modem_base_deinit(modem_handle_t *me)
+esp_err_t modem_base_deinit(modem_handle_t me)
 {
     if (!me) {
         return ESP_ERR_INVALID_ARG;
@@ -231,7 +231,7 @@ esp_err_t modem_base_deinit(modem_handle_t *me)
     return ret;
 }
 
-esp_err_t modem_base_stop_event_task(modem_handle_t *me)
+esp_err_t modem_base_stop_event_task(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     if (!me->lock) {
@@ -253,7 +253,7 @@ esp_err_t modem_base_stop_event_task(modem_handle_t *me)
     return ESP_OK;
 }
 
-esp_err_t modem_post_event(modem_handle_t *me, const modem_event_t *event)
+esp_err_t modem_post_event(modem_handle_t me, const modem_event_t *event)
 {
     ESP_RETURN_ON_FALSE(me && event && me->lock,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -275,7 +275,7 @@ esp_err_t modem_post_event(modem_handle_t *me, const modem_event_t *event)
     return ESP_OK;
 }
 
-esp_err_t modem_set_state(modem_handle_t *me, modem_state_t state)
+esp_err_t modem_set_state(modem_handle_t me, modem_state_t state)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(state >= MODEM_STATE_CREATED && state <= MODEM_STATE_DESTROYING,
@@ -292,7 +292,7 @@ esp_err_t modem_set_state(modem_handle_t *me, modem_state_t state)
     return ESP_OK;
 }
 
-esp_err_t modem_destroy(modem_handle_t *me)
+esp_err_t modem_destroy(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     if (me->event_task && xTaskGetCurrentTaskHandle() == me->event_task) {
@@ -346,7 +346,7 @@ esp_err_t modem_destroy(modem_handle_t *me)
     return ESP_OK;
 }
 
-esp_err_t modem_start(modem_handle_t *me)
+esp_err_t modem_start(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -358,7 +358,7 @@ esp_err_t modem_start(modem_handle_t *me)
     return call_no_arg(me, me->ops->start);
 }
 
-esp_err_t modem_stop(modem_handle_t *me)
+esp_err_t modem_stop(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -373,7 +373,7 @@ esp_err_t modem_stop(modem_handle_t *me)
     return call_no_arg(me, me->ops->stop);
 }
 
-esp_err_t modem_reset(modem_handle_t *me)
+esp_err_t modem_reset(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -385,7 +385,7 @@ esp_err_t modem_reset(modem_handle_t *me)
     return call_no_arg(me, me->ops->reset);
 }
 
-esp_err_t modem_register_event_callback(modem_handle_t *me,
+esp_err_t modem_register_event_callback(modem_handle_t me,
                                          modem_event_callback_t callback,
                                          void *user_ctx)
 {
@@ -428,7 +428,7 @@ esp_err_t modem_register_event_callback(modem_handle_t *me,
     return ESP_OK;
 }
 
-esp_err_t modem_get_state(modem_handle_t *me, modem_state_t *state)
+esp_err_t modem_get_state(modem_handle_t me, modem_state_t *state)
 {
     ESP_RETURN_ON_FALSE(me && state && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -439,7 +439,7 @@ esp_err_t modem_get_state(modem_handle_t *me, modem_state_t *state)
     return ESP_OK;
 }
 
-esp_err_t modem_get_info(modem_handle_t *me, modem_info_t *info)
+esp_err_t modem_get_info(modem_handle_t me, modem_info_t *info)
 {
     ESP_RETURN_ON_FALSE(me && info, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -451,7 +451,7 @@ esp_err_t modem_get_info(modem_handle_t *me, modem_info_t *info)
     return me->ops->get_info(me, info);
 }
 
-esp_err_t modem_get_sim_status(modem_handle_t *me, modem_sim_status_t *status)
+esp_err_t modem_get_sim_status(modem_handle_t me, modem_sim_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -463,7 +463,7 @@ esp_err_t modem_get_sim_status(modem_handle_t *me, modem_sim_status_t *status)
     return me->ops->get_sim_status(me, status);
 }
 
-esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
+esp_err_t modem_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -475,7 +475,7 @@ esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
     return me->ops->get_signal(me, signal);
 }
 
-esp_err_t modem_get_registration(modem_handle_t *me, modem_reg_status_t *status)
+esp_err_t modem_get_registration(modem_handle_t me, modem_reg_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -487,7 +487,7 @@ esp_err_t modem_get_registration(modem_handle_t *me, modem_reg_status_t *status)
     return me->ops->get_registration(me, status);
 }
 
-esp_err_t modem_get_packet_attach_status(modem_handle_t *me, bool *attached)
+esp_err_t modem_get_packet_attach_status(modem_handle_t me, bool *attached)
 {
     ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -500,7 +500,7 @@ esp_err_t modem_get_packet_attach_status(modem_handle_t *me, bool *attached)
     return me->ops->get_packet_attach_status(me, attached);
 }
 
-esp_err_t modem_set_apn(modem_handle_t *me, uint8_t cid, const char *apn)
+esp_err_t modem_set_apn(modem_handle_t me, uint8_t cid, const char *apn)
 {
     ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -512,7 +512,7 @@ esp_err_t modem_set_apn(modem_handle_t *me, uint8_t cid, const char *apn)
     return me->ops->set_apn(me, cid, apn);
 }
 
-esp_err_t modem_activate_pdp(modem_handle_t *me, uint8_t cid)
+esp_err_t modem_activate_pdp(modem_handle_t me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -524,7 +524,7 @@ esp_err_t modem_activate_pdp(modem_handle_t *me, uint8_t cid)
     return me->ops->activate_pdp(me, cid);
 }
 
-esp_err_t modem_deactivate_pdp(modem_handle_t *me, uint8_t cid)
+esp_err_t modem_deactivate_pdp(modem_handle_t me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -536,7 +536,7 @@ esp_err_t modem_deactivate_pdp(modem_handle_t *me, uint8_t cid)
     return me->ops->deactivate_pdp(me, cid);
 }
 
-esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
+esp_err_t modem_get_pdp_context(modem_handle_t me, uint8_t cid,
                                  modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -549,7 +549,7 @@ esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
     return me->ops->get_pdp_context(me, cid, pdp);
 }
 
-esp_err_t modem_ssl_provision(modem_handle_t *me,
+esp_err_t modem_ssl_provision(modem_handle_t me,
                               const modem_ssl_context_config_t *config,
                               const modem_ssl_credentials_t *credentials)
 {
@@ -562,7 +562,7 @@ esp_err_t modem_ssl_provision(modem_handle_t *me,
     return me->ops->ssl_provision(me, config, credentials);
 }
 
-esp_err_t modem_ssl_get_context_status(modem_handle_t *me,
+esp_err_t modem_ssl_get_context_status(modem_handle_t me,
                                        uint8_t context_id,
                                        modem_ssl_context_status_t *status)
 {
@@ -575,7 +575,7 @@ esp_err_t modem_ssl_get_context_status(modem_handle_t *me,
     return me->ops->ssl_get_context_status(me, context_id, status);
 }
 
-esp_err_t modem_mqtt_configure(modem_handle_t *me,
+esp_err_t modem_mqtt_configure(modem_handle_t me,
                                const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host && config->port > 0 &&
@@ -589,7 +589,7 @@ esp_err_t modem_mqtt_configure(modem_handle_t *me,
     return me->ops->mqtt_configure(me, config);
 }
 
-esp_err_t modem_mqtt_tcp_connect(modem_handle_t *me)
+esp_err_t modem_mqtt_tcp_connect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     esp_err_t ret = check_ready(me, false);
@@ -599,7 +599,7 @@ esp_err_t modem_mqtt_tcp_connect(modem_handle_t *me)
     return me->ops->mqtt_tcp_connect(me);
 }
 
-esp_err_t modem_mqtt_connect(modem_handle_t *me)
+esp_err_t modem_mqtt_connect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     esp_err_t ret = check_ready(me, false);
@@ -609,7 +609,7 @@ esp_err_t modem_mqtt_connect(modem_handle_t *me)
     return me->ops->mqtt_connect(me);
 }
 
-esp_err_t modem_mqtt_disconnect(modem_handle_t *me)
+esp_err_t modem_mqtt_disconnect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -621,7 +621,7 @@ esp_err_t modem_mqtt_disconnect(modem_handle_t *me)
     return me->ops->mqtt_disconnect(me);
 }
 
-esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me)
+esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     esp_err_t ret = check_ready(me, false);
@@ -631,7 +631,7 @@ esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me)
     return me->ops->mqtt_tcp_disconnect(me);
 }
 
-esp_err_t modem_mqtt_subscribe(modem_handle_t *me,
+esp_err_t modem_mqtt_subscribe(modem_handle_t me,
                                const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->qos <= 2,
@@ -645,7 +645,7 @@ esp_err_t modem_mqtt_subscribe(modem_handle_t *me,
     return me->ops->mqtt_subscribe(me, topic);
 }
 
-esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
+esp_err_t modem_mqtt_unsubscribe(modem_handle_t me,
                                  const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic,
@@ -660,7 +660,7 @@ esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
     return me->ops->mqtt_unsubscribe(me, topic);
 }
 
-esp_err_t modem_mqtt_publish(modem_handle_t *me,
+esp_err_t modem_mqtt_publish(modem_handle_t me,
                              const modem_mqtt_publish_t *publish)
 {
     ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
@@ -675,7 +675,7 @@ esp_err_t modem_mqtt_publish(modem_handle_t *me,
     return me->ops->mqtt_publish(me, publish);
 }
 
-esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status)
+esp_err_t modem_mqtt_get_status(modem_handle_t me, modem_mqtt_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     esp_err_t ret = check_ready(me, false);
@@ -685,7 +685,7 @@ esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status)
     return me->ops->mqtt_get_status(me, status);
 }
 
-esp_err_t modem_socket_open(modem_handle_t *me,
+esp_err_t modem_socket_open(modem_handle_t me,
                             const modem_socket_open_t *open)
 {
     ESP_RETURN_ON_FALSE(me && open && open->proto == MODEM_SOCKET_PROTO_TCP &&
@@ -700,7 +700,7 @@ esp_err_t modem_socket_open(modem_handle_t *me,
     return me->ops->socket_open(me, open);
 }
 
-esp_err_t modem_socket_send(modem_handle_t *me,
+esp_err_t modem_socket_send(modem_handle_t me,
                             const modem_socket_send_t *send)
 {
     ESP_RETURN_ON_FALSE(me && send && send->data && send->len > 0,
@@ -714,7 +714,7 @@ esp_err_t modem_socket_send(modem_handle_t *me,
     return me->ops->socket_send(me, send);
 }
 
-esp_err_t modem_socket_recv(modem_handle_t *me,
+esp_err_t modem_socket_recv(modem_handle_t me,
                             const modem_socket_recv_t *recv,
                             modem_socket_recv_result_t *result)
 {
@@ -730,7 +730,7 @@ esp_err_t modem_socket_recv(modem_handle_t *me,
     return me->ops->socket_recv(me, recv, result);
 }
 
-esp_err_t modem_socket_close(modem_handle_t *me,
+esp_err_t modem_socket_close(modem_handle_t me,
                              const modem_socket_close_t *close)
 {
     ESP_RETURN_ON_FALSE(me && close, ESP_ERR_INVALID_ARG, TAG,
@@ -744,7 +744,7 @@ esp_err_t modem_socket_close(modem_handle_t *me,
     return me->ops->socket_close(me, close);
 }
 
-esp_err_t modem_ping(modem_handle_t *me,
+esp_err_t modem_ping(modem_handle_t me,
                      const modem_ping_request_t *request,
                      modem_ping_reply_t *replies,
                      size_t max_replies,
@@ -773,7 +773,7 @@ esp_err_t modem_ping(modem_handle_t *me,
 
 static void event_task(void *arg)
 {
-    modem_handle_t *me = (modem_handle_t *)arg;
+    modem_handle_t me = (modem_handle_t)arg;
 
     while (!event_task_should_stop(me)) {
         modem_event_t event = {0};
@@ -825,7 +825,7 @@ static void event_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static bool event_task_should_stop(modem_handle_t *me)
+static bool event_task_should_stop(modem_handle_t me)
 {
     xSemaphoreTake(me->lock, portMAX_DELAY);
     bool should_stop = me->event_task_stop_requested || me->destroying ||
@@ -863,7 +863,7 @@ static bool ssl_credentials_valid(modem_ssl_auth_mode_t auth,
     return true;
 }
 
-static esp_err_t check_ready(modem_handle_t *me, bool allow_created)
+static esp_err_t check_ready(modem_handle_t me, bool allow_created)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -888,13 +888,13 @@ static esp_err_t check_ready(modem_handle_t *me, bool allow_created)
     return ESP_ERR_INVALID_STATE;
 }
 
-static esp_err_t call_no_arg(modem_handle_t *me, modem_no_arg_fn fn)
+static esp_err_t call_no_arg(modem_handle_t me, modem_no_arg_fn fn)
 {
     ESP_RETURN_ON_FALSE(me && fn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     return fn(me);
 }
 
-static void drain_event_queue_payloads(modem_handle_t *me)
+static void drain_event_queue_payloads(modem_handle_t me)
 {
     if (!me || !me->event_queue) {
         return;

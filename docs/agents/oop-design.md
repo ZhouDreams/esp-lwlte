@@ -43,12 +43,14 @@ static bool param_valid(uint32_t param);
 **用户公共头文件（`src/include/lwlte.h`）**：
 
 ```c
-typedef struct lwlte_handle lwlte_handle_t;  /* 前置声明，不暴露内部 */
+typedef struct lwlte_t *lwlte_handle_t;  /* 前置声明：句柄即指针，不暴露内部 */
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_handle_t **out_lte);
-esp_err_t lwlte_destroy(lwlte_handle_t *me);
+                              lwlte_handle_t *out_lte);
+esp_err_t lwlte_destroy(lwlte_handle_t me);
 ```
+
+**typedef 形态（Pattern A）**：本项目把 `*` 放进 typedef（`typedef struct X_t *X_handle_t`），struct tag 用 `_t` 后缀，对齐 ESP-IDF 主流写法（如 `esp_lcd` 的 `typedef struct esp_lcd_panel_t *esp_lcd_panel_handle_t;`）。句柄仍是不完整类型的指针，封装语义不变，只是使用处少写一个 `*`。ESP-IDF / FreeRTOS 自有句柄（`esp_event_loop_handle_t`、`TaskHandle_t` 等）本来就是此形态，本项目自有句柄与之对齐。
 
 内部层 factory 可沿用该层既定的指针返回 create 模式，例如 `core_create()`、`modem_air780ep_create()`；不要把内部 factory 形态投射成用户公共 API。
 
@@ -65,17 +67,17 @@ esp_err_t lwlte_destroy(lwlte_handle_t *me);
 **私有头文件或 `.c` 文件**：
 
 ```c
-struct lwlte_xxx {
+struct lwlte_xxx_t {
     lwlte_xxx_config_t config;
     uint32_t           flags;
     /* ... 内部字段 */
 };
 ```
 
-**规则**：所有操作函数第一个参数必须是 `me` 指针（教程第5章 HAL 模式）：
+**规则**：所有操作函数第一个参数必须是 `me` 句柄（即指针）（教程第5章 HAL 模式）：
 
 ```c
-int lwlte_xxx_do_something(lwlte_xxx_t *me, int param);  /* me 指针第一位 */
+int lwlte_xxx_do_something(lwlte_xxx_t me, int param);  /* me 句柄第一位 */
 ```
 
 教程原文："同一个函数，传不同的 `me` 指针，操作不同的实例。"
@@ -90,7 +92,7 @@ static int validate_config(const lwlte_config_t *config);
 static void handle_internal_event(void *arg);
 
 /* 文件私有变量——外部不可直接访问 */
-static lwlte_xxx_t *s_active_instance;
+static lwlte_xxx_t s_active_instance;
 ```
 
 如果需要对外暴露模块级共享数据，通过 getter 函数而非 `extern` 变量：
@@ -167,9 +169,9 @@ static unsigned int s_init_count;
 
 ```c
 /* 基类：Modem Adapter 通用对象 */
-struct modem_handle {
+struct modem_t {
     const modem_ops_t      *ops;          /* vptr，见第3章 */
-    at_engine_handle_t            *at;
+    at_engine_handle_t            at;
     SemaphoreHandle_t       lock;
     QueueHandle_t           event_queue;
     modem_event_callback_t  event_cb;
@@ -180,7 +182,7 @@ struct modem_handle {
 
 /* 子类：Air780EP Modem 实现 */
 typedef struct {
-    modem_handle_t                  base;        /* 第一个字段——继承 */
+    struct modem_t                  base;        /* 第一个字段——继承 */
     modem_air780ep_config_t  config;
     modem_signal_t           last_signal;
     modem_sim_status_t       last_sim_status;
@@ -188,6 +190,8 @@ typedef struct {
     bool                     initialized;
 } modem_air780ep_t;
 ```
+
+**按值嵌入基类必须用原始 struct tag**：Pattern A 下 `modem_handle_t` 已是指针 typedef；若子类写成 `modem_handle_t base;`，它会变成「指针成员」而非嵌入的结构体，导致 `MODEM_CONTAINER_OF` 的 `offsetof` 取到错误偏移。因此子类按值嵌入基类**必须**写 `struct modem_t base;`（原始 tag），不能用句柄 typedef。`&obj.base` 得到的仍是 `struct modem_t *`（即 `modem_handle_t`），向上/向下转型不受影响。
 
 **规则**：基类必须放在子类结构体的第 0 偏移位置。C99 §6.7.2.1 保证第一个成员的地址等于结构体地址，这是向上转型的基础。
 
@@ -197,7 +201,7 @@ typedef struct {
 
 ```c
 static esp_err_t air780ep_object_init(modem_air780ep_t *me,
-                                      at_engine_handle_t *at,
+                                      at_engine_handle_t at,
                                       const modem_air780ep_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && at && config, ESP_ERR_INVALID_ARG, TAG,
@@ -230,17 +234,17 @@ modem_air780ep_t air780ep;
 air780ep_object_init(&air780ep, at, &config);
 
 /* 正确：取 base 成员地址 */
-modem_handle_t *base = &air780ep.base;
+modem_handle_t base = &air780ep.base;
 
 /* 错误：强转——base 不在偏移 0 时会出错 */
-modem_handle_t *bad_base = (modem_handle_t *)&air780ep;  /* 禁止 */
+modem_handle_t bad_base = (modem_handle_t)&air780ep;  /* 禁止 */
 ```
 
 教程原文："让编译器自己算偏移，你别去碰。"
 
 ### 2.4 向下转型（Downcasting）：MODEM_CONTAINER_OF
 
-当函数收到 `modem_handle_t *` 基类指针，需要反推出具体子类对象时，使用 `MODEM_CONTAINER_OF` 宏（教程第13章）：
+当函数收到 `modem_handle_t` 基类指针，需要反推出具体子类对象时，使用 `MODEM_CONTAINER_OF` 宏（教程第13章）：
 
 ```c
 /* 放入 Modem 模块私有头文件 */
@@ -261,7 +265,7 @@ modem_handle_t *bad_base = (modem_handle_t *)&air780ep;  /* 禁止 */
     ((type *)((char *)(ptr) - offsetof(type, member)))
 
 /* Air780EP 子类方法中从 base 反推自身 */
-static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
+static esp_err_t air780ep_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     modem_air780ep_t *self = MODEM_CONTAINER_OF(me, modem_air780ep_t, base);
 
@@ -328,12 +332,12 @@ static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
 
 ```c
 /* src/modem/modem_priv.h — Modem 内部多态接口 */
-typedef esp_err_t (*modem_no_arg_fn)(modem_handle_t *me);
-typedef esp_err_t (*modem_get_signal_fn)(modem_handle_t *me,
+typedef esp_err_t (*modem_no_arg_fn)(modem_handle_t me);
+typedef esp_err_t (*modem_get_signal_fn)(modem_handle_t me,
                                          modem_signal_t *signal);
-typedef esp_err_t (*modem_set_apn_fn)(modem_handle_t *me, uint8_t cid,
+typedef esp_err_t (*modem_set_apn_fn)(modem_handle_t me, uint8_t cid,
                                       const char *apn);
-typedef esp_err_t (*modem_pdp_cid_fn)(modem_handle_t *me, uint8_t cid);
+typedef esp_err_t (*modem_pdp_cid_fn)(modem_handle_t me, uint8_t cid);
 
 typedef struct modem_ops {
     modem_no_arg_fn destroy;
@@ -356,9 +360,9 @@ typedef struct modem_ops {
 
 ```c
 /* src/modem/modem_priv.h — 基类持有 vptr */
-struct modem_handle {
+struct modem_t {
     const modem_ops_t *ops;  /* vptr：指向具体模块操作表 */
-    at_engine_handle_t       *at;
+    at_engine_handle_t       at;
     modem_state_t      state;
     QueueHandle_t      event_queue;
 };
@@ -368,14 +372,14 @@ struct modem_handle {
 
 ```c
 typedef struct {
-    modem_handle_t                 base;    /* 第一个字段，实现向上转型 */
+    struct modem_t                 base;    /* 第一个字段，实现向上转型 */
     modem_air780ep_config_t config;
     modem_signal_t          last_signal;
 } modem_air780ep_t;
 
-static esp_err_t modem_base_init(modem_handle_t *me,
+static esp_err_t modem_base_init(modem_handle_t me,
                                  const modem_ops_t *ops,
-                                 at_engine_handle_t *at)
+                                 at_engine_handle_t at)
 {
     if (!me || !ops || !at) {
         return ESP_ERR_INVALID_ARG;
@@ -410,7 +414,7 @@ static const modem_ops_t air780ep_ops = {
     .deactivate_pdp = air780ep_deactivate_pdp,
 };
 
-modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
+modem_handle_t modem_air780ep_create(at_engine_handle_t at,
                                const modem_air780ep_config_t *config)
 {
     modem_air780ep_t *self = calloc(1, sizeof(*self));
@@ -435,7 +439,7 @@ modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
 
 ```c
 /* Core 只调用 modem_* 层间包装 API，不知道具体模块型号。 */
-esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
+esp_err_t modem_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->get_signal,
@@ -445,7 +449,7 @@ esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
 }
 
 /* Air780EP 子类方法中从 base 反推自身，并直接调用下层 AT Engine。 */
-static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
+static esp_err_t air780ep_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     modem_air780ep_t *self = MODEM_CONTAINER_OF(me, modem_air780ep_t, base);
 
@@ -496,7 +500,7 @@ static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
 
 ```c
 /* 统一接口——assert 守卫 */
-esp_err_t modem_require_start(modem_handle_t *me)
+esp_err_t modem_require_start(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -509,7 +513,7 @@ esp_err_t modem_require_start(modem_handle_t *me)
 带 Release 兜底的稳健写法（教程第14章）：
 
 ```c
-esp_err_t modem_require_start(modem_handle_t *me)
+esp_err_t modem_require_start(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -524,7 +528,7 @@ esp_err_t modem_require_start(modem_handle_t *me)
 ### 4.3 策略二：选填（optional）
 
 ```c
-esp_err_t modem_reset_optional(modem_handle_t *me)
+esp_err_t modem_reset_optional(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me && me->ops, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -626,26 +630,26 @@ int lwlte_channel_send(struct lwlte_channel *me,
 
 ```c
 /* src/core/core.h — 层间头文件 */
-typedef struct core_handle core_handle_t;
+typedef struct core_t *core_handle_t;
 
-core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
-esp_err_t core_destroy(core_handle_t *me);
-esp_err_t core_start(core_handle_t *me);
-esp_err_t core_connect(core_handle_t *me);
+core_handle_t core_create(const core_config_t *config, modem_handle_t modem);
+esp_err_t core_destroy(core_handle_t me);
+esp_err_t core_start(core_handle_t me);
+esp_err_t core_connect(core_handle_t me);
 
 /* src/core/core_priv.h — Core 模块私有结构 */
-struct core_handle {
+struct core_t {
     core_config_t config;
-    modem_handle_t      *modem;
+    modem_handle_t      modem;
     core_fsm_t    fsm;
     net_mgr_t     net_mgr;
     pdp_mgr_t     pdp_mgr;
 };
 
 /* src/core/core.c — 内部实现 */
-core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem)
+core_handle_t core_create(const core_config_t *config, modem_handle_t modem)
 {
-    core_handle_t *me = calloc(1, sizeof(*me));
+    core_handle_t me = calloc(1, sizeof(*me));
     if (!me) return NULL;
 
     me->config = *config;
@@ -670,7 +674,7 @@ App 或板级文件只调用用户门面 factory；真正认识 AT Engine、Mode
 ```c
 /* app_lte.c — App 只看到用户 API */
 
-lwlte_handle_t *g_lte;
+lwlte_handle_t g_lte;
 
 int lwlte_board_init(void)
 {
@@ -729,22 +733,22 @@ void app_main(void)
 
 ### 5.5 生命周期模板
 
-用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_handle_t *`，便于区分参数错误、内存不足和下层对象创建失败。`AT OK`/AT ready 和网络 online 是 `lwlte_start()` 之后的运行期结果；前者由 `modem_start()` 阻塞完成，后者通过事件上报：
+用户门面 factory 返回 `esp_err_t`，通过 out 参数交付 `lwlte_handle_t`，便于区分参数错误、内存不足和下层对象创建失败。`AT OK`/AT ready 和网络 online 是 `lwlte_start()` 之后的运行期结果；前者由 `modem_start()` 阻塞完成，后者通过事件上报：
 
 ```c
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_handle_t **out_lte);
-esp_err_t lwlte_start(lwlte_handle_t *me);
-esp_err_t lwlte_destroy(lwlte_handle_t *me);
+                              lwlte_handle_t *out_lte);
+esp_err_t lwlte_start(lwlte_handle_t me);
+esp_err_t lwlte_destroy(lwlte_handle_t me);
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_handle_t **out_lte)
+                              lwlte_handle_t *out_lte)
 {
     ESP_RETURN_ON_FALSE(config && out_lte, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
 
     esp_err_t ret = ESP_OK;
-    lwlte_handle_t *me = calloc(1, sizeof(*me));
+    lwlte_handle_t me = calloc(1, sizeof(*me));
     ESP_RETURN_ON_FALSE(me, ESP_ERR_NO_MEM, TAG, "calloc facade failed");
 
     ret = create_at_modem_core_tree(me, config);
@@ -761,11 +765,11 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
 内部 service 和模块 factory 可以沿用本层既定的指针返回模式；失败原因由日志和清理路径记录，调用方按依赖树反向释放：
 
 ```c
-core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
-modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
+core_handle_t core_create(const core_config_t *config, modem_handle_t modem);
+modem_handle_t modem_air780ep_create(at_engine_handle_t at,
                                const modem_air780ep_config_t *config);
 
-modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
+modem_handle_t modem_air780ep_create(at_engine_handle_t at,
                                const modem_air780ep_config_t *config)
 {
     modem_air780ep_t *self = calloc(1, sizeof(*self));

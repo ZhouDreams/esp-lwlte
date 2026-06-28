@@ -84,7 +84,7 @@ class PingEndToEndContractTest(unittest.TestCase):
             self.assert_struct_contains_fields(source, "lwlte_ping_reply_t", reply_fields)
             self.assert_struct_contains_fields(source, "lwlte_ping_summary_t", summary_fields)
             self.assert_has_function_prototype(source, "lwlte_ping", [
-                r"lwlte_handle_t\s*\*\s*me",
+                r"lwlte_handle_t\s*me",
                 r"const\s+lwlte_ping_request_t\s*\*\s*request",
                 r"lwlte_ping_reply_t\s*\*\s*replies",
                 r"size_t\s+max_replies",
@@ -108,10 +108,10 @@ class PingEndToEndContractTest(unittest.TestCase):
         combined = "\n".join([header, priv, source])
 
         for token in [
-            "typedef struct ping_client_handle ping_client_handle_t;",
-            "ping_client_handle_t *ping_client_create(core_handle_t *core);",
-            "esp_err_t ping_client_destroy(ping_client_handle_t *me);",
-            "esp_err_t ping_client_ping(ping_client_handle_t *me,",
+            "typedef struct ping_client_t *ping_client_handle_t;",
+            "ping_client_handle_t ping_client_create(core_handle_t core);",
+            "esp_err_t ping_client_destroy(ping_client_handle_t me);",
+            "esp_err_t ping_client_ping(ping_client_handle_t me,",
             ".type = CORE_CMD_PING",
             "xSemaphoreCreateBinary()",
         ]:
@@ -187,7 +187,7 @@ class PingEndToEndContractTest(unittest.TestCase):
 
         for token in [
             '#include "ping_client.h"',
-            "ping_client_handle_t *ping;",
+            "ping_client_handle_t ping;",
         ]:
             self.assertIn(token, lwlte_priv_h)
 
@@ -353,7 +353,7 @@ class PingEndToEndContractTest(unittest.TestCase):
             "uint32_t avg_time_ms;",
         ])
         self.assert_has_function_prototype(modem_h, "modem_ping", [
-            r"modem_handle_t\s*\*\s*me",
+            r"modem_handle_t\s*me",
             r"const\s+modem_ping_request_t\s*\*\s*request",
             r"modem_ping_reply_t\s*\*\s*replies",
             r"size_t\s+max_replies",
@@ -363,7 +363,7 @@ class PingEndToEndContractTest(unittest.TestCase):
         self.assertRegex(
             modem_priv_h,
             r"typedef\s+esp_err_t\s*\(\s*\*\s*modem_ping_fn\s*\)\s*\("
-            r"[\s\S]*modem_handle_t\s*\*\s*me"
+            r"[\s\S]*modem_handle_t\s*me"
             r"[\s\S]*const\s+modem_ping_request_t\s*\*\s*request"
             r"[\s\S]*modem_ping_reply_t\s*\*\s*replies"
             r"[\s\S]*size_t\s+max_replies"
@@ -391,7 +391,7 @@ class PingEndToEndContractTest(unittest.TestCase):
         for token in [
             "#define AIR780EP_CIPPING_PREFIX         \"+CIPPING:\"",
             "#define AIR780EP_CIPPING_MAX_COUNT      100",
-            "static esp_err_t air780ep_ping(modem_handle_t *me,",
+            "static esp_err_t air780ep_ping(modem_handle_t me,",
             ".ping = air780ep_ping,",
             "AT+CIPPING=\"%s\",%u,%u,%u,%u",
             "parse_cipping_line",
@@ -511,9 +511,9 @@ class PingEndToEndContractTest(unittest.TestCase):
     def test_at_engine_response_pool_allocates_lines_on_demand(self):
         at_engine_c = read("src/at_engine/at_engine.c")
 
-        struct_match = re.search(r"struct\s+at_engine_handle\s*\{(?P<body>[\s\S]*?)\n\};",
+        struct_match = re.search(r"struct\s+at_engine_t\s*\{(?P<body>[\s\S]*?)\n\};",
                                  at_engine_c)
-        self.assertIsNotNone(struct_match, "missing at_engine_handle struct")
+        self.assertIsNotNone(struct_match, "missing at_engine_t struct")
         struct_body = struct_match.group("body")
         self.assertIn("char **response_pool;", struct_body)
         self.assertNotIn("char *response_pool;", struct_body)

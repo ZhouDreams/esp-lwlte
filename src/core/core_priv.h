@@ -99,9 +99,9 @@ typedef struct {
     uint8_t primary_cid;
 } pdp_mgr_t;
 
-struct core_handle {
+struct core_t {
     core_config_t config;
-    modem_handle_t *modem;
+    modem_handle_t modem;
     core_fsm_t fsm;
     net_mgr_t net_mgr;
     pdp_mgr_t pdp_mgr;
@@ -125,31 +125,31 @@ struct core_handle {
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
-esp_err_t core_fsm_init(core_handle_t *me);
+esp_err_t core_fsm_init(core_handle_t me);
 
 /**
  * @brief 停止 FSM 任务
  * @details Stop FSM task without deleting queue/semaphore resources
  * @param[in] me LTE 核心服务句柄
  */
-void core_fsm_stop(core_handle_t *me);
+void core_fsm_stop(core_handle_t me);
 
-esp_err_t core_fsm_deinit(core_handle_t *me);
-esp_err_t core_fsm_send(core_handle_t *me, const core_fsm_sig_t *sig);
-bool core_fsm_is_task(core_handle_t *me);
+esp_err_t core_fsm_deinit(core_handle_t me);
+esp_err_t core_fsm_send(core_handle_t me, const core_fsm_sig_t *sig);
+bool core_fsm_is_task(core_handle_t me);
 
-esp_err_t net_mgr_init(core_handle_t *me);
-esp_err_t net_mgr_deinit(core_handle_t *me);
-void net_mgr_cancel_reconnect(core_handle_t *me);
-esp_err_t net_mgr_start_activation(core_handle_t *me);
-esp_err_t net_mgr_deactivate(core_handle_t *me);
-esp_err_t net_mgr_handle_pdp_activated(core_handle_t *me,
+esp_err_t net_mgr_init(core_handle_t me);
+esp_err_t net_mgr_deinit(core_handle_t me);
+void net_mgr_cancel_reconnect(core_handle_t me);
+esp_err_t net_mgr_start_activation(core_handle_t me);
+esp_err_t net_mgr_deactivate(core_handle_t me);
+esp_err_t net_mgr_handle_pdp_activated(core_handle_t me,
                                         const modem_pdp_context_t *pdp);
-esp_err_t net_mgr_handle_pdp_deactivated(core_handle_t *me,
+esp_err_t net_mgr_handle_pdp_deactivated(core_handle_t me,
                                           const modem_pdp_context_t *pdp);
-esp_err_t net_mgr_get_state(core_handle_t *me, core_net_state_t *state);
-esp_err_t net_mgr_set_state(core_handle_t *me, core_net_state_t state);
-void net_mgr_set_reconnect_enabled(core_handle_t *me, bool enabled);
+esp_err_t net_mgr_get_state(core_handle_t me, core_net_state_t *state);
+esp_err_t net_mgr_set_state(core_handle_t me, core_net_state_t state);
+void net_mgr_set_reconnect_enabled(core_handle_t me, bool enabled);
 
 esp_err_t pdp_mgr_init(pdp_mgr_t *me, uint8_t primary_cid);
 esp_err_t pdp_mgr_get(const pdp_mgr_t *me, uint8_t cid,
@@ -157,11 +157,11 @@ esp_err_t pdp_mgr_get(const pdp_mgr_t *me, uint8_t cid,
 esp_err_t pdp_mgr_update(pdp_mgr_t *me, const modem_pdp_context_t *pdp);
 esp_err_t pdp_mgr_set_active(pdp_mgr_t *me, uint8_t cid, bool active);
 
-esp_err_t core_set_state(core_handle_t *me, core_state_t state);
-core_state_t core_get_state_value(core_handle_t *me);
-bool core_is_destroying(core_handle_t *me);
-bool core_stop_pending(core_handle_t *me);
-esp_err_t core_post_event(core_handle_t *me, lwlte_event_id_t event_id,
+esp_err_t core_set_state(core_handle_t me, core_state_t state);
+core_state_t core_get_state_value(core_handle_t me);
+bool core_is_destroying(core_handle_t me);
+bool core_stop_pending(core_handle_t me);
+esp_err_t core_post_event(core_handle_t me, lwlte_event_id_t event_id,
                           const lwlte_event_data_t *data);
 void core_free_cmd(core_cmd_t *cmd);
 

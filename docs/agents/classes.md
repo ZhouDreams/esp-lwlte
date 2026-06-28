@@ -74,28 +74,28 @@ typedef struct {
 **层间方法**：
 
 ```c
-at_engine_handle_t *at_engine_create(const at_engine_config_t *config);
-esp_err_t    at_engine_destroy(at_engine_handle_t *me);
+at_engine_handle_t at_engine_create(const at_engine_config_t *config);
+esp_err_t    at_engine_destroy(at_engine_handle_t me);
 
 /* 发送普通 AT 命令（阻塞调用，直到 OK/ERROR/CME/CMS 或超时） */
-esp_err_t    at_engine_send_cmd(at_engine_handle_t *me, const char *cmd,
+esp_err_t    at_engine_send_cmd(at_engine_handle_t me, const char *cmd,
                                 at_response_t *response, uint32_t timeout_ms);
 
 /* 使用单次命令选项发送 AT 命令，支持自定义成功终止响应 */
-esp_err_t    at_engine_send_cmd_with_options(at_engine_handle_t *me, const char *cmd,
+esp_err_t    at_engine_send_cmd_with_options(at_engine_handle_t me, const char *cmd,
                                              at_response_t *response,
                                              const at_cmd_options_t *options);
 
 /* URC 回调注册 / 注销 */
-esp_err_t    at_engine_register_urc(at_engine_handle_t *me, const char *prefix,
+esp_err_t    at_engine_register_urc(at_engine_handle_t me, const char *prefix,
                                      at_urc_handler_t *handler);
-esp_err_t    at_engine_unregister_urc(at_engine_handle_t *me, const char *prefix);
+esp_err_t    at_engine_unregister_urc(at_engine_handle_t me, const char *prefix);
 ```
 
 **内部结构**（定义在 `.c` 或 `_priv.h`）：
 
 ```c
-struct at_engine_handle {
+struct at_engine_t {
     at_engine_config_t   config;              // 配置快照
     QueueHandle_t        uart_queue;          // ESP-IDF UART 事件队列
     TaskHandle_t         rx_task;             // UART 接收任务句柄
@@ -238,7 +238,7 @@ typedef struct at_urc_handler {
 ```c
 /* Modem Adapter 定义 URC handler */
 static void cgev_handler(const char *prefix, const char *line, void *user_ctx) {
-    modem_handle_t *me = (modem_handle_t *)user_ctx;
+    modem_handle_t me = (modem_handle_t)user_ctx;
     // "+CGEV: ME PDN DEACT 1" → MODEM_EVENT_PDP_DEACTIVATED
     // 生成 modem_event_t 并投递到 me->event_queue；
     // Core 之后由 Modem event_task 通知。
@@ -368,13 +368,13 @@ Core 只通过 `modem_*` 层间包装 API 使用 `modem_handle_t`，不直接调
 ### 2.2 `modem_handle_t` — 通用 Modem 句柄和基类
 
 **所属层**：Modem Adapter
-**可见性**：层间 API opaque + 内部结构体；`src/modem/modem.h` 只暴露前置声明，`struct modem_handle` 定义在 `src/modem/modem_priv.h` 或 `.c` 中
+**可见性**：层间 API opaque + 内部结构体；`src/modem/modem.h` 只暴露前置声明，`struct modem_t` 定义在 `src/modem/modem_priv.h` 或 `.c` 中
 **OOP 角色**：抽象基类 + 顶层句柄
 
 **公开类型**：
 
 ```c
-typedef struct modem_handle modem_handle_t;
+typedef struct modem_t *modem_handle_t;
 ```
 
 **声明顺序说明**：实际 `src/modem/modem.h` 中应先完成 `modem_handle_t` 前置声明，再定义状态枚举、值对象、事件对象和回调类型，最后声明以下函数原型。本节为了说明 `modem_handle_t` 的使用方式，先集中列出层间方法。
@@ -382,50 +382,50 @@ typedef struct modem_handle modem_handle_t;
 **层间方法**（`src/modem/modem.h`）：
 
 ```c
-esp_err_t modem_destroy(modem_handle_t *me);
-esp_err_t modem_start(modem_handle_t *me);
-esp_err_t modem_reset(modem_handle_t *me);
+esp_err_t modem_destroy(modem_handle_t me);
+esp_err_t modem_start(modem_handle_t me);
+esp_err_t modem_reset(modem_handle_t me);
 
-esp_err_t modem_register_event_callback(modem_handle_t *me,
+esp_err_t modem_register_event_callback(modem_handle_t me,
                                          modem_event_callback_t callback,
                                          void *user_ctx);
 
-esp_err_t modem_get_state(modem_handle_t *me, modem_state_t *state);
-esp_err_t modem_get_info(modem_handle_t *me, modem_info_t *info);
-esp_err_t modem_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
-esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal);
-esp_err_t modem_get_registration(modem_handle_t *me, modem_reg_status_t *status);
-esp_err_t modem_get_packet_attach_status(modem_handle_t *me, bool *attached);
+esp_err_t modem_get_state(modem_handle_t me, modem_state_t *state);
+esp_err_t modem_get_info(modem_handle_t me, modem_info_t *info);
+esp_err_t modem_get_sim_status(modem_handle_t me, modem_sim_status_t *status);
+esp_err_t modem_get_signal(modem_handle_t me, modem_signal_t *signal);
+esp_err_t modem_get_registration(modem_handle_t me, modem_reg_status_t *status);
+esp_err_t modem_get_packet_attach_status(modem_handle_t me, bool *attached);
 
-esp_err_t modem_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
-esp_err_t modem_activate_pdp(modem_handle_t *me, uint8_t cid);
-esp_err_t modem_deactivate_pdp(modem_handle_t *me, uint8_t cid);
-esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
+esp_err_t modem_set_apn(modem_handle_t me, uint8_t cid, const char *apn);
+esp_err_t modem_activate_pdp(modem_handle_t me, uint8_t cid);
+esp_err_t modem_deactivate_pdp(modem_handle_t me, uint8_t cid);
+esp_err_t modem_get_pdp_context(modem_handle_t me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
 
-esp_err_t modem_mqtt_configure(modem_handle_t *me,
+esp_err_t modem_mqtt_configure(modem_handle_t me,
                                const modem_mqtt_config_t *config);
-esp_err_t modem_mqtt_tcp_connect(modem_handle_t *me);
-esp_err_t modem_mqtt_connect(modem_handle_t *me);
-esp_err_t modem_mqtt_disconnect(modem_handle_t *me);
-esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me);
-esp_err_t modem_mqtt_subscribe(modem_handle_t *me,
+esp_err_t modem_mqtt_tcp_connect(modem_handle_t me);
+esp_err_t modem_mqtt_connect(modem_handle_t me);
+esp_err_t modem_mqtt_disconnect(modem_handle_t me);
+esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t me);
+esp_err_t modem_mqtt_subscribe(modem_handle_t me,
                                const modem_mqtt_topic_t *topic);
-esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
+esp_err_t modem_mqtt_unsubscribe(modem_handle_t me,
                                  const modem_mqtt_topic_t *topic);
-esp_err_t modem_mqtt_publish(modem_handle_t *me,
+esp_err_t modem_mqtt_publish(modem_handle_t me,
                              const modem_mqtt_publish_t *publish);
-esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status);
-esp_err_t modem_socket_open(modem_handle_t *me,
+esp_err_t modem_mqtt_get_status(modem_handle_t me, modem_mqtt_status_t *status);
+esp_err_t modem_socket_open(modem_handle_t me,
                             const modem_socket_open_t *open);
-esp_err_t modem_socket_send(modem_handle_t *me,
+esp_err_t modem_socket_send(modem_handle_t me,
                             const modem_socket_send_t *send);
-esp_err_t modem_socket_recv(modem_handle_t *me,
+esp_err_t modem_socket_recv(modem_handle_t me,
                             const modem_socket_recv_t *recv,
                             modem_socket_recv_result_t *result);
-esp_err_t modem_socket_close(modem_handle_t *me,
+esp_err_t modem_socket_close(modem_handle_t me,
                              const modem_socket_close_t *close);
-esp_err_t modem_ping(modem_handle_t *me,
+esp_err_t modem_ping(modem_handle_t me,
                      const modem_ping_request_t *request,
                      modem_ping_reply_t *replies,
                      size_t max_replies,
@@ -557,43 +557,43 @@ typedef struct {
 
 ```c
 typedef struct modem_ops {
-    esp_err_t (*destroy)(modem_handle_t *me);
-    esp_err_t (*start)(modem_handle_t *me);
-    esp_err_t (*reset)(modem_handle_t *me);
-    esp_err_t (*get_info)(modem_handle_t *me, modem_info_t *info);
-    esp_err_t (*get_sim_status)(modem_handle_t *me, modem_sim_status_t *status);
-    esp_err_t (*get_signal)(modem_handle_t *me, modem_signal_t *signal);
-    esp_err_t (*get_registration)(modem_handle_t *me, modem_reg_status_t *status);
-    esp_err_t (*get_packet_attach_status)(modem_handle_t *me, bool *attached);
-    esp_err_t (*set_apn)(modem_handle_t *me, uint8_t cid, const char *apn);
-    esp_err_t (*activate_pdp)(modem_handle_t *me, uint8_t cid);
-    esp_err_t (*deactivate_pdp)(modem_handle_t *me, uint8_t cid);
-    esp_err_t (*get_pdp_context)(modem_handle_t *me, uint8_t cid,
+    esp_err_t (*destroy)(modem_handle_t me);
+    esp_err_t (*start)(modem_handle_t me);
+    esp_err_t (*reset)(modem_handle_t me);
+    esp_err_t (*get_info)(modem_handle_t me, modem_info_t *info);
+    esp_err_t (*get_sim_status)(modem_handle_t me, modem_sim_status_t *status);
+    esp_err_t (*get_signal)(modem_handle_t me, modem_signal_t *signal);
+    esp_err_t (*get_registration)(modem_handle_t me, modem_reg_status_t *status);
+    esp_err_t (*get_packet_attach_status)(modem_handle_t me, bool *attached);
+    esp_err_t (*set_apn)(modem_handle_t me, uint8_t cid, const char *apn);
+    esp_err_t (*activate_pdp)(modem_handle_t me, uint8_t cid);
+    esp_err_t (*deactivate_pdp)(modem_handle_t me, uint8_t cid);
+    esp_err_t (*get_pdp_context)(modem_handle_t me, uint8_t cid,
                                   modem_pdp_context_t *pdp);
-    esp_err_t (*mqtt_configure)(modem_handle_t *me,
+    esp_err_t (*mqtt_configure)(modem_handle_t me,
                                 const modem_mqtt_config_t *config);
-    esp_err_t (*mqtt_tcp_connect)(modem_handle_t *me);
-    esp_err_t (*mqtt_connect)(modem_handle_t *me);
-    esp_err_t (*mqtt_disconnect)(modem_handle_t *me);
-    esp_err_t (*mqtt_tcp_disconnect)(modem_handle_t *me);
-    esp_err_t (*mqtt_subscribe)(modem_handle_t *me,
+    esp_err_t (*mqtt_tcp_connect)(modem_handle_t me);
+    esp_err_t (*mqtt_connect)(modem_handle_t me);
+    esp_err_t (*mqtt_disconnect)(modem_handle_t me);
+    esp_err_t (*mqtt_tcp_disconnect)(modem_handle_t me);
+    esp_err_t (*mqtt_subscribe)(modem_handle_t me,
                                 const modem_mqtt_topic_t *topic);
-    esp_err_t (*mqtt_unsubscribe)(modem_handle_t *me,
+    esp_err_t (*mqtt_unsubscribe)(modem_handle_t me,
                                   const modem_mqtt_topic_t *topic);
-    esp_err_t (*mqtt_publish)(modem_handle_t *me,
+    esp_err_t (*mqtt_publish)(modem_handle_t me,
                               const modem_mqtt_publish_t *publish);
-    esp_err_t (*mqtt_get_status)(modem_handle_t *me,
+    esp_err_t (*mqtt_get_status)(modem_handle_t me,
                                  modem_mqtt_status_t *status);
-    esp_err_t (*socket_open)(modem_handle_t *me,
+    esp_err_t (*socket_open)(modem_handle_t me,
                              const modem_socket_open_t *open);
-    esp_err_t (*socket_send)(modem_handle_t *me,
+    esp_err_t (*socket_send)(modem_handle_t me,
                              const modem_socket_send_t *send);
-    esp_err_t (*socket_recv)(modem_handle_t *me,
+    esp_err_t (*socket_recv)(modem_handle_t me,
                              const modem_socket_recv_t *recv,
                              modem_socket_recv_result_t *result);
-    esp_err_t (*socket_close)(modem_handle_t *me,
+    esp_err_t (*socket_close)(modem_handle_t me,
                               const modem_socket_close_t *close);
-    esp_err_t (*ping)(modem_handle_t *me,
+    esp_err_t (*ping)(modem_handle_t me,
                       const modem_ping_request_t *request,
                       modem_ping_reply_t *replies,
                       size_t max_replies,
@@ -604,7 +604,7 @@ typedef struct modem_ops {
 **调用模式**：
 
 ```c
-esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal)
+esp_err_t modem_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->get_signal,
@@ -822,7 +822,7 @@ typedef struct {
     } data;
 } modem_event_t;
 
-typedef void (*modem_event_callback_t)(modem_handle_t *modem,
+typedef void (*modem_event_callback_t)(modem_handle_t modem,
                                        const modem_event_t *event,
                                        void *user_ctx);
 ```
@@ -870,17 +870,17 @@ typedef struct {
     modem_base_config_t base;           // ML307R 通用基础配置
 } modem_ml307r_config_t;
 
-modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
+modem_handle_t modem_air780ep_create(at_engine_handle_t at,
                                const modem_air780ep_config_t *config);
 
-modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
+modem_handle_t modem_ml307r_create(at_engine_handle_t at,
                                     const modem_ml307r_config_t *config);
 ```
 
 **关键设计决策**：
 - `modem_air780ep_create()` 是具体模块工厂，只应出现在 Facade 模块 factory 装配代码中。
 - `modem_ml307r_create()` 也是具体模块工厂，和 Air780EP 一样只在对应 Facade 模块 factory 中使用。
-- Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_handle_t *`。
+- Core 不 include `modem_air780ep.h`，只接收工厂返回的 `modem_handle_t`。
 - GPIO 控制属于 Modem 层职责，Air780EP 实现可以直接使用 ESP-IDF `driver/gpio.h`。
 - 硬件复位通过 EN 引脚实现：拉低 EN，等待 reset_pulse_ms，再拉高 EN；随后在 ready 总超时内轮询 `AT` 到 `OK`，再执行基础 AT 初始化命令。`air780ep_start()` 和 `air780ep_reset()` 都使用此方式。
 
@@ -894,7 +894,7 @@ modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
 #define AIR780EP_MAX_PDP_CONTEXTS  4
 
 typedef struct {
-    modem_handle_t                  base;          // 必须是第一个字段，实现向上转型
+    struct modem_t                  base;          // 必须是第一个字段，实现向上转型
     modem_air780ep_config_t  config;        // 配置快照
     at_urc_handler_t         cpin_handler;  // +CPIN: URC handler
     at_urc_handler_t         creg_handler;  // +CREG: URC handler
@@ -921,7 +921,7 @@ typedef struct {
 
 **关键设计决策**：
 - `base` 必须位于结构体第一个字段，子类返回给上层时使用 `&self->base`。
-- 从 `modem_handle_t *` 反推 `modem_air780ep_t *` 时使用 `container_of(me, modem_air780ep_t, base)`，禁止裸强转。
+- 从 `modem_handle_t` 反推 `modem_air780ep_t *` 时使用 `container_of(me, modem_air780ep_t, base)`，禁止裸强转。
 - URC handler 节点生命周期由 Air780EP 对象拥有，基础 AT 初始化完成后注册 `+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:`、`+CGEV:`、`+PDP DEACT`、`+PDP:DEACT`、`+MSUB:`，`destroy` 时注销。
 - `+CPIN:`、`+CREG:`、`+CEREG:`、`+CGREG:` 既可能是查询响应，也可能是空闲期 URC；Air780EP handler 只处理 AT Engine 分发出来的空闲期 URC，命令响应由对应 ops 方法解析。
 - `+MSUB:` 是当前 MQTT 下行数据路径入口；handler 只在 `mqtt_data_enabled` 后复制 topic/payload 并投递 `MODEM_EVENT_PROTOCOL_DATA`。
@@ -1004,7 +1004,7 @@ Core Service
 └── pdp_mgr_t     Core 内部组件，属于 core_handle_t，负责 PDP 上下文状态缓存
 ```
 
-`net_mgr_t`、`pdp_mgr_t`、`core_fsm_t` 不是 `core_handle_t` 子类。它们不能向上转型为 `core_handle_t *`，也不实现 `core_ops`；它们是 `core_handle_t` 的组合成员。`modem_air780ep_t` 才是 `modem_handle_t` 的子类，因为它以 `modem_handle_t base` 为第一个成员并实现 `modem_ops`。
+`net_mgr_t`、`pdp_mgr_t`、`core_fsm_t` 不是 `core_handle_t` 子类。它们不能向上转型为 `core_handle_t`，也不实现 `core_ops`；它们是 `core_handle_t` 的组合成员。`modem_air780ep_t` 才是 `modem_handle_t` 的子类，因为它以 `struct modem_t base` 为第一个成员并实现 `modem_ops`。
 
 ### 3.1 类总览
 
@@ -1074,25 +1074,25 @@ Modem 引用在 `core_create()` 参数中单独传入。Facade factory 通过 `c
 **层间方法**（`src/core/core.h`）：
 
 ```c
-core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
-esp_err_t core_destroy(core_handle_t *me);
-esp_err_t core_start(core_handle_t *me);
-esp_err_t core_stop(core_handle_t *me);
+core_handle_t core_create(const core_config_t *config, modem_handle_t modem);
+esp_err_t core_destroy(core_handle_t me);
+esp_err_t core_start(core_handle_t me);
+esp_err_t core_stop(core_handle_t me);
 
-esp_err_t core_register_protocol_callback(core_handle_t *me,
+esp_err_t core_register_protocol_callback(core_handle_t me,
                                           core_protocol_t protocol,
                                           core_protocol_callback_t callback,
                                           void *user_ctx);
-esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
+esp_err_t core_register_protocol_closed_callback(core_handle_t me,
                                                   core_protocol_t protocol,
                                                   core_protocol_closed_callback_t callback,
                                                   void *user_ctx);
 
-esp_err_t core_get_state(core_handle_t *me, core_state_t *state);
-esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
+esp_err_t core_get_state(core_handle_t me, core_state_t *state);
+esp_err_t core_get_net_state(core_handle_t me, core_net_state_t *state);
 
-esp_err_t core_connect(core_handle_t *me);
-esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
+esp_err_t core_connect(core_handle_t me);
+esp_err_t core_submit_cmd(core_handle_t me, const core_cmd_t *cmd);
 ```
 
 `core_start()` 是 Facade `lwlte_start()` 的内部入口，成功投递 `CORE_SIG_START` 时在同一锁保护下把 Core 标记为 `CORE_STATE_STARTING` 后返回。Core FSM 消费 `CORE_SIG_START` 后调用阻塞式 `modem_start()`；`modem_start()` 完成硬复位、`AT OK` 和基础 AT 初始化后返回 `ESP_OK`，Core 随后执行 SIM、注册、附着、APN、PDP 激活和 IP 查询流程；最终网络 online 通过 `LWLTE_EVENT_NET_ONLINE` 投递到共享事件总线。
@@ -1175,10 +1175,10 @@ typedef struct {
     int              error_code;
 } lwlte_event_data_t;
 
-typedef void (*core_protocol_callback_t)(core_handle_t *core,
+typedef void (*core_protocol_callback_t)(core_handle_t core,
                                          const core_protocol_data_t *data,
                                          void *user_ctx);
-typedef void (*core_protocol_closed_callback_t)(core_handle_t *core,
+typedef void (*core_protocol_closed_callback_t)(core_handle_t core,
                                                   core_protocol_t protocol,
                                                   const core_protocol_data_t *data,
                                                   void *user_ctx);
@@ -1279,7 +1279,7 @@ typedef struct {
     int modem_error_code;
 } core_socket_result_t;
 
-typedef void (*core_cmd_done_callback_t)(core_handle_t *core,
+typedef void (*core_cmd_done_callback_t)(core_handle_t core,
                                          core_cmd_type_t type,
                                          core_cmd_result_t result,
                                          const void *result_data,
@@ -1564,16 +1564,16 @@ core_config_t core_cfg = {
     },
 };
 
-core_handle_t *core = core_create(&core_cfg, modem);
+core_handle_t core = core_create(&core_cfg, modem);
 esp_event_handler_register(LWLTE_EVENT, LWLTE_EVENT_READY, facade_ready_handler, lte);
 ```
 
 Facade 模块 factory 到这里结束，只完成装配和事件桥接，不启动模块。用户调用 `lwlte_start()` 后，Facade 通用 API 再把启动请求交给 Core：
 
 ```c
-esp_err_t lwlte_start(lwlte_handle_t *me)
+esp_err_t lwlte_start(lwlte_handle_t me)
 {
-    core_handle_t *core = NULL;
+    core_handle_t core = NULL;
     esp_err_t ret = begin_api_call(me, true, &core);
     if (ret != ESP_OK) {
         return ret;
@@ -1586,7 +1586,7 @@ esp_err_t lwlte_start(lwlte_handle_t *me)
 ```
 
 **关键设计决策**：
-- `core_create()` 接收 `modem_handle_t *`，和 `modem_air780ep_create()` 接收 `at_engine_handle_t *` 的模式一致。
+- `core_create()` 接收 `modem_handle_t`，和 `modem_air780ep_create()` 接收 `at_engine_handle_t` 的模式一致。
 - Core 不 include 具体模块头文件，只认识 `modem_handle_t`。
 - 换模块时 Core 代码零改动。
 
@@ -1707,20 +1707,20 @@ MQTT 生命周期分为两层：`lwlte_mqtt_init()` / `lwlte_mqtt_destroy()` 管
 **层间方法**（`src/mqtt_client/mqtt_client.h`）：
 
 ```c
-mqtt_client_handle_t *mqtt_client_create(const mqtt_client_config_t *config,
-                                  core_handle_t *core);
-esp_err_t mqtt_client_destroy(mqtt_client_handle_t *me);
-esp_err_t mqtt_client_start(mqtt_client_handle_t *me);
-esp_err_t mqtt_client_stop(mqtt_client_handle_t *me);
+mqtt_client_handle_t mqtt_client_create(const mqtt_client_config_t *config,
+                                  core_handle_t core);
+esp_err_t mqtt_client_destroy(mqtt_client_handle_t me);
+esp_err_t mqtt_client_start(mqtt_client_handle_t me);
+esp_err_t mqtt_client_stop(mqtt_client_handle_t me);
 
-esp_err_t mqtt_client_get_state(mqtt_client_handle_t *me,
+esp_err_t mqtt_client_get_state(mqtt_client_handle_t me,
                                 mqtt_client_state_t *state);
-esp_err_t mqtt_client_subscribe(mqtt_client_handle_t *me,
+esp_err_t mqtt_client_subscribe(mqtt_client_handle_t me,
                                 const char *topic,
                                 uint8_t qos);
-esp_err_t mqtt_client_unsubscribe(mqtt_client_handle_t *me,
+esp_err_t mqtt_client_unsubscribe(mqtt_client_handle_t me,
                                   const char *topic);
-esp_err_t mqtt_client_publish(mqtt_client_handle_t *me,
+esp_err_t mqtt_client_publish(mqtt_client_handle_t me,
                               const mqtt_client_publish_t *request);
 ```
 
@@ -1733,8 +1733,8 @@ esp_err_t mqtt_client_publish(mqtt_client_handle_t *me,
 
 **关键设计决策**：
 - MQTT 没有 ops 多态；第一版只有一个 MQTT service 实现。
-- MQTT 不是 Core 的子类，不能向上转型为 `core_handle_t *`。
-- MQTT 不保存 `modem_handle_t *`、`at_engine_handle_t *` 或具体模块句柄。
+- MQTT 不是 Core 的子类，不能向上转型为 `core_handle_t`。
+- MQTT 不保存 `modem_handle_t`、`at_engine_handle_t` 或具体模块句柄。
 - `lock` 只保护短字段，MQTT FSM 调用 `core_submit_cmd()` 时不持锁。
 - Facade 通过 public `lwlte_mqtt_*` API 包装本层 `mqtt_client_*` 方法，App 不直接 include `mqtt_client.h`。
 
@@ -2041,7 +2041,7 @@ Ping Service 不创建自己的 FSM task、FSM queue 或 esp_event loop。它只
 **层间方法**（`src/ping_client/ping_client.h`）：
 
 ```c
-typedef struct ping_client_handle ping_client_handle_t;
+typedef struct ping_client_t *ping_client_handle_t;
 
 typedef struct {
     const char *host;
@@ -2052,9 +2052,9 @@ typedef struct {
     uint32_t total_timeout_ms;
 } ping_client_request_t;
 
-ping_client_handle_t *ping_client_create(core_handle_t *core);
-esp_err_t ping_client_destroy(ping_client_handle_t *me);
-esp_err_t ping_client_ping(ping_client_handle_t *me,
+ping_client_handle_t ping_client_create(core_handle_t core);
+esp_err_t ping_client_destroy(ping_client_handle_t me);
+esp_err_t ping_client_ping(ping_client_handle_t me,
                            const ping_client_request_t *request,
                            core_ping_reply_t *replies,
                            size_t max_replies,
@@ -2067,7 +2067,7 @@ esp_err_t ping_client_ping(ping_client_handle_t *me,
 
 **关键设计决策**：
 - Ping Service 没有独立状态机；`ping_client_handle_t` 不保存 connected/error 等长期状态。
-- Ping Service 不保存 `modem_handle_t *`、`at_engine_handle_t *` 或具体模块句柄。
+- Ping Service 不保存 `modem_handle_t`、`at_engine_handle_t` 或具体模块句柄。
 - `ping_client_ping()` 可以阻塞调用 task，直到 Core command 完成或总超时到达。
 - `timeout_100ms == 0` 是无效参数；`total_timeout_ms == 0` 表示根据 `count * timeout_100ms * 100` 加命令开销派生默认总等待预算。
 
@@ -2154,7 +2154,7 @@ lwlte_ping()
 第一版只实现同步阻塞 `lwlte_ping()`。后续可以增加：
 
 ```c
-esp_err_t lwlte_ping_async(lwlte_handle_t *me,
+esp_err_t lwlte_ping_async(lwlte_handle_t me,
                            const lwlte_ping_request_t *request,
                            void *user_ctx);
 ```
@@ -2171,10 +2171,10 @@ esp_err_t lwlte_ping_async(lwlte_handle_t *me,
 
 ```c
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_handle_t **out_lte);
-esp_err_t lwlte_start(lwlte_handle_t *me);
-esp_err_t lwlte_stop(lwlte_handle_t *me);
-esp_err_t lwlte_destroy(lwlte_handle_t *me);
+                              lwlte_handle_t *out_lte);
+esp_err_t lwlte_start(lwlte_handle_t me);
+esp_err_t lwlte_stop(lwlte_handle_t me);
+esp_err_t lwlte_destroy(lwlte_handle_t me);
 ```
 
 `lwlte_air780ep_init()` 只创建和装配 Facade、AT Engine、Modem、Core、Ping service；`lwlte_start()` 才是用户显式启动入口，异步提交启动请求，最终 online 结果通过 `LWLTE_EVENT_NET_ONLINE` 上报。`lwlte_stop()` 是对称停机入口，异步提交停止请求，停止 MQTT、去激活网络；配置 EN GPIO 时拉低 EN 断电，`en_pin == GPIO_NUM_NC` 时降级为逻辑 `MODEM_STATE_OFF`，模块可能仍上电。后续 `lwlte_start()` 可重新启动联网。
@@ -2221,7 +2221,7 @@ typedef struct {
     uint32_t avg_time_ms;
 } lwlte_ping_summary_t;
 
-esp_err_t lwlte_ping(lwlte_handle_t *me,
+esp_err_t lwlte_ping(lwlte_handle_t me,
                      const lwlte_ping_request_t *request,
                      lwlte_ping_reply_t *replies,
                      size_t max_replies,

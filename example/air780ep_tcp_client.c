@@ -68,7 +68,7 @@ static void idle_forever(void);
 /**********************
  *  STATIC VARIABLES
  **********************/
-static lwlte_tcp_conn_t *s_conn;
+static lwlte_tcp_conn_t s_conn;
 static uint8_t s_payload[EXAMPLE_PAYLOAD_BUF_LEN];
 static size_t s_payload_len;
 
@@ -82,7 +82,7 @@ void example_air780ep_tcp_client_run(void)
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    lwlte_handle_t *lte = NULL;
+    lwlte_handle_t lte = NULL;
     lwlte_air780ep_config_t config = {
         .base = {
             .uart = {
@@ -139,7 +139,7 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
 {
     (void)base;
     (void)event_data;
-    lwlte_handle_t *lte = (lwlte_handle_t *)arg;
+    lwlte_handle_t lte = (lwlte_handle_t)arg;
     if ((lwlte_event_id_t)event_id != LWLTE_EVENT_NET_ONLINE || s_conn) {
         return;
     }
@@ -230,7 +230,7 @@ static void tcp_event_cb(void *arg, esp_event_base_t base,
     case LWLTE_TCP_EVENT_DATA:
         if (data) {
             ESP_LOGI(TAG, "TCP RX len=%u", (unsigned int)data->payload_len);
-            lwlte_tcp_conn_t *conn = data->conn;
+            lwlte_tcp_conn_t conn = data->conn;
             (void)lwlte_tcp_close(conn);
         }
         break;

@@ -77,12 +77,12 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "lwlte_mqtt_msg_t",
             "LWLTE_MQTT_EVENT_CONNECTED",
             "LWLTE_MQTT_EVENT_DATA",
-            "esp_err_t lwlte_mqtt_start(lwlte_handle_t *me);",
-            "esp_err_t lwlte_mqtt_stop(lwlte_handle_t *me);",
-            "esp_err_t lwlte_mqtt_get_state(lwlte_handle_t *me, lwlte_mqtt_state_t *state);",
-            "esp_err_t lwlte_mqtt_subscribe(lwlte_handle_t *me, const char *topic, uint8_t qos);",
-            "esp_err_t lwlte_mqtt_unsubscribe(lwlte_handle_t *me, const char *topic);",
-            "esp_err_t lwlte_mqtt_publish(lwlte_handle_t *me, const char *topic,",
+            "esp_err_t lwlte_mqtt_start(lwlte_handle_t me);",
+            "esp_err_t lwlte_mqtt_stop(lwlte_handle_t me);",
+            "esp_err_t lwlte_mqtt_get_state(lwlte_handle_t me, lwlte_mqtt_state_t *state);",
+            "esp_err_t lwlte_mqtt_subscribe(lwlte_handle_t me, const char *topic, uint8_t qos);",
+            "esp_err_t lwlte_mqtt_unsubscribe(lwlte_handle_t me, const char *topic);",
+            "esp_err_t lwlte_mqtt_publish(lwlte_handle_t me, const char *topic,",
         ]:
             self.assertIn(token, self.lwlte_h)
 
@@ -91,7 +91,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "const char *host;",
             "uint16_t port;",
             "const char *client_id;",
-            "esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config);",
+            "esp_err_t lwlte_mqtt_init(lwlte_handle_t me, const lwlte_mqtt_config_t *config);",
             "esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,",
         ]:
             self.assertIn(token, self.lwlte_h)
@@ -118,7 +118,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIsNotNone(match, "missing PRIV_INCLUDE_DIRS")
         for include_dir in ["lwlte", "core", "mqtt_client", "modem", "at_engine"]:
             self.assertRegex(match.group("body"), rf"\b{include_dir}\b")
-        self.assertIn("typedef struct mqtt_client_handle mqtt_client_handle_t;", self.mqtt_h)
+        self.assertIn("typedef struct mqtt_client_t *mqtt_client_handle_t;", self.mqtt_h)
         self.assertIn("mqtt_client_create", self.mqtt_h)
         self.assertIn("core_submit_cmd", self.mqtt_c)
         self.assertIn("esp_event_handler_register_with", self.mqtt_c)
@@ -184,7 +184,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
 
         fsm_body = self.mqtt_c[
             self.mqtt_c.index("static esp_err_t begin_connect"):
-            self.mqtt_c.index("mqtt_client_handle_t *mqtt_client_create")
+            self.mqtt_c.index("mqtt_client_handle_t mqtt_client_create")
         ]
         for token in [
             "submit_core_cmd(me, CORE_CMD_MQTT_CONFIGURE",
@@ -327,7 +327,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "CORE_CMD_MQTT_UNSUBSCRIBE",
             "CORE_CMD_MQTT_PUBLISH",
             "core_cmd_t",
-            "core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);",
+            "core_submit_cmd(core_handle_t me, const core_cmd_t *cmd);",
         ]:
             self.assertIn(token, self.core_h)
 
@@ -493,10 +493,10 @@ class MqttEndToEndContractTest(unittest.TestCase):
             "MODEM_EVENT_PROTOCOL_DATA",
             "MODEM_EVENT_PROTOCOL_CLOSED",
             "MODEM_PROTOCOL_MQTT",
-            "modem_mqtt_configure(modem_handle_t *me",
-            "modem_mqtt_tcp_connect(modem_handle_t *me",
-            "modem_mqtt_connect(modem_handle_t *me",
-            "modem_mqtt_publish(modem_handle_t *me",
+            "modem_mqtt_configure(modem_handle_t me",
+            "modem_mqtt_tcp_connect(modem_handle_t me",
+            "modem_mqtt_connect(modem_handle_t me",
+            "modem_mqtt_publish(modem_handle_t me",
         ]:
             self.assertIn(token, self.modem_h)
 
@@ -589,13 +589,13 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertNotIn("modem_mqtt_tcp_" "config_t", self.modem_h + self.modem_priv + self.modem_c + self.air780ep_c)
         self.assertNotIn("modem_mqtt_connect_" "config_t", self.modem_h + self.modem_priv + self.modem_c + self.air780ep_c)
 
-        self.assertIn("esp_err_t modem_mqtt_tcp_connect(modem_handle_t *me);", self.modem_h)
-        self.assertIn("esp_err_t modem_mqtt_connect(modem_handle_t *me);", self.modem_h)
-        self.assertIn("esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me);", self.modem_h)
-        self.assertIn("esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me)", self.modem_c)
+        self.assertIn("esp_err_t modem_mqtt_tcp_connect(modem_handle_t me);", self.modem_h)
+        self.assertIn("esp_err_t modem_mqtt_connect(modem_handle_t me);", self.modem_h)
+        self.assertIn("esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t me);", self.modem_h)
+        self.assertIn("esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t me)", self.modem_c)
         self.assertIn("mqtt_tcp_disconnect", self.modem_priv)
         self.assertIn(".mqtt_tcp_disconnect = air780ep_mqtt_tcp_disconnect", self.air780ep_c)
-        self.assertIn("static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t *me)", self.air780ep_c)
+        self.assertIn("static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t me)", self.air780ep_c)
 
         tcp_disconnect_start = self.air780ep_c.rindex("static esp_err_t air780ep_mqtt_tcp_disconnect")
         tcp_disconnect_end = self.air780ep_c.find("\nstatic ", tcp_disconnect_start + 1)
@@ -716,7 +716,7 @@ class MqttEndToEndContractTest(unittest.TestCase):
         self.assertIn("uart_write_bytes", self.at_engine_c)
 
     def test_at_engine_uses_grouped_config_as_single_source(self):
-        match = re.search(r"struct\s+at_engine_handle\s*\{(?P<body>[\s\S]*?)\};", self.at_engine_c)
+        match = re.search(r"struct\s+at_engine_t\s*\{(?P<body>[\s\S]*?)\};", self.at_engine_c)
         self.assertIsNotNone(match, "missing struct at_engine definition")
         body = match.group("body")
         self.assertNotIn("uart_port_t uart_num", body)

@@ -70,7 +70,7 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
  * @details Run one Ping test
  * @param[in] lte LTE 用户门面句柄
  */
-static void do_ping(lwlte_handle_t *lte);
+static void do_ping(lwlte_handle_t lte);
 
 /**
  * @brief 进入常驻等待
@@ -100,7 +100,7 @@ void example_air780ep_basic_connect_run(void)
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    lwlte_handle_t *lte = NULL;
+    lwlte_handle_t lte = NULL;
     const lwlte_air780ep_config_t config = {
         .base = {
             .uart = {
@@ -210,7 +210,7 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
     }
 }
 
-static void do_ping(lwlte_handle_t *lte)
+static void do_ping(lwlte_handle_t lte)
 {
     const lwlte_ping_request_t req = {
         .host = EXAMPLE_PING_HOST,

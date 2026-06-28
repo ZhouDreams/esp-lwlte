@@ -96,7 +96,7 @@ static void mqtt_event_cb(void *arg, esp_event_base_t base,
  * @details Publish one telemetry message
  * @param[in] lte LTE 用户门面句柄
  */
-static void publish_telemetry(lwlte_handle_t *lte);
+static void publish_telemetry(lwlte_handle_t lte);
 
 /**
  * @brief 规范化 PEM 字符串中的转义换行
@@ -140,7 +140,7 @@ void example_air780ep_mqtt_client_run(void)
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    lwlte_handle_t *lte = NULL;
+    lwlte_handle_t lte = NULL;
     const char *mqtt_username = CONFIG_EXAMPLE_MQTT_USERNAME[0] ? CONFIG_EXAMPLE_MQTT_USERNAME
                                                                 : CONFIG_EXAMPLE_MQTT_TOKEN;
     if (mqtt_username[0] == '\0') {
@@ -409,7 +409,7 @@ static void mqtt_event_cb(void *arg, esp_event_base_t base,
     }
 }
 
-static void publish_telemetry(lwlte_handle_t *lte)
+static void publish_telemetry(lwlte_handle_t lte)
 {
     char payload[EXAMPLE_TELEMETRY_BUF_LEN] = {0};
     int len = snprintf(payload, sizeof(payload),

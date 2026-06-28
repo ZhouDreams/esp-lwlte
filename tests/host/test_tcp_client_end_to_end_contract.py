@@ -76,7 +76,7 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
 
     def test_public_tcp_api_exists(self):
         self.assert_contains_all(self.lwlte_h, [
-            "typedef struct lwlte_tcp_conn lwlte_tcp_conn_t;",
+            "typedef struct lwlte_tcp_conn_t *lwlte_tcp_conn_t;",
             "LWLTE_TCP_CONN_STATE_CREATED",
             "LWLTE_TCP_CONN_STATE_CONNECTED",
             "LWLTE_TCP_EVENT_CONNECTED",
@@ -86,11 +86,11 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
             "lwlte_tcp_open_config_t",
             "lwlte_tcp_event_data_t",
             "owns_event",
-            "esp_err_t lwlte_tcp_init(lwlte_handle_t *me,",
-            "esp_err_t lwlte_tcp_open(lwlte_handle_t *me,",
-            "esp_err_t lwlte_tcp_send(lwlte_tcp_conn_t *conn,",
-            "esp_err_t lwlte_tcp_close(lwlte_tcp_conn_t *conn);",
-            "esp_err_t lwlte_tcp_conn_destroy(lwlte_tcp_conn_t *conn);",
+            "esp_err_t lwlte_tcp_init(lwlte_handle_t me,",
+            "esp_err_t lwlte_tcp_open(lwlte_handle_t me,",
+            "esp_err_t lwlte_tcp_send(lwlte_tcp_conn_t conn,",
+            "esp_err_t lwlte_tcp_close(lwlte_tcp_conn_t conn);",
+            "esp_err_t lwlte_tcp_conn_destroy(lwlte_tcp_conn_t conn);",
             "void lwlte_tcp_event_data_release(lwlte_tcp_event_data_t *data);",
         ], "lwlte.h")
         self.assertIn("ESP_EVENT_DEFINE_BASE(LWLTE_TCP_EVENT)", self.lwlte_c)
@@ -104,8 +104,8 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
         self.assertIn('"tcp_client/tcp_client.c"', self.src_cmake)
         self.assertRegex(self.src_cmake, r"PRIV_INCLUDE_DIRS[\s\S]*\btcp_client\b")
         self.assert_contains_all(self.tcp_h + self.tcp_priv + self.tcp_c, [
-            "typedef struct tcp_client_handle tcp_client_handle_t;",
-            "typedef struct tcp_client_conn tcp_client_conn_t;",
+            "typedef struct tcp_client_t *tcp_client_handle_t;",
+            "typedef struct tcp_client_conn_t *tcp_client_conn_t;",
             "tcp_client_create",
             "tcp_client_open",
             "tcp_client_send",
@@ -308,7 +308,7 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
                                                         "tcp_client_destroy")
 
         self.assertNotIn("if (conn->active_refs > 0)", destroy_body)
-        self.assertIn("tcp_client_conn_t *deferred_destroy_conn;", self.tcp_priv)
+        self.assertIn("tcp_client_conn_t deferred_destroy_conn;", self.tcp_priv)
         self.assert_ordered(destroy_body, [
             "xSemaphoreTake(client->lock",
             "xSemaphoreTake(conn->lock",
@@ -327,7 +327,7 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
         ], "terminal destroy unlinks immediately and frees only when idle")
         self.assert_ordered(release_body, [
             "bool cleanup_now = false;",
-            "tcp_client_handle_t *client = conn->client;",
+            "tcp_client_handle_t client = conn->client;",
             "conn->active_refs--;",
             "cleanup_now = conn->destroyed && conn->active_refs == 0;",
             "if (cleanup_now && client && client->lock)",
@@ -376,14 +376,14 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
 
     def test_facade_owns_tcp_and_destroys_before_core(self):
         self.assertIn('#include "tcp_client.h"', self.lwlte_priv)
-        self.assertIn("tcp_client_handle_t *tcp;", self.lwlte_priv)
+        self.assertIn("tcp_client_handle_t tcp;", self.lwlte_priv)
         self.assert_contains_all(self.lwlte_c, [
             "static lwlte_tcp_conn_state_t map_tcp_conn_state",
             "tcp_client_create(&tcp_config, core)",
             "tcp_client_open(tcp, &open_config",
-            "tcp_client_send((tcp_client_conn_t *)conn",
-            "tcp_client_close((tcp_client_conn_t *)conn)",
-            "tcp_client_conn_destroy((tcp_client_conn_t *)conn)",
+            "tcp_client_send((tcp_client_conn_t)conn",
+            "tcp_client_close((tcp_client_conn_t)conn)",
+            "tcp_client_conn_destroy((tcp_client_conn_t)conn)",
         ], "lwlte.c")
         destroy_body = self.lwlte_c[self.lwlte_c.rindex("static esp_err_t destroy_owned_resources"):]
         self.assertIn("tcp_client_destroy(me->tcp)", destroy_body)
@@ -429,10 +429,10 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
             "protocol_closed_callback_active[CORE_PROTOCOL_MAX]",
             "protocol_closed_callback_reg_lock",
             "protocol_closed_callback_done_sema",
-            "core_register_protocol_callback(core_handle_t *me,",
+            "core_register_protocol_callback(core_handle_t me,",
             "core_protocol_t protocol,",
             "const core_protocol_data_t *data,",
-            "core_register_protocol_closed_callback(core_handle_t *me,",
+            "core_register_protocol_closed_callback(core_handle_t me,",
             "core_fsm_is_task(me)",
         ], "core protocol routing")
         self.assertIn("xSemaphoreCreateMutex()", self.core_c)
@@ -583,10 +583,10 @@ class TcpClientEndToEndContractTest(unittest.TestCase):
             "modem_socket_recv_t",
             "modem_socket_recv_result_t",
             "modem_socket_close_t",
-            "esp_err_t modem_socket_open(modem_handle_t *me,",
-            "esp_err_t modem_socket_send(modem_handle_t *me,",
-            "esp_err_t modem_socket_recv(modem_handle_t *me,",
-            "esp_err_t modem_socket_close(modem_handle_t *me,",
+            "esp_err_t modem_socket_open(modem_handle_t me,",
+            "esp_err_t modem_socket_send(modem_handle_t me,",
+            "esp_err_t modem_socket_recv(modem_handle_t me,",
+            "esp_err_t modem_socket_close(modem_handle_t me,",
             "modem_socket_open_fn socket_open;",
             "modem_socket_send_fn socket_send;",
             "modem_socket_recv_fn socket_recv;",

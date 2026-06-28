@@ -87,12 +87,12 @@ class LwlteStartStopContractTest(unittest.TestCase):
         contains(self, self.modem_priv_h, "modem_no_arg_fn stop;", "modem_priv.h")
 
     def test_modem_stop_prototype_and_impl(self):
-        contains(self, self.modem_h, "esp_err_t modem_stop(modem_handle_t *me);", "modem.h")
-        body = function_body(self.modem_c, "esp_err_t modem_stop(modem_handle_t *me)")
+        contains(self, self.modem_h, "esp_err_t modem_stop(modem_handle_t me);", "modem.h")
+        body = function_body(self.modem_c, "esp_err_t modem_stop(modem_handle_t me)")
         contains(self, body, "me->ops->stop", "modem_stop")
 
     def test_check_ready_allows_off(self):
-        body = function_body(self.modem_c, "static esp_err_t check_ready(modem_handle_t *me, bool allow_created)")
+        body = function_body(self.modem_c, "static esp_err_t check_ready(modem_handle_t me, bool allow_created)")
         contains(self, body, "MODEM_STATE_OFF", "check_ready")
 
     # ---- Task 2: air780ep ----
@@ -102,12 +102,12 @@ class LwlteStartStopContractTest(unittest.TestCase):
         absent(self, body, "gpio_set_level(self->config.base.hardware.en_pin, 1)", "air780ep hardware_power_off")
 
     def test_air780ep_stop_impl(self):
-        body = function_body(self.air780ep_c, "static esp_err_t air780ep_stop(modem_handle_t *me)")
+        body = function_body(self.air780ep_c, "static esp_err_t air780ep_stop(modem_handle_t me)")
         for needle in ["hardware_power_off(self)", "unregister_urcs(self)", "MODEM_STATE_OFF"]:
             contains(self, body, needle, "air780ep_stop")
 
     def test_air780ep_stop_returns_first_cleanup_error(self):
-        body = without_c_comments(function_body(self.air780ep_c, "static esp_err_t air780ep_stop(modem_handle_t *me)"))
+        body = without_c_comments(function_body(self.air780ep_c, "static esp_err_t air780ep_stop(modem_handle_t me)"))
         contains(self, body, "esp_err_t ret = ESP_OK;", "air780ep_stop")
         contains(self, body, "esp_err_t urc_ret = unregister_urcs(self);", "air780ep_stop")
         self.assertRegex(body, r"if\s*\(\s*ret\s*==\s*ESP_OK\s*\)\s*{\s*ret\s*=\s*urc_ret\s*;")
@@ -144,12 +144,12 @@ class LwlteStartStopContractTest(unittest.TestCase):
                 contains(self, source, token, label)
 
     def test_ml307r_stop_impl(self):
-        body = function_body(self.ml307r_c, "static esp_err_t ml307r_stop(modem_handle_t *me)")
+        body = function_body(self.ml307r_c, "static esp_err_t ml307r_stop(modem_handle_t me)")
         for needle in ["hardware_power_off(self)", "unregister_urcs(self)", "MODEM_STATE_OFF"]:
             contains(self, body, needle, "ml307r_stop")
 
     def test_ml307r_stop_returns_first_cleanup_error(self):
-        body = without_c_comments(function_body(self.ml307r_c, "static esp_err_t ml307r_stop(modem_handle_t *me)"))
+        body = without_c_comments(function_body(self.ml307r_c, "static esp_err_t ml307r_stop(modem_handle_t me)"))
         contains(self, body, "esp_err_t ret = ESP_OK;", "ml307r_stop")
         contains(self, body, "esp_err_t urc_ret = unregister_urcs(self);", "ml307r_stop")
         self.assertRegex(body, r"if\s*\(\s*ret\s*==\s*ESP_OK\s*\)\s*{\s*ret\s*=\s*urc_ret\s*;")
@@ -164,11 +164,11 @@ class LwlteStartStopContractTest(unittest.TestCase):
         contains(self, self.core_priv_h, "stop_pending", "core_priv.h")
 
     def test_core_stop_sets_pending(self):
-        body = function_body(self.core_c, "esp_err_t core_stop(core_handle_t *me)")
+        body = function_body(self.core_c, "esp_err_t core_stop(core_handle_t me)")
         contains(self, body, "stop_pending = true", "core_stop")
 
     def test_core_stop_sets_pending_after_signal_submission(self):
-        body = without_c_comments(function_body(self.core_c, "esp_err_t core_stop(core_handle_t *me)"))
+        body = without_c_comments(function_body(self.core_c, "esp_err_t core_stop(core_handle_t me)"))
         contains(self, body, "xQueueSend(me->fsm.queue, &sig, 0)", "core_stop")
         contains(self, body, "BaseType_t send_ret", "core_stop")
         self.assertLess(body.index("xQueueSend(me->fsm.queue, &sig, 0)"),
@@ -178,7 +178,7 @@ class LwlteStartStopContractTest(unittest.TestCase):
                          "stop_pending must only be set after successful queue send")
 
     def test_core_start_marks_starting_after_signal_submission(self):
-        body = without_c_comments(function_body(self.core_c, "esp_err_t core_start(core_handle_t *me)"))
+        body = without_c_comments(function_body(self.core_c, "esp_err_t core_start(core_handle_t me)"))
         contains(self, body, "xQueueSend(me->fsm.queue, &sig, 0)", "core_start")
         contains(self, body, "me->state = CORE_STATE_STARTING", "core_start")
         self.assertLess(body.index("xQueueSend(me->fsm.queue, &sig, 0)"),
@@ -188,27 +188,27 @@ class LwlteStartStopContractTest(unittest.TestCase):
                          "queued start must transition to STARTING and clear stale stop_pending atomically")
 
     def test_core_start_rechecks_stopped_under_lock(self):
-        body = without_c_comments(function_body(self.core_c, "esp_err_t core_start(core_handle_t *me)"))
+        body = without_c_comments(function_body(self.core_c, "esp_err_t core_start(core_handle_t me)"))
         locked = body[body.index("xSemaphoreTake(me->lock"):
                       body.index("BaseType_t send_ret")]
         contains(self, locked, "me->state != CORE_STATE_STOPPED", "core_start locked state recheck")
 
     def test_net_mgr_cooperative_cancel(self):
-        body = function_body(self.net_mgr_c, "static esp_err_t check_activation_continue(core_handle_t *me,")
+        body = function_body(self.net_mgr_c, "static esp_err_t check_activation_continue(core_handle_t me,")
         contains(self, body, "core_stop_pending(me)", "check_activation_continue")
 
     def test_handle_stop_clears_stop_pending(self):
-        body = function_body(self.core_fsm_c, "static void handle_stop(core_handle_t *me)")
+        body = function_body(self.core_fsm_c, "static void handle_stop(core_handle_t me)")
         contains(self, body, "stop_pending = false", "handle_stop")
 
     # ---- Task 5: handle_stop power-off + service_cmd guard ----
     def test_handle_stop_powers_off_modem(self):
-        body = function_body(self.core_fsm_c, "static void handle_stop(core_handle_t *me)")
+        body = function_body(self.core_fsm_c, "static void handle_stop(core_handle_t me)")
         contains(self, body, "modem_stop(me->modem)", "handle_stop")
         contains(self, body, "stop_pending = false", "handle_stop")
 
     def test_handle_stop_powers_off_after_deactivate_before_stopped(self):
-        body = without_c_comments(function_body(self.core_fsm_c, "static void handle_stop(core_handle_t *me)"))
+        body = without_c_comments(function_body(self.core_fsm_c, "static void handle_stop(core_handle_t me)"))
         contains(self, body, "net_mgr_deactivate(me)", "handle_stop")
         contains(self, body, "modem_stop(me->modem)", "handle_stop")
         contains(self, body, "core_set_state(me, CORE_STATE_STOPPED)", "handle_stop")
@@ -218,7 +218,7 @@ class LwlteStartStopContractTest(unittest.TestCase):
                         body.index("core_set_state(me, CORE_STATE_STOPPED)"))
 
     def test_handle_start_respects_stop_pending(self):
-        body = function_body(self.core_fsm_c, "static void handle_start(core_handle_t *me)")
+        body = function_body(self.core_fsm_c, "static void handle_start(core_handle_t me)")
         contains(self, body, "core_stop_pending(me)", "handle_start")
         body_no_comments = without_c_comments(body)
         first_pending = body_no_comments.index("core_stop_pending(me)")
@@ -230,7 +230,7 @@ class LwlteStartStopContractTest(unittest.TestCase):
         self.assertLess(second_pending, handle_ready)
 
     def test_service_cmd_guarded_when_stopped(self):
-        body = without_c_comments(function_body(self.core_fsm_c, "static void handle_service_cmd(core_handle_t *me, core_cmd_t *cmd)"))
+        body = without_c_comments(function_body(self.core_fsm_c, "static void handle_service_cmd(core_handle_t me, core_cmd_t *cmd)"))
         contains(self, body, "CORE_STATE_STOPPED", "handle_service_cmd")
         contains(self, body, "ESP_ERR_INVALID_STATE", "handle_service_cmd")
         contains(self, body, "&invalid_state", "handle_service_cmd")
@@ -243,12 +243,12 @@ class LwlteStartStopContractTest(unittest.TestCase):
 
     # ---- Task 7: facade stop ----
     def test_facade_has_stop_not_disconnect(self):
-        contains(self, self.lwlte_h, "esp_err_t lwlte_stop(lwlte_handle_t *me);", "lwlte.h")
+        contains(self, self.lwlte_h, "esp_err_t lwlte_stop(lwlte_handle_t me);", "lwlte.h")
         absent(self, self.lwlte_h, "lwlte_disconnect", "lwlte.h")
         absent(self, self.lwlte_c, "lwlte_disconnect", "lwlte.c")
 
     def test_lwlte_stop_impl(self):
-        body = function_body(self.lwlte_c, "esp_err_t lwlte_stop(lwlte_handle_t *me)")
+        body = function_body(self.lwlte_c, "esp_err_t lwlte_stop(lwlte_handle_t me)")
         contains(self, body, "core_stop(core)", "lwlte_stop")
         contains(self, body, "mqtt_client_stop", "lwlte_stop")
         contains(self, body, "esp_err_t mqtt_ret = ESP_OK", "lwlte_stop")

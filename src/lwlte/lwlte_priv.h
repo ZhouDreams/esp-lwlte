@@ -37,13 +37,13 @@ extern "C" {
  *      TYPEDEFS
  **********************/
 
-struct lwlte_handle {
-    at_engine_handle_t *at;
-    modem_handle_t *modem;
-    core_handle_t *core;
-    mqtt_client_handle_t *mqtt;
-    tcp_client_handle_t *tcp;
-    ping_client_handle_t *ping;
+struct lwlte_t {
+    at_engine_handle_t at;
+    modem_handle_t modem;
+    core_handle_t core;
+    mqtt_client_handle_t mqtt;
+    tcp_client_handle_t tcp;
+    ping_client_handle_t ping;
     SemaphoreHandle_t lock;
     SemaphoreHandle_t ready_sema;
     SemaphoreHandle_t api_done_sema;
@@ -60,8 +60,8 @@ struct lwlte_handle {
  * GLOBAL PROTOTYPES
  **********************/
 
-esp_err_t lwlte_create_empty(lwlte_handle_t **out_lte);
-esp_err_t lwlte_wait_ready(lwlte_handle_t *me, uint32_t timeout_ms);
+esp_err_t lwlte_create_empty(lwlte_handle_t *out_lte);
+esp_err_t lwlte_wait_ready(lwlte_handle_t me, uint32_t timeout_ms);
 
 /**
  * @brief 门面内部 READY/ERROR 事件处理器

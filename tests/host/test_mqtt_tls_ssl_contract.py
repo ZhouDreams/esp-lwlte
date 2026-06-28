@@ -69,8 +69,8 @@ class MqttTlsSslContractTest(unittest.TestCase):
             "bool client_cert_present;",
             "bool client_key_present;",
             "bool check_valid;",
-            "esp_err_t lwlte_ssl_provision(lwlte_handle_t *me,",
-            "esp_err_t lwlte_ssl_get_context_status(lwlte_handle_t *me,",
+            "esp_err_t lwlte_ssl_provision(lwlte_handle_t me,",
+            "esp_err_t lwlte_ssl_get_context_status(lwlte_handle_t me,",
             "LWLTE_MQTT_TRANSPORT_PLAIN_TCP",
             "LWLTE_MQTT_TRANSPORT_TLS",
             "lwlte_mqtt_transport_t transport;",
@@ -186,7 +186,7 @@ class MqttTlsSslContractTest(unittest.TestCase):
 
     def test_air780ep_server_auth_uses_root_certificate_verify_mode(self):
         provision_fn = re.search(
-            r"^static esp_err_t air780ep_ssl_provision\(modem_handle_t \*me,\n"
+            r"^static esp_err_t air780ep_ssl_provision\(modem_handle_t me,\n"
             r"\s+const modem_ssl_context_config_t \*config,\n"
             r"\s+const modem_ssl_credentials_t \*credentials\)\n"
             r"\{(?P<body>.*?)\n\}\n\nstatic esp_err_t air780ep_ssl_get_context_status",
@@ -285,7 +285,7 @@ class MqttTlsSslContractTest(unittest.TestCase):
 
     def test_ml307r_ssl_reprovision_rejects_active_tls_before_invalidation(self):
         provision_fn = re.search(
-            r"^static esp_err_t ml307r_ssl_provision\(modem_handle_t \*me,\n"
+            r"^static esp_err_t ml307r_ssl_provision\(modem_handle_t me,\n"
             r"\s+const modem_ssl_context_config_t \*config,\n"
             r"\s+const modem_ssl_credentials_t \*credentials\)\n"
             r"\{(?P<body>.*?)\n\}\n\nstatic esp_err_t ml307r_ssl_get_context_status",
@@ -314,7 +314,7 @@ class MqttTlsSslContractTest(unittest.TestCase):
 
     def test_ml307r_mqtt_configure_sets_cached_before_ssl_binding(self):
         configure_fn = re.search(
-            r"^static esp_err_t ml307r_mqtt_configure\(modem_handle_t \*me,\n"
+            r"^static esp_err_t ml307r_mqtt_configure\(modem_handle_t me,\n"
             r"\s+const modem_mqtt_config_t \*config\)\n"
             r"\{(?P<body>.*?)\n\}\n\nstatic esp_err_t ml307r_mqtt_tcp_connect",
             self.ml_c,

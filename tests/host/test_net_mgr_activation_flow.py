@@ -28,7 +28,7 @@ class NetMgrActivationFlowTest(unittest.TestCase):
 
     def test_packet_attach_is_core_visible_modem_operation(self):
         self.assertIn(
-            "esp_err_t modem_get_packet_attach_status(modem_handle_t *me, bool *attached);",
+            "esp_err_t modem_get_packet_attach_status(modem_handle_t me, bool *attached);",
             self.modem_h,
         )
         self.assertIn("get_packet_attach_status", self.modem_priv)

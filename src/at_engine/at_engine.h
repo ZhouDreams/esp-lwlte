@@ -78,7 +78,7 @@ typedef struct {
  * @brief AT 引擎句柄
  * @details AT engine handle
  */
-typedef struct at_engine_handle at_engine_handle_t;
+typedef struct at_engine_t *at_engine_handle_t;
 
 /**
  * @brief AT 响应状态
@@ -186,7 +186,7 @@ typedef struct at_urc_handler {
  *         - AT 引擎句柄: 成功
  *         - NULL: 失败
  */
-at_engine_handle_t *at_engine_create(const at_engine_config_t *config);
+at_engine_handle_t at_engine_create(const at_engine_config_t *config);
 
 /**
  * @brief 销毁 AT 引擎
@@ -200,7 +200,7 @@ at_engine_handle_t *at_engine_create(const at_engine_config_t *config);
  *         - ESP_ERR_INVALID_STATE: 当前有命令执行
  *         - ESP_FAIL: UART 驱动删除失败
  */
-esp_err_t at_engine_destroy(at_engine_handle_t *me);
+esp_err_t at_engine_destroy(at_engine_handle_t me);
 
 /**
  * @brief 发送 AT 命令
@@ -222,7 +222,7 @@ esp_err_t at_engine_destroy(at_engine_handle_t *me);
  *         - ESP_ERR_TIMEOUT: 等待响应超时
  *         - ESP_FAIL: UART 写入失败
  */
-esp_err_t at_engine_send_cmd(at_engine_handle_t *me, const char *cmd,
+esp_err_t at_engine_send_cmd(at_engine_handle_t me, const char *cmd,
                              at_response_t *response, uint32_t timeout_ms);
 
 /**
@@ -247,7 +247,7 @@ esp_err_t at_engine_send_cmd(at_engine_handle_t *me, const char *cmd,
  *         - ESP_ERR_TIMEOUT: 等待响应超时
  *         - ESP_FAIL: UART 写入失败
  */
-esp_err_t at_engine_send_cmd_with_options(at_engine_handle_t *me, const char *cmd,
+esp_err_t at_engine_send_cmd_with_options(at_engine_handle_t me, const char *cmd,
                                           at_response_t *response,
                                           const at_cmd_options_t *options);
 
@@ -273,7 +273,7 @@ esp_err_t at_engine_send_cmd_with_options(at_engine_handle_t *me, const char *cm
  *         - ESP_ERR_TIMEOUT: 等待 prompt 或最终响应超时
  *         - ESP_FAIL: UART 写入失败
  */
-esp_err_t at_engine_send_cmd_with_payload(at_engine_handle_t *me, const char *cmd,
+esp_err_t at_engine_send_cmd_with_payload(at_engine_handle_t me, const char *cmd,
                                           const uint8_t *payload,
                                           size_t payload_len,
                                           const char *payload_prompt,
@@ -292,7 +292,7 @@ esp_err_t at_engine_send_cmd_with_payload(at_engine_handle_t *me, const char *cm
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 正在执行命令或正在销毁
  */
-esp_err_t at_engine_begin_exclusive(at_engine_handle_t *me);
+esp_err_t at_engine_begin_exclusive(at_engine_handle_t me);
 
 /**
  * @brief 在独占段中清空 AT RX 输入
@@ -305,7 +305,7 @@ esp_err_t at_engine_begin_exclusive(at_engine_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 正在执行命令或正在销毁
  */
-esp_err_t at_engine_flush_rx_exclusive(at_engine_handle_t *me);
+esp_err_t at_engine_flush_rx_exclusive(at_engine_handle_t me);
 
 /**
  * @brief 结束 AT 命令路径独占段
@@ -314,7 +314,7 @@ esp_err_t at_engine_flush_rx_exclusive(at_engine_handle_t *me);
  * @note 释放命令路径后，等待中的命令发送调用才可继续执行。
  * @param[in] me AT 引擎句柄
  */
-void at_engine_end_exclusive(at_engine_handle_t *me);
+void at_engine_end_exclusive(at_engine_handle_t me);
 
 /**
  * @brief 清空 AT RX 输入
@@ -327,7 +327,7 @@ void at_engine_end_exclusive(at_engine_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 正在执行命令或正在销毁
  */
-esp_err_t at_engine_flush_rx(at_engine_handle_t *me);
+esp_err_t at_engine_flush_rx(at_engine_handle_t me);
 
 /**
  * @brief 注册 URC 处理器
@@ -343,7 +343,7 @@ esp_err_t at_engine_flush_rx(at_engine_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 前缀/节点已注册或正在销毁
  */
-esp_err_t at_engine_register_urc(at_engine_handle_t *me, const char *prefix,
+esp_err_t at_engine_register_urc(at_engine_handle_t me, const char *prefix,
                                  at_urc_handler_t *handler);
 
 /**
@@ -359,7 +359,7 @@ esp_err_t at_engine_register_urc(at_engine_handle_t *me, const char *prefix,
  *         - ESP_ERR_INVALID_STATE: 正在销毁
  *         - ESP_ERR_NOT_FOUND: 未找到匹配前缀
  */
-esp_err_t at_engine_unregister_urc(at_engine_handle_t *me, const char *prefix);
+esp_err_t at_engine_unregister_urc(at_engine_handle_t me, const char *prefix);
 
 /**********************
  *      MACROS

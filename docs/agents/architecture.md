@@ -151,9 +151,9 @@ modem_air780ep_config_t modem_cfg = {
         },
     },
 };
-modem_handle_t *modem = modem_air780ep_create(at, &modem_cfg);
+modem_handle_t modem = modem_air780ep_create(at, &modem_cfg);
 
-esp_err_t core_init(core_handle_t *me, modem_handle_t *modem)
+esp_err_t core_init(core_handle_t me, modem_handle_t modem)
 {
     me->modem = modem;
     return modem_register_event_callback(modem, core_event_handler, me);  /* Core → Modem */
@@ -236,7 +236,7 @@ Modem Impl 可以直接使用 `driver/gpio.h` 控制模块的 EN 引脚。
 ```c
 /* 不同模块实现同一个接口的不同行为 */
 /* Air780EP: */
-static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
+static esp_err_t air780ep_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     char *lines[4];
     at_response_t resp = {
@@ -252,7 +252,7 @@ static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
 }
 
 /* SIM800: 同一个方法，不同 AT 指令 */
-static esp_err_t sim800_get_signal(modem_handle_t *me, modem_signal_t *signal)
+static esp_err_t sim800_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     char *lines[4];
     at_response_t resp = {
@@ -339,7 +339,7 @@ lwlte_air780ep_config_t config = {
     },
 };
 
-lwlte_handle_t *lte = NULL;
+lwlte_handle_t lte = NULL;
 ESP_ERROR_CHECK(lwlte_air780ep_init(&config, &lte));
 ESP_ERROR_CHECK(esp_event_handler_register(LWLTE_EVENT, ESP_EVENT_ANY_ID,
                                            app_event_handler, NULL));
@@ -385,16 +385,16 @@ Facade factory
 ```c
 /* src/lwlte/lwlte_air780ep.c — Air780EP 门面 factory */
 
-struct lwlte_handle {
-    at_engine_handle_t *at;
-    modem_handle_t     *modem;
-    core_handle_t      *core;
-    mqtt_client_handle_t *mqtt; /* 由 lwlte_mqtt_init() 独立创建 */
+struct lwlte_t {
+    at_engine_handle_t at;
+    modem_handle_t     modem;
+    core_handle_t      core;
+    mqtt_client_handle_t mqtt; /* 由 lwlte_mqtt_init() 独立创建 */
     esp_event_loop_handle_t event_loop;
 };
 
 esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
-                              lwlte_handle_t **out_lte)
+                              lwlte_handle_t *out_lte)
 {
     /* 1. 底：创建 AT Engine（直接传入 UART 硬件和 AT 引擎调优配置） */
     const at_engine_config_t at_cfg = {
@@ -413,7 +413,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
             .max_response_lines = config->base.at_engine.max_response_lines,
         },
     };
-    at_engine_handle_t *at = at_engine_create(&at_cfg);
+    at_engine_handle_t at = at_engine_create(&at_cfg);
     if (!at) return ESP_FAIL;
 
     /* 2. 模块适配（换模块只需换这一组配置和工厂） */
@@ -434,7 +434,7 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
             },
         },
     };
-    modem_handle_t *modem = modem_air780ep_create(at, &modem_cfg);
+    modem_handle_t modem = modem_air780ep_create(at, &modem_cfg);
     if (!modem) goto err_at;
 
     /* 3. 核心服务：启动请求由 lwlte_start() 异步提交给 Core。 */
@@ -455,10 +455,10 @@ esp_err_t lwlte_air780ep_init(const lwlte_air780ep_config_t *config,
             .task_priority = config->base.core.fsm_task_priority,
         },
     };
-    core_handle_t *core = core_create(&core_cfg, modem);
+    core_handle_t core = core_create(&core_cfg, modem);
     if (!core) goto err_modem;
 
-    lwlte_handle_t *lte = calloc(1, sizeof(*lte));
+    lwlte_handle_t lte = calloc(1, sizeof(*lte));
     if (!lte) goto err_core;
 
     lte->at = at;

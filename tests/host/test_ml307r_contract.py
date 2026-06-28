@@ -63,7 +63,7 @@ class Ml307rContractTest(unittest.TestCase):
         for token in [
             "lwlte_mqtt_config_t",
             "lwlte_ml307r_config_t",
-            "esp_err_t lwlte_mqtt_init(lwlte_handle_t *me, const lwlte_mqtt_config_t *config);",
+            "esp_err_t lwlte_mqtt_init(lwlte_handle_t me, const lwlte_mqtt_config_t *config);",
             "esp_err_t lwlte_ml307r_init(const lwlte_ml307r_config_t *config,",
         ]:
             self.assertIn(token, self.lwlte_h)
@@ -80,7 +80,7 @@ class Ml307rContractTest(unittest.TestCase):
             "modem_timing_config_t timing;",
             "modem_event_config_t event;",
             "modem_base_config_t base;",
-            "modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,",
+            "modem_handle_t modem_ml307r_create(at_engine_handle_t at,",
         ]:
             self.assertIn(token, self.modem_h + self.ml307r_h + self.ml307r_c)
 
@@ -110,8 +110,8 @@ class Ml307rContractTest(unittest.TestCase):
         self.assertNotIn('"AT+CGREG=2"', init_body)
         self.assertNotIn('"AT+CREG=2"', init_body)
         for signature in [
-            "static esp_err_t ml307r_start(modem_handle_t *me)",
-            "static esp_err_t ml307r_reset(modem_handle_t *me)",
+            "static esp_err_t ml307r_start(modem_handle_t me)",
+            "static esp_err_t ml307r_reset(modem_handle_t me)",
         ]:
             body = function_body(self.ml307r_c, signature)
             for token in [
@@ -183,7 +183,7 @@ class Ml307rContractTest(unittest.TestCase):
             self.assertIn(token, self.ml307r_c)
         reg_body = function_body(
             self.ml307r_c,
-            "static esp_err_t ml307r_get_registration(modem_handle_t *me,",
+            "static esp_err_t ml307r_get_registration(modem_handle_t me,",
         )
         self.assertIn('"AT+CEREG?"', reg_body)
         self.assertNotIn('"AT+CGREG?"', reg_body)
@@ -227,14 +227,14 @@ class Ml307rContractTest(unittest.TestCase):
 
         configure_body = function_body(
             self.ml307r_c,
-            "static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,",
+            "static esp_err_t ml307r_mqtt_configure(modem_handle_t me,",
         )
         self.assertNotIn("escape_at_string", configure_body)
         self.assertNotIn("char *host", configure_body)
 
         publish_body = function_body(
             self.ml307r_c,
-            "static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,",
+            "static esp_err_t ml307r_mqtt_publish(modem_handle_t me,",
         )
         self.assertIn("hex_payload = hex_encode_payload", publish_body)
         self.assertIn("(unsigned int)publish->payload_len, hex_payload", publish_body)

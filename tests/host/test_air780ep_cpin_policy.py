@@ -64,7 +64,7 @@ class Air780EpCpinPolicyTest(unittest.TestCase):
             self.assertIn(status_name, body)
 
     def test_air780ep_get_sim_status_retries_sim_busy_by_timer_only(self):
-        body = function_body(self.src, "static esp_err_t air780ep_get_sim_status(modem_handle_t *me, modem_sim_status_t *status)")
+        body = function_body(self.src, "static esp_err_t air780ep_get_sim_status(modem_handle_t me, modem_sim_status_t *status)")
 
         self.assertIn("ctx.response.status == AT_RESP_CME_ERROR", body)
         self.assertIn("ctx.response.error_code == AIR780EP_CME_SIM_BUSY", body)

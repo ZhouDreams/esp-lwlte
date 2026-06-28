@@ -91,11 +91,11 @@ typedef struct {
     size_t data_size;
 } tcp_fsm_sig_t;
 
-struct tcp_client_handle {
+struct tcp_client_t {
     tcp_client_config_t config;
-    core_handle_t *core;
-    tcp_client_conn_t *conn;
-    tcp_client_conn_t *deferred_destroy_conn;
+    core_handle_t core;
+    tcp_client_conn_t conn;
+    tcp_client_conn_t deferred_destroy_conn;
     TaskHandle_t fsm_task;
     QueueHandle_t fsm_queue;
     SemaphoreHandle_t lock;
@@ -104,8 +104,8 @@ struct tcp_client_handle {
     bool destroying;
 };
 
-struct tcp_client_conn {
-    tcp_client_handle_t *client;
+struct tcp_client_conn_t {
+    tcp_client_handle_t client;
     QueueHandle_t send_queue;
     SemaphoreHandle_t lock;
     SemaphoreHandle_t send_queue_lock;

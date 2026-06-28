@@ -39,8 +39,8 @@ typedef struct {
     bool completed;
 } ping_wait_ctx_t;
 
-struct ping_client_handle {
-    core_handle_t *core;
+struct ping_client_t {
+    core_handle_t core;
     SemaphoreHandle_t lock;
     SemaphoreHandle_t active_done_sema;
     size_t active_calls;

@@ -87,9 +87,9 @@ typedef struct {
     size_t data_size;
 } mqtt_fsm_sig_t;
 
-struct mqtt_client_handle {
+struct mqtt_client_t {
     mqtt_client_config_t config;
-    core_handle_t *core;
+    core_handle_t core;
     TaskHandle_t fsm_task;
     QueueHandle_t fsm_queue;
     SemaphoreHandle_t fsm_task_done_sema;

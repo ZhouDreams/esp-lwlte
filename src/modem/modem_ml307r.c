@@ -83,7 +83,7 @@ typedef struct {
  * @details ML307R modem instance
  */
 typedef struct {
-    modem_handle_t base;
+    struct modem_t base;
     modem_ml307r_config_t config;
     at_urc_handler_t cpin_handler;
     at_urc_handler_t creg_handler;
@@ -123,7 +123,7 @@ typedef struct {
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: URC 注销错误
  */
-static esp_err_t ml307r_destroy(modem_handle_t *me);
+static esp_err_t ml307r_destroy(modem_handle_t me);
 /**
  * @brief 启动 ML307R 调制解调器
  * @details Hardware-reset the module, wait for AT-ready, run the basic init
@@ -134,7 +134,7 @@ static esp_err_t ml307r_destroy(modem_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: 启动失败（状态切换、复位、初始化或 URC 注册错误）
  */
-static esp_err_t ml307r_start(modem_handle_t *me);
+static esp_err_t ml307r_start(modem_handle_t me);
 /**
  * @brief 停止 ML307R 调制解调器
  * @details Stop ML307R modem and power it off
@@ -144,7 +144,7 @@ static esp_err_t ml307r_start(modem_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: 停止失败
  */
-static esp_err_t ml307r_stop(modem_handle_t *me);
+static esp_err_t ml307r_stop(modem_handle_t me);
 /**
  * @brief 复位 ML307R 调制解调器
  * @details Hardware-reset the module, wait for AT-ready, run the basic init
@@ -155,7 +155,7 @@ static esp_err_t ml307r_stop(modem_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: 复位失败（状态切换、复位、初始化或 URC 注册错误）
  */
-static esp_err_t ml307r_reset(modem_handle_t *me);
+static esp_err_t ml307r_reset(modem_handle_t me);
 /**
  * @brief 获取 ML307R 调制解调器信息
  * @details Query IMEI/IMSI/ICCID/model/firmware via AT+CGSN, AT+CIMI, AT+MCCID,
@@ -168,7 +168,7 @@ static esp_err_t ml307r_reset(modem_handle_t *me);
  *         - ESP_ERR_INVALID_RESPONSE: 必需字段缺失或无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_get_info(modem_handle_t *me, modem_info_t *info);
+static esp_err_t ml307r_get_info(modem_handle_t me, modem_info_t *info);
 /**
  * @brief 获取 ML307R SIM 卡状态
  * @details Query SIM status via AT+CPIN? and parse the +CPIN line
@@ -180,7 +180,7 @@ static esp_err_t ml307r_get_info(modem_handle_t *me, modem_info_t *info);
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
+static esp_err_t ml307r_get_sim_status(modem_handle_t me, modem_sim_status_t *status);
 /**
  * @brief 获取 ML307R 信号质量
  * @details Query signal quality via AT+CSQ; convert RSSI to dBm and validate BER
@@ -192,7 +192,7 @@ static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *s
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal);
+static esp_err_t ml307r_get_signal(modem_handle_t me, modem_signal_t *signal);
 /**
  * @brief 获取 ML307R 网络注册状态
  * @details Query EPS/LTE registration via AT+CEREG? and update the modem state
@@ -204,7 +204,7 @@ static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal);
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t *status);
+static esp_err_t ml307r_get_registration(modem_handle_t me, modem_reg_status_t *status);
 /**
  * @brief 获取 ML307R 分组域附着状态
  * @details Query packet-domain attach status via AT+CGATT (delegated to
@@ -216,7 +216,7 @@ static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t 
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_get_packet_attach_status(modem_handle_t *me, bool *attached);
+static esp_err_t ml307r_get_packet_attach_status(modem_handle_t me, bool *attached);
 /**
  * @brief 设置 ML307R APN
  * @details Set APN via AT+CGDCONT=<cid>,"IPV4V6","<apn>"; only cid 1 is supported
@@ -229,7 +229,7 @@ static esp_err_t ml307r_get_packet_attach_status(modem_handle_t *me, bool *attac
  *         - ESP_ERR_NOT_SUPPORTED: cid 不受支持
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
+static esp_err_t ml307r_set_apn(modem_handle_t me, uint8_t cid, const char *apn);
 /**
  * @brief 激活 ML307R PDP 上下文
  * @details Activate PDP via AT+MIPCALL=1,<cid>; wait for the +MIPCALL URC or
@@ -243,7 +243,7 @@ static esp_err_t ml307r_set_apn(modem_handle_t *me, uint8_t cid, const char *apn
  *         - ESP_ERR_TIMEOUT: 激活超时
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_activate_pdp(modem_handle_t *me, uint8_t cid);
+static esp_err_t ml307r_activate_pdp(modem_handle_t me, uint8_t cid);
 /**
  * @brief 去激活 ML307R PDP 上下文
  * @details Deactivate PDP via AT+MIPCALL=0,<cid> and post a PDP_DEACTIVATED
@@ -256,7 +256,7 @@ static esp_err_t ml307r_activate_pdp(modem_handle_t *me, uint8_t cid);
  *         - ESP_ERR_NOT_SUPPORTED: cid 不受支持
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid);
+static esp_err_t ml307r_deactivate_pdp(modem_handle_t me, uint8_t cid);
 /**
  * @brief 获取 ML307R PDP 上下文
  * @details Refresh the cached PDP context via AT+MIPCALL? for the given cid;
@@ -270,7 +270,7 @@ static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  *         - ESP_ERR_NOT_SUPPORTED: cid 不受支持
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
+static esp_err_t ml307r_get_pdp_context(modem_handle_t me, uint8_t cid,
                                            modem_pdp_context_t *pdp);
 
 /**
@@ -281,7 +281,7 @@ static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
  * @param[in] credentials SSL 证书材料
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t ml307r_ssl_provision(modem_handle_t *me,
+static esp_err_t ml307r_ssl_provision(modem_handle_t me,
                                       const modem_ssl_context_config_t *config,
                                       const modem_ssl_credentials_t *credentials);
 
@@ -293,7 +293,7 @@ static esp_err_t ml307r_ssl_provision(modem_handle_t *me,
  * @param[out] status SSL context 状态
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t ml307r_ssl_get_context_status(modem_handle_t *me,
+static esp_err_t ml307r_ssl_get_context_status(modem_handle_t me,
                                                uint8_t context_id,
                                                modem_ssl_context_status_t *status);
 
@@ -379,7 +379,7 @@ static void ml307r_clear_ssl_state(modem_ml307r_t *self);
  * @param[in] open Socket 打开参数
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t ml307r_socket_open(modem_handle_t *me,
+static esp_err_t ml307r_socket_open(modem_handle_t me,
                                     const modem_socket_open_t *open);
 /**
  * @brief 发送 ML307R TCP Socket 数据
@@ -388,7 +388,7 @@ static esp_err_t ml307r_socket_open(modem_handle_t *me,
  * @param[in] send Socket 发送参数
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t ml307r_socket_send(modem_handle_t *me,
+static esp_err_t ml307r_socket_send(modem_handle_t me,
                                     const modem_socket_send_t *send);
 /**
  * @brief 接收 ML307R TCP Socket 数据
@@ -398,7 +398,7 @@ static esp_err_t ml307r_socket_send(modem_handle_t *me,
  * @param[out] result Socket 接收结果
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t ml307r_socket_recv(modem_handle_t *me,
+static esp_err_t ml307r_socket_recv(modem_handle_t me,
                                     const modem_socket_recv_t *recv,
                                     modem_socket_recv_result_t *result);
 /**
@@ -408,7 +408,7 @@ static esp_err_t ml307r_socket_recv(modem_handle_t *me,
  * @param[in] close Socket 关闭参数
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t ml307r_socket_close(modem_handle_t *me,
+static esp_err_t ml307r_socket_close(modem_handle_t me,
                                      const modem_socket_close_t *close);
 /**
  * @brief 准备 ML307R TCP Socket 模式
@@ -458,7 +458,7 @@ static esp_err_t decode_hex_payload(const char *hex, uint8_t **out_payload,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_configure(modem_handle_t me,
                                         const modem_mqtt_config_t *config);
 /**
  * @brief 建立 ML307R MQTT TCP 通道
@@ -470,7 +470,7 @@ static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: MQTT 未配置
  */
-static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t me);
 /**
  * @brief 连接 ML307R MQTT 会话
  * @details Connect the MQTT session via AT+MQTTCONN and wait for the
@@ -484,7 +484,7 @@ static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me);
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_mqtt_connect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_connect(modem_handle_t me);
 /**
  * @brief 断开 ML307R MQTT 会话
  * @details Disconnect the MQTT session via AT+MQTTDISC=0
@@ -495,7 +495,7 @@ static esp_err_t ml307r_mqtt_connect(modem_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: 会话未连接
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_mqtt_disconnect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_disconnect(modem_handle_t me);
 /**
  * @brief 断开 ML307R MQTT TCP 通道
  * @details ML307R couples TCP and session, so this op just clears the local
@@ -505,7 +505,7 @@ static esp_err_t ml307r_mqtt_disconnect(modem_handle_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t *me);
+static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t me);
 /**
  * @brief 订阅 ML307R MQTT 主题
  * @details Subscribe to an MQTT topic via AT+MQTTSUB=0,"<topic>",<qos>
@@ -518,7 +518,7 @@ static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t *me);
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_mqtt_subscribe(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_subscribe(modem_handle_t me,
                                         const modem_mqtt_topic_t *topic);
 /**
  * @brief 取消订阅 ML307R MQTT 主题
@@ -532,7 +532,7 @@ static esp_err_t ml307r_mqtt_subscribe(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t me,
                                           const modem_mqtt_topic_t *topic);
 /**
  * @brief 发布 ML307R MQTT 消息
@@ -548,7 +548,7 @@ static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_publish(modem_handle_t me,
                                       const modem_mqtt_publish_t *publish);
 /**
  * @brief 查询 MQTT 连接状态
@@ -561,7 +561,7 @@ static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
  *         - ESP_FAIL: AT 命令失败
  *         - ESP_ERR_INVALID_RESPONSE: 响应解析失败
  */
-static esp_err_t ml307r_mqtt_get_status(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_get_status(modem_handle_t me,
                                          modem_mqtt_status_t *status);
 /**
  * @brief 映射 MQTT 状态值
@@ -587,7 +587,7 @@ static modem_mqtt_status_t map_mqtt_status(int state);
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t ml307r_ping(modem_handle_t *me,
+static esp_err_t ml307r_ping(modem_handle_t me,
                              const modem_ping_request_t *request,
                              modem_ping_reply_t *replies,
                              size_t max_replies,
@@ -598,7 +598,7 @@ static esp_err_t ml307r_ping(modem_handle_t *me,
  * @param[in] me 调制解调器句柄
  * @return ML307R 调制解调器实例
  */
-static modem_ml307r_t *to_ml307r(modem_handle_t *me);
+static modem_ml307r_t *to_ml307r(modem_handle_t me);
 
 /**
  * @brief 初始化命令上下文
@@ -1145,7 +1145,7 @@ static esp_err_t run_basic_init_cmds(modem_ml307r_t *self);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: 状态设置错误
  */
-static esp_err_t finish_modem_ready(modem_handle_t *me, modem_ml307r_t *self);
+static esp_err_t finish_modem_ready(modem_handle_t me, modem_ml307r_t *self);
 
 /**
  * @brief 硬件复位模块(通过 EN 引脚)
@@ -1492,7 +1492,7 @@ static const modem_ops_t s_ml307r_ops = {
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
+modem_handle_t modem_ml307r_create(at_engine_handle_t at,
                              const modem_ml307r_config_t *config)
 {
     if (!at || !config) {
@@ -1539,7 +1539,7 @@ modem_handle_t *modem_ml307r_create(at_engine_handle_t *at,
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static modem_ml307r_t *to_ml307r(modem_handle_t *me)
+static modem_ml307r_t *to_ml307r(modem_handle_t me)
 {
     return MODEM_CONTAINER_OF(me, modem_ml307r_t, base);
 }
@@ -2043,7 +2043,7 @@ static esp_err_t post_event_nonblocking(modem_ml307r_t *self,
         return ESP_ERR_TIMEOUT;
     }
 
-    modem_handle_t *me = &self->base;
+    modem_handle_t me = &self->base;
     if (me->destroying || me->state == MODEM_STATE_DESTROYING ||
         me->event_task_stop_requested || !me->event_task || !me->event_queue) {
         xSemaphoreGive(me->lock);
@@ -2871,7 +2871,7 @@ static esp_err_t ml307r_query_ssl_auth_mode(modem_ml307r_t *self,
     return ESP_OK;
 }
 
-static esp_err_t ml307r_ssl_provision(modem_handle_t *me,
+static esp_err_t ml307r_ssl_provision(modem_handle_t me,
                                       const modem_ssl_context_config_t *config,
                                       const modem_ssl_credentials_t *credentials)
 {
@@ -3048,7 +3048,7 @@ static esp_err_t ml307r_ssl_provision(modem_handle_t *me,
     return ESP_OK;
 }
 
-static esp_err_t ml307r_ssl_get_context_status(modem_handle_t *me,
+static esp_err_t ml307r_ssl_get_context_status(modem_handle_t me,
                                                uint8_t context_id,
                                                modem_ssl_context_status_t *status)
 {
@@ -3324,7 +3324,7 @@ static esp_err_t run_basic_init_cmds(modem_ml307r_t *self)
     return ESP_OK;
 }
 
-static esp_err_t finish_modem_ready(modem_handle_t *me, modem_ml307r_t *self)
+static esp_err_t finish_modem_ready(modem_handle_t me, modem_ml307r_t *self)
 {
     ESP_RETURN_ON_FALSE(me && self, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3543,7 +3543,7 @@ static esp_err_t ml307r_unregister_urcs(modem_ml307r_t *self)
     return ret;
 }
 
-static esp_err_t ml307r_destroy(modem_handle_t *me)
+static esp_err_t ml307r_destroy(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3564,7 +3564,7 @@ static esp_err_t ml307r_destroy(modem_handle_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_start(modem_handle_t *me)
+static esp_err_t ml307r_start(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3622,7 +3622,7 @@ err:
     return ret;
 }
 
-static esp_err_t ml307r_reset(modem_handle_t *me)
+static esp_err_t ml307r_reset(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3680,7 +3680,7 @@ err:
     return ret;
 }
 
-static esp_err_t ml307r_stop(modem_handle_t *me)
+static esp_err_t ml307r_stop(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3724,7 +3724,7 @@ static esp_err_t ml307r_stop(modem_handle_t *me)
     return ret;
 }
 
-static esp_err_t ml307r_get_info(modem_handle_t *me, modem_info_t *info)
+static esp_err_t ml307r_get_info(modem_handle_t me, modem_info_t *info)
 {
     ESP_RETURN_ON_FALSE(me && info, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3807,7 +3807,7 @@ static esp_err_t ml307r_get_info(modem_handle_t *me, modem_info_t *info)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *status)
+static esp_err_t ml307r_get_sim_status(modem_handle_t me, modem_sim_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3828,7 +3828,7 @@ static esp_err_t ml307r_get_sim_status(modem_handle_t *me, modem_sim_status_t *s
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal)
+static esp_err_t ml307r_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3870,7 +3870,7 @@ static esp_err_t ml307r_get_signal(modem_handle_t *me, modem_signal_t *signal)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t *status)
+static esp_err_t ml307r_get_registration(modem_handle_t me, modem_reg_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3956,14 +3956,14 @@ static esp_err_t ml307r_get_registration(modem_handle_t *me, modem_reg_status_t 
     return last_err;
 }
 
-static esp_err_t ml307r_get_packet_attach_status(modem_handle_t *me, bool *attached)
+static esp_err_t ml307r_get_packet_attach_status(modem_handle_t me, bool *attached)
 {
     ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     return query_cgatt(to_ml307r(me), attached);
 }
 
-static esp_err_t ml307r_set_apn(modem_handle_t *me, uint8_t cid, const char *apn)
+static esp_err_t ml307r_set_apn(modem_handle_t me, uint8_t cid, const char *apn)
 {
     ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
@@ -4002,7 +4002,7 @@ static esp_err_t ml307r_set_apn(modem_handle_t *me, uint8_t cid, const char *apn
     return ESP_OK;
 }
 
-static esp_err_t ml307r_activate_pdp(modem_handle_t *me, uint8_t cid)
+static esp_err_t ml307r_activate_pdp(modem_handle_t me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
@@ -4124,7 +4124,7 @@ static esp_err_t ml307r_activate_pdp(modem_handle_t *me, uint8_t cid)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid)
+static esp_err_t ml307r_deactivate_pdp(modem_handle_t me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(cid != 0, ESP_ERR_INVALID_ARG, TAG,
@@ -4187,7 +4187,7 @@ static esp_err_t ml307r_deactivate_pdp(modem_handle_t *me, uint8_t cid)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_get_pdp_context(modem_handle_t *me, uint8_t cid,
+static esp_err_t ml307r_get_pdp_context(modem_handle_t me, uint8_t cid,
                                           modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -4247,7 +4247,7 @@ static esp_err_t ml307r_socket_prepare(modem_ml307r_t *self)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_socket_open(modem_handle_t *me,
+static esp_err_t ml307r_socket_open(modem_handle_t me,
                                     const modem_socket_open_t *open)
 {
     ESP_RETURN_ON_FALSE(me && open && open->host && open->host[0] &&
@@ -4362,7 +4362,7 @@ static esp_err_t ml307r_socket_open(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t ml307r_socket_send(modem_handle_t *me,
+static esp_err_t ml307r_socket_send(modem_handle_t me,
                                     const modem_socket_send_t *send)
 {
     ESP_RETURN_ON_FALSE(me && send && send->data && send->len > 0,
@@ -4406,7 +4406,7 @@ static esp_err_t ml307r_socket_send(modem_handle_t *me,
     return ESP_ERR_INVALID_RESPONSE;
 }
 
-static esp_err_t ml307r_socket_recv(modem_handle_t *me,
+static esp_err_t ml307r_socket_recv(modem_handle_t me,
                                     const modem_socket_recv_t *recv,
                                     modem_socket_recv_result_t *result)
 {
@@ -4470,7 +4470,7 @@ static esp_err_t ml307r_socket_recv(modem_handle_t *me,
     return ESP_OK;
 }
 
-static esp_err_t ml307r_socket_close(modem_handle_t *me,
+static esp_err_t ml307r_socket_close(modem_handle_t me,
                                      const modem_socket_close_t *close)
 {
     ESP_RETURN_ON_FALSE(me && close, ESP_ERR_INVALID_ARG, TAG,
@@ -4501,7 +4501,7 @@ static esp_err_t ml307r_socket_close(modem_handle_t *me,
     return ESP_ERR_INVALID_RESPONSE;
 }
 
-static esp_err_t ml307r_mqtt_configure(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_configure(modem_handle_t me,
                                         const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host &&
@@ -4630,7 +4630,7 @@ cleanup:
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me)
+static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4663,7 +4663,7 @@ static esp_err_t ml307r_mqtt_tcp_connect(modem_handle_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_mqtt_connect(modem_handle_t *me)
+static esp_err_t ml307r_mqtt_connect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4774,7 +4774,7 @@ cleanup:
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_disconnect(modem_handle_t *me)
+static esp_err_t ml307r_mqtt_disconnect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4821,7 +4821,7 @@ static esp_err_t ml307r_mqtt_disconnect(modem_handle_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t *me)
+static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4837,7 +4837,7 @@ static esp_err_t ml307r_mqtt_tcp_disconnect(modem_handle_t *me)
     return ESP_OK;
 }
 
-static esp_err_t ml307r_mqtt_subscribe(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_subscribe(modem_handle_t me,
                                         const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->topic[0] &&
@@ -4884,7 +4884,7 @@ static esp_err_t ml307r_mqtt_subscribe(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t me,
                                           const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->topic[0] &&
@@ -4929,7 +4929,7 @@ static esp_err_t ml307r_mqtt_unsubscribe(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t ml307r_mqtt_publish(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_publish(modem_handle_t me,
                                       const modem_mqtt_publish_t *publish)
 {
     ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
@@ -5010,7 +5010,7 @@ static modem_mqtt_status_t map_mqtt_status(int state)
     }
 }
 
-static esp_err_t ml307r_mqtt_get_status(modem_handle_t *me,
+static esp_err_t ml307r_mqtt_get_status(modem_handle_t me,
                                         modem_mqtt_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -5039,7 +5039,7 @@ static esp_err_t ml307r_mqtt_get_status(modem_handle_t *me,
     return ESP_OK;
 }
 
-static esp_err_t ml307r_ping(modem_handle_t *me,
+static esp_err_t ml307r_ping(modem_handle_t me,
                              const modem_ping_request_t *request,
                              modem_ping_reply_t *replies,
                              size_t max_replies,

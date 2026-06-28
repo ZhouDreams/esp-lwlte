@@ -30,89 +30,89 @@
 /**********************
  *  STATIC PROTOTYPES
  **********************/
-static bool config_valid(const tcp_client_config_t *config, core_handle_t *core);
+static bool config_valid(const tcp_client_config_t *config, core_handle_t core);
 static esp_err_t normalize_config(const tcp_client_config_t *config,
                                   tcp_client_config_t *out);
 static char *clone_string(const char *value);
 static uint8_t *clone_payload(const uint8_t *data, size_t len);
-static esp_err_t send_fsm_sig(tcp_client_handle_t *me, const tcp_fsm_sig_t *sig);
-static esp_err_t send_fsm_sig_wait(tcp_client_handle_t *me,
+static esp_err_t send_fsm_sig(tcp_client_handle_t me, const tcp_fsm_sig_t *sig);
+static esp_err_t send_fsm_sig_wait(tcp_client_handle_t me,
                                    const tcp_fsm_sig_t *sig,
                                    TickType_t wait_ticks);
-static bool acquire_conn(tcp_client_conn_t *conn);
-static void release_conn(tcp_client_conn_t *conn);
-static tcp_client_conn_t *acquire_current_conn(tcp_client_handle_t *me);
-static bool signal_matches_current_conn(tcp_client_handle_t *me,
+static bool acquire_conn(tcp_client_conn_t conn);
+static void release_conn(tcp_client_conn_t conn);
+static tcp_client_conn_t acquire_current_conn(tcp_client_handle_t me);
+static bool signal_matches_current_conn(tcp_client_handle_t me,
                                         const tcp_fsm_sig_t *sig,
-                                        tcp_client_conn_t **out_conn);
-static void latch_remote_closed(tcp_client_conn_t *conn, int reason,
+                                        tcp_client_conn_t *out_conn);
+static void latch_remote_closed(tcp_client_conn_t conn, int reason,
                                 int modem_error_code);
-static void handle_remote_closed_if_latched(tcp_client_handle_t *me,
-                                            tcp_client_conn_t *conn);
-static esp_err_t set_conn_state(tcp_client_conn_t *conn, tcp_conn_state_t state);
-static tcp_conn_state_t get_conn_state_value(tcp_client_conn_t *conn);
-static bool conn_pending_command(tcp_client_conn_t *conn);
-static bool conn_terminal_event_pending(tcp_client_conn_t *conn);
-static bool conn_can_submit(tcp_client_conn_t *conn, core_cmd_type_t type);
-static bool conn_terminal_or_destroyed(tcp_client_conn_t *conn);
+static void handle_remote_closed_if_latched(tcp_client_handle_t me,
+                                            tcp_client_conn_t conn);
+static esp_err_t set_conn_state(tcp_client_conn_t conn, tcp_conn_state_t state);
+static tcp_conn_state_t get_conn_state_value(tcp_client_conn_t conn);
+static bool conn_pending_command(tcp_client_conn_t conn);
+static bool conn_terminal_event_pending(tcp_client_conn_t conn);
+static bool conn_can_submit(tcp_client_conn_t conn, core_cmd_type_t type);
+static bool conn_terminal_or_destroyed(tcp_client_conn_t conn);
 static lwlte_tcp_conn_state_t map_conn_state(tcp_conn_state_t state);
 static esp_err_t esp_err_from_core_result(core_cmd_result_t result);
-static void tcp_protocol_data_cb(core_handle_t *core,
+static void tcp_protocol_data_cb(core_handle_t core,
                                  const core_protocol_data_t *data,
                                  void *user_ctx);
-static void tcp_protocol_closed_cb(core_handle_t *core,
+static void tcp_protocol_closed_cb(core_handle_t core,
                                    core_protocol_t protocol,
                                    const core_protocol_data_t *data,
                                    void *user_ctx);
-static void tcp_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
+static void tcp_core_cmd_done_cb(core_handle_t core, core_cmd_type_t type,
                                  core_cmd_result_t result,
                                  const void *result_data, void *user_ctx);
 static void handle_lwlte_event(void *handler_arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data);
 static void tcp_fsm_task(void *arg);
-static bool tcp_fsm_should_stop(tcp_client_handle_t *me);
-static void handle_signal(tcp_client_handle_t *me, tcp_fsm_sig_t *sig);
-static void handle_open(tcp_client_handle_t *me, tcp_client_conn_t *conn,
+static bool tcp_fsm_should_stop(tcp_client_handle_t me);
+static void handle_signal(tcp_client_handle_t me, tcp_fsm_sig_t *sig);
+static void handle_open(tcp_client_handle_t me, tcp_client_conn_t conn,
                         const tcp_open_owned_t *open);
-static void handle_send_ready(tcp_client_handle_t *me, tcp_client_conn_t *conn);
-static void handle_close(tcp_client_handle_t *me, tcp_client_conn_t *conn);
-static void handle_core_cmd_done(tcp_client_handle_t *me, tcp_client_conn_t *conn,
+static void handle_send_ready(tcp_client_handle_t me, tcp_client_conn_t conn);
+static void handle_close(tcp_client_handle_t me, tcp_client_conn_t conn);
+static void handle_core_cmd_done(tcp_client_handle_t me, tcp_client_conn_t conn,
                                  tcp_fsm_sig_t *sig);
-static void handle_protocol_data(tcp_client_handle_t *me, tcp_client_conn_t *conn,
+static void handle_protocol_data(tcp_client_handle_t me, tcp_client_conn_t conn,
                                  tcp_fsm_sig_t *sig);
-static void handle_protocol_closed(tcp_client_handle_t *me,
-                                   tcp_client_conn_t *conn,
+static void handle_protocol_closed(tcp_client_handle_t me,
+                                   tcp_client_conn_t conn,
                                    const tcp_fsm_sig_t *sig);
-static void handle_deferred_work(tcp_client_handle_t *me, tcp_client_conn_t *conn);
-static esp_err_t submit_socket_open(tcp_client_conn_t *conn, const char *host,
+static void handle_deferred_work(tcp_client_handle_t me, tcp_client_conn_t conn);
+static esp_err_t submit_socket_open(tcp_client_conn_t conn, const char *host,
                                     uint16_t port,
                                     core_socket_transport_t transport,
                                     uint8_t ssl_context_id);
-static esp_err_t submit_socket_send(tcp_client_conn_t *conn,
+static esp_err_t submit_socket_send(tcp_client_conn_t conn,
                                     const tcp_send_item_t *item);
-static esp_err_t submit_socket_recv(tcp_client_conn_t *conn);
-static esp_err_t submit_socket_close(tcp_client_conn_t *conn);
-static esp_err_t post_tcp_event(tcp_client_conn_t *conn,
+static esp_err_t submit_socket_recv(tcp_client_conn_t conn);
+static esp_err_t submit_socket_close(tcp_client_conn_t conn);
+static esp_err_t post_tcp_event(tcp_client_conn_t conn,
                                 lwlte_tcp_event_id_t event_id,
                                 const lwlte_tcp_event_data_t *payload);
-static esp_err_t post_tcp_event_with_ref(tcp_client_conn_t *conn,
+static esp_err_t post_tcp_event_with_ref(tcp_client_conn_t conn,
                                          lwlte_tcp_event_id_t event_id,
                                          const lwlte_tcp_event_data_t *payload,
                                          bool ref_acquired,
                                          bool release_on_failure);
-static void mark_terminal_event_pending(tcp_client_conn_t *conn,
+static void mark_terminal_event_pending(tcp_client_conn_t conn,
                                         lwlte_tcp_event_id_t event_id,
                                         esp_err_t error_code,
                                         int modem_error_code,
                                         int reason);
-static esp_err_t post_pending_terminal_event(tcp_client_conn_t *conn);
-static void post_error_event(tcp_client_conn_t *conn, esp_err_t error_code,
+static esp_err_t post_pending_terminal_event(tcp_client_conn_t conn);
+static void post_error_event(tcp_client_conn_t conn, esp_err_t error_code,
                              int modem_error_code, int reason);
-static void clear_send_queue(tcp_client_conn_t *conn);
+static void clear_send_queue(tcp_client_conn_t conn);
 static void free_fsm_sig_payload(tcp_fsm_sig_t *sig);
-static void drain_fsm_queue_payloads(tcp_client_handle_t *me, QueueHandle_t queue);
-static void cleanup_partial_client(tcp_client_handle_t *me);
-static void cleanup_conn(tcp_client_conn_t *conn);
+static void drain_fsm_queue_payloads(tcp_client_handle_t me, QueueHandle_t queue);
+static void cleanup_partial_client(tcp_client_handle_t me);
+static void cleanup_conn(tcp_client_conn_t conn);
 
 /**********************
  *  STATIC VARIABLES
@@ -125,14 +125,14 @@ static void cleanup_conn(tcp_client_conn_t *conn);
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-tcp_client_handle_t *tcp_client_create(const tcp_client_config_t *config,
-                                       core_handle_t *core)
+tcp_client_handle_t tcp_client_create(const tcp_client_config_t *config,
+                                       core_handle_t core)
 {
     if (!config_valid(config, core)) {
         return NULL;
     }
 
-    tcp_client_handle_t *me = calloc(1, sizeof(*me));
+    tcp_client_handle_t me = calloc(1, sizeof(*me));
     if (!me) {
         return NULL;
     }
@@ -191,7 +191,7 @@ tcp_client_handle_t *tcp_client_create(const tcp_client_config_t *config,
     return me;
 }
 
-esp_err_t tcp_client_destroy(tcp_client_handle_t *me)
+esp_err_t tcp_client_destroy(tcp_client_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -255,9 +255,9 @@ esp_err_t tcp_client_destroy(tcp_client_handle_t *me)
     return ESP_OK;
 }
 
-esp_err_t tcp_client_open(tcp_client_handle_t *me,
+esp_err_t tcp_client_open(tcp_client_handle_t me,
                           const tcp_client_open_config_t *config,
-                          tcp_client_conn_t **out_conn)
+                          tcp_client_conn_t *out_conn)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && config && out_conn &&
                         config->host && config->host[0] && config->port > 0,
@@ -270,7 +270,7 @@ esp_err_t tcp_client_open(tcp_client_handle_t *me,
     ESP_RETURN_ON_FALSE(net_state == CORE_NET_STATE_ONLINE,
                         ESP_ERR_INVALID_STATE, TAG, "network is not online");
 
-    tcp_client_conn_t *conn = calloc(1, sizeof(*conn));
+    tcp_client_conn_t conn = calloc(1, sizeof(*conn));
     ESP_RETURN_ON_FALSE(conn, ESP_ERR_NO_MEM, TAG, "alloc TCP conn failed");
     conn->client = me;
     conn->conn_id = 0;
@@ -337,7 +337,7 @@ esp_err_t tcp_client_open(tcp_client_handle_t *me,
     return ESP_OK;
 }
 
-esp_err_t tcp_client_send(tcp_client_conn_t *conn,
+esp_err_t tcp_client_send(tcp_client_conn_t conn,
                           const uint8_t *data,
                           size_t len)
 {
@@ -346,7 +346,7 @@ esp_err_t tcp_client_send(tcp_client_conn_t *conn,
     ESP_RETURN_ON_FALSE(acquire_conn(conn), ESP_ERR_INVALID_STATE, TAG,
                         "TCP conn is destroying");
 
-    tcp_client_handle_t *client = conn->client;
+    tcp_client_handle_t client = conn->client;
     if (len > client->config.max_tx_len) {
         release_conn(conn);
         return ESP_ERR_INVALID_ARG;
@@ -367,7 +367,7 @@ esp_err_t tcp_client_send(tcp_client_conn_t *conn,
         return ESP_ERR_NO_MEM;
     }
 
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     xSemaphoreTake(me->lock, portMAX_DELAY);
     xSemaphoreTake(conn->send_queue_lock, portMAX_DELAY);
     xSemaphoreTake(conn->lock, portMAX_DELAY);
@@ -412,14 +412,14 @@ esp_err_t tcp_client_send(tcp_client_conn_t *conn,
     return ESP_OK;
 }
 
-esp_err_t tcp_client_close(tcp_client_conn_t *conn)
+esp_err_t tcp_client_close(tcp_client_conn_t conn)
 {
     ESP_RETURN_ON_FALSE(conn && conn->client, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
     ESP_RETURN_ON_FALSE(acquire_conn(conn), ESP_ERR_INVALID_STATE, TAG,
                         "TCP conn is destroying");
 
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     xSemaphoreTake(me->lock, portMAX_DELAY);
     xSemaphoreTake(conn->lock, portMAX_DELAY);
     if (conn->state != TCP_CONN_STATE_CONNECTED &&
@@ -458,7 +458,7 @@ esp_err_t tcp_client_close(tcp_client_conn_t *conn)
     return ESP_OK;
 }
 
-esp_err_t tcp_client_conn_get_state(tcp_client_conn_t *conn,
+esp_err_t tcp_client_conn_get_state(tcp_client_conn_t conn,
                                     tcp_conn_state_t *state)
 {
     ESP_RETURN_ON_FALSE(conn && state && conn->lock, ESP_ERR_INVALID_ARG, TAG,
@@ -474,12 +474,12 @@ esp_err_t tcp_client_conn_get_state(tcp_client_conn_t *conn,
     return ESP_OK;
 }
 
-esp_err_t tcp_client_conn_destroy(tcp_client_conn_t *conn)
+esp_err_t tcp_client_conn_destroy(tcp_client_conn_t conn)
 {
     ESP_RETURN_ON_FALSE(conn && conn->client && conn->lock,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
-    tcp_client_handle_t *client = conn->client;
+    tcp_client_handle_t client = conn->client;
     ESP_RETURN_ON_FALSE(client->lock, ESP_ERR_INVALID_ARG, TAG,
                         "invalid TCP client");
     xSemaphoreTake(client->lock, portMAX_DELAY);
@@ -522,7 +522,7 @@ esp_err_t tcp_client_conn_destroy(tcp_client_conn_t *conn)
     return ESP_OK;
 }
 
-void tcp_client_conn_release_event(tcp_client_conn_t *conn)
+void tcp_client_conn_release_event(tcp_client_conn_t conn)
 {
     release_conn(conn);
 }
@@ -530,7 +530,7 @@ void tcp_client_conn_release_event(tcp_client_conn_t *conn)
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-static bool config_valid(const tcp_client_config_t *config, core_handle_t *core)
+static bool config_valid(const tcp_client_config_t *config, core_handle_t core)
 {
     return config && core;
 }
@@ -614,12 +614,12 @@ static uint8_t *clone_payload(const uint8_t *data, size_t len)
     return copy;
 }
 
-static esp_err_t send_fsm_sig(tcp_client_handle_t *me, const tcp_fsm_sig_t *sig)
+static esp_err_t send_fsm_sig(tcp_client_handle_t me, const tcp_fsm_sig_t *sig)
 {
     return send_fsm_sig_wait(me, sig, 0);
 }
 
-static esp_err_t send_fsm_sig_wait(tcp_client_handle_t *me,
+static esp_err_t send_fsm_sig_wait(tcp_client_handle_t me,
                                    const tcp_fsm_sig_t *sig,
                                    TickType_t wait_ticks)
 {
@@ -643,7 +643,7 @@ static esp_err_t send_fsm_sig_wait(tcp_client_handle_t *me,
     return ESP_OK;
 }
 
-static bool acquire_conn(tcp_client_conn_t *conn)
+static bool acquire_conn(tcp_client_conn_t conn)
 {
     if (!conn || !conn->lock) {
         return false;
@@ -660,14 +660,14 @@ static bool acquire_conn(tcp_client_conn_t *conn)
     return true;
 }
 
-static void release_conn(tcp_client_conn_t *conn)
+static void release_conn(tcp_client_conn_t conn)
 {
     if (!conn || !conn->lock) {
         return;
     }
 
     bool cleanup_now = false;
-    tcp_client_handle_t *client = conn->client;
+    tcp_client_handle_t client = conn->client;
     xSemaphoreTake(conn->lock, portMAX_DELAY);
     if (conn->active_refs > 0) {
         conn->active_refs--;
@@ -691,14 +691,14 @@ static void release_conn(tcp_client_conn_t *conn)
     }
 }
 
-static tcp_client_conn_t *acquire_current_conn(tcp_client_handle_t *me)
+static tcp_client_conn_t acquire_current_conn(tcp_client_handle_t me)
 {
     if (!me || !me->lock) {
         return NULL;
     }
 
     xSemaphoreTake(me->lock, portMAX_DELAY);
-    tcp_client_conn_t *conn = me->conn;
+    tcp_client_conn_t conn = me->conn;
     if (conn && !acquire_conn(conn)) {
         conn = NULL;
     }
@@ -707,9 +707,9 @@ static tcp_client_conn_t *acquire_current_conn(tcp_client_handle_t *me)
     return conn;
 }
 
-static bool signal_matches_current_conn(tcp_client_handle_t *me,
+static bool signal_matches_current_conn(tcp_client_handle_t me,
                                         const tcp_fsm_sig_t *sig,
-                                        tcp_client_conn_t **out_conn)
+                                        tcp_client_conn_t *out_conn)
 {
     if (out_conn) {
         *out_conn = NULL;
@@ -718,7 +718,7 @@ static bool signal_matches_current_conn(tcp_client_handle_t *me,
         return false;
     }
 
-    tcp_client_conn_t *conn = acquire_current_conn(me);
+    tcp_client_conn_t conn = acquire_current_conn(me);
     if (!conn) {
         return !sig->conn_scoped;
     }
@@ -731,7 +731,7 @@ static bool signal_matches_current_conn(tcp_client_handle_t *me,
     return true;
 }
 
-static void latch_remote_closed(tcp_client_conn_t *conn, int reason,
+static void latch_remote_closed(tcp_client_conn_t conn, int reason,
                                 int modem_error_code)
 {
     if (!conn || !conn->lock) {
@@ -756,8 +756,8 @@ static void latch_remote_closed(tcp_client_conn_t *conn, int reason,
     xSemaphoreGive(conn->lock);
 }
 
-static void handle_remote_closed_if_latched(tcp_client_handle_t *me,
-                                            tcp_client_conn_t *conn)
+static void handle_remote_closed_if_latched(tcp_client_handle_t me,
+                                            tcp_client_conn_t conn)
 {
     (void)me;
     if (!conn || !conn->lock) {
@@ -786,7 +786,7 @@ static void handle_remote_closed_if_latched(tcp_client_handle_t *me,
     }
 }
 
-static esp_err_t set_conn_state(tcp_client_conn_t *conn, tcp_conn_state_t state)
+static esp_err_t set_conn_state(tcp_client_conn_t conn, tcp_conn_state_t state)
 {
     ESP_RETURN_ON_FALSE(conn && conn->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -798,7 +798,7 @@ static esp_err_t set_conn_state(tcp_client_conn_t *conn, tcp_conn_state_t state)
     return ESP_OK;
 }
 
-static tcp_conn_state_t get_conn_state_value(tcp_client_conn_t *conn)
+static tcp_conn_state_t get_conn_state_value(tcp_client_conn_t conn)
 {
     if (!conn || !conn->lock) {
         return TCP_CONN_STATE_ERROR;
@@ -811,7 +811,7 @@ static tcp_conn_state_t get_conn_state_value(tcp_client_conn_t *conn)
     return state;
 }
 
-static bool conn_pending_command(tcp_client_conn_t *conn)
+static bool conn_pending_command(tcp_client_conn_t conn)
 {
     if (!conn || !conn->lock) {
         return false;
@@ -824,7 +824,7 @@ static bool conn_pending_command(tcp_client_conn_t *conn)
     return pending;
 }
 
-static bool conn_terminal_event_pending(tcp_client_conn_t *conn)
+static bool conn_terminal_event_pending(tcp_client_conn_t conn)
 {
     if (!conn || !conn->lock) {
         return false;
@@ -836,7 +836,7 @@ static bool conn_terminal_event_pending(tcp_client_conn_t *conn)
     return pending;
 }
 
-static bool conn_can_submit(tcp_client_conn_t *conn, core_cmd_type_t type)
+static bool conn_can_submit(tcp_client_conn_t conn, core_cmd_type_t type)
 {
     /* Caller holds conn->lock so the guard and core submission are atomic. */
     if (!conn || !conn->lock) {
@@ -863,7 +863,7 @@ static bool conn_can_submit(tcp_client_conn_t *conn, core_cmd_type_t type)
     }
 }
 
-static bool conn_terminal_or_destroyed(tcp_client_conn_t *conn)
+static bool conn_terminal_or_destroyed(tcp_client_conn_t conn)
 {
     if (!conn || !conn->lock) {
         return true;
@@ -904,16 +904,16 @@ static esp_err_t esp_err_from_core_result(core_cmd_result_t result)
     }
 }
 
-static void tcp_protocol_data_cb(core_handle_t *core,
+static void tcp_protocol_data_cb(core_handle_t core,
                                  const core_protocol_data_t *data,
                                  void *user_ctx)
 {
     (void)core;
-    tcp_client_handle_t *me = (tcp_client_handle_t *)user_ctx;
+    tcp_client_handle_t me = (tcp_client_handle_t)user_ctx;
     if (!me || !data || data->protocol != CORE_PROTOCOL_TCP) {
         return;
     }
-    tcp_client_conn_t *conn = acquire_current_conn(me);
+    tcp_client_conn_t conn = acquire_current_conn(me);
     if (!conn) {
         return;
     }
@@ -942,17 +942,17 @@ static void tcp_protocol_data_cb(core_handle_t *core,
     release_conn(conn);
 }
 
-static void tcp_protocol_closed_cb(core_handle_t *core,
+static void tcp_protocol_closed_cb(core_handle_t core,
                                    core_protocol_t protocol,
                                    const core_protocol_data_t *data,
                                    void *user_ctx)
 {
     (void)core;
-    tcp_client_handle_t *me = (tcp_client_handle_t *)user_ctx;
+    tcp_client_handle_t me = (tcp_client_handle_t)user_ctx;
     if (!me || protocol != CORE_PROTOCOL_TCP) {
         return;
     }
-    tcp_client_conn_t *conn = acquire_current_conn(me);
+    tcp_client_conn_t conn = acquire_current_conn(me);
     if (conn) {
         tcp_fsm_sig_t sig = {
             .type = TCP_SIG_PROTOCOL_CLOSED,
@@ -968,12 +968,12 @@ static void tcp_protocol_closed_cb(core_handle_t *core,
     }
 }
 
-static void tcp_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
+static void tcp_core_cmd_done_cb(core_handle_t core, core_cmd_type_t type,
                                  core_cmd_result_t result,
                                  const void *result_data, void *user_ctx)
 {
     (void)core;
-    tcp_client_conn_t *conn = (tcp_client_conn_t *)user_ctx;
+    tcp_client_conn_t conn = (tcp_client_conn_t)user_ctx;
     if (!conn || !conn->lock) {
         if (type == CORE_CMD_SOCKET_RECV &&
             result == CORE_CMD_RESULT_OK && result_data) {
@@ -984,7 +984,7 @@ static void tcp_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
     }
 
     xSemaphoreTake(conn->lock, portMAX_DELAY);
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     bool destroyed = conn->destroyed;
     uint32_t conn_generation = conn->generation;
     xSemaphoreGive(conn->lock);
@@ -1042,12 +1042,12 @@ static void handle_lwlte_event(void *handler_arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
     (void)event_data;
-    tcp_client_handle_t *me = (tcp_client_handle_t *)handler_arg;
+    tcp_client_handle_t me = (tcp_client_handle_t)handler_arg;
     if (!me || event_base != LWLTE_EVENT) {
         return;
     }
     if ((lwlte_event_id_t)event_id == LWLTE_EVENT_NET_OFFLINE) {
-        tcp_client_conn_t *conn = acquire_current_conn(me);
+        tcp_client_conn_t conn = acquire_current_conn(me);
         if (!conn) {
             return;
         }
@@ -1063,13 +1063,13 @@ static void handle_lwlte_event(void *handler_arg, esp_event_base_t event_base,
 
 static void tcp_fsm_task(void *arg)
 {
-    tcp_client_handle_t *me = (tcp_client_handle_t *)arg;
+    tcp_client_handle_t me = (tcp_client_handle_t)arg;
 
     while (!tcp_fsm_should_stop(me)) {
         tcp_fsm_sig_t sig = {0};
         if (xQueueReceive(me->fsm_queue, &sig,
                           pdMS_TO_TICKS(TCP_CLIENT_FSM_WAIT_MS)) != pdTRUE) {
-            tcp_client_conn_t *conn = acquire_current_conn(me);
+            tcp_client_conn_t conn = acquire_current_conn(me);
             handle_deferred_work(me, conn);
             if (conn) {
                 release_conn(conn);
@@ -1090,7 +1090,7 @@ static void tcp_fsm_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static bool tcp_fsm_should_stop(tcp_client_handle_t *me)
+static bool tcp_fsm_should_stop(tcp_client_handle_t me)
 {
     if (!me || !me->lock) {
         return true;
@@ -1103,13 +1103,13 @@ static bool tcp_fsm_should_stop(tcp_client_handle_t *me)
     return stop;
 }
 
-static void handle_signal(tcp_client_handle_t *me, tcp_fsm_sig_t *sig)
+static void handle_signal(tcp_client_handle_t me, tcp_fsm_sig_t *sig)
 {
     if (!me || !sig) {
         return;
     }
 
-    tcp_client_conn_t *conn = NULL;
+    tcp_client_conn_t conn = NULL;
     if (!signal_matches_current_conn(me, sig, &conn)) {
         free_fsm_sig_payload(sig);
         return;
@@ -1143,7 +1143,7 @@ static void handle_signal(tcp_client_handle_t *me, tcp_fsm_sig_t *sig)
     free_fsm_sig_payload(sig);
 }
 
-static void handle_open(tcp_client_handle_t *me, tcp_client_conn_t *conn,
+static void handle_open(tcp_client_handle_t me, tcp_client_conn_t conn,
                         const tcp_open_owned_t *open)
 {
     if (!conn || !open || !open->host) {
@@ -1160,7 +1160,7 @@ static void handle_open(tcp_client_handle_t *me, tcp_client_conn_t *conn,
     }
 }
 
-static void handle_send_ready(tcp_client_handle_t *me, tcp_client_conn_t *conn)
+static void handle_send_ready(tcp_client_handle_t me, tcp_client_conn_t conn)
 {
     if (!conn) {
         return;
@@ -1201,7 +1201,7 @@ static void handle_send_ready(tcp_client_handle_t *me, tcp_client_conn_t *conn)
     }
 }
 
-static void handle_close(tcp_client_handle_t *me, tcp_client_conn_t *conn)
+static void handle_close(tcp_client_handle_t me, tcp_client_conn_t conn)
 {
     if (!conn) {
         return;
@@ -1232,7 +1232,7 @@ static void handle_close(tcp_client_handle_t *me, tcp_client_conn_t *conn)
     }
 }
 
-static void handle_core_cmd_done(tcp_client_handle_t *me, tcp_client_conn_t *conn,
+static void handle_core_cmd_done(tcp_client_handle_t me, tcp_client_conn_t conn,
                                  tcp_fsm_sig_t *sig)
 {
     (void)me;
@@ -1279,7 +1279,7 @@ static void handle_core_cmd_done(tcp_client_handle_t *me, tcp_client_conn_t *con
     case CORE_CMD_SOCKET_OPEN: {
         set_conn_state(conn, TCP_CONN_STATE_CONNECTED);
         lwlte_tcp_event_data_t payload = {
-            .conn = (lwlte_tcp_conn_t *)conn,
+            .conn = (lwlte_tcp_conn_t)conn,
             .user_ctx = conn->user_ctx,
             .conn_state = LWLTE_TCP_CONN_STATE_CONNECTED,
         };
@@ -1289,7 +1289,7 @@ static void handle_core_cmd_done(tcp_client_handle_t *me, tcp_client_conn_t *con
     }
     case CORE_CMD_SOCKET_SEND: {
         lwlte_tcp_event_data_t payload = {
-            .conn = (lwlte_tcp_conn_t *)conn,
+            .conn = (lwlte_tcp_conn_t)conn,
             .user_ctx = conn->user_ctx,
             .conn_state = map_conn_state(get_conn_state_value(conn)),
             .sent_len = send_len,
@@ -1307,7 +1307,7 @@ static void handle_core_cmd_done(tcp_client_handle_t *me, tcp_client_conn_t *con
             break;
         }
         lwlte_tcp_event_data_t payload = {
-            .conn = (lwlte_tcp_conn_t *)conn,
+            .conn = (lwlte_tcp_conn_t)conn,
             .user_ctx = conn->user_ctx,
             .conn_state = map_conn_state(get_conn_state_value(conn)),
             .modem_error_code = recv->modem_error_code,
@@ -1361,7 +1361,7 @@ static void handle_core_cmd_done(tcp_client_handle_t *me, tcp_client_conn_t *con
     }
 }
 
-static void handle_protocol_data(tcp_client_handle_t *me, tcp_client_conn_t *conn,
+static void handle_protocol_data(tcp_client_handle_t me, tcp_client_conn_t conn,
                                  tcp_fsm_sig_t *sig)
 {
     tcp_protocol_data_owned_t *owned = sig ? (tcp_protocol_data_owned_t *)sig->data : NULL;
@@ -1382,8 +1382,8 @@ static void handle_protocol_data(tcp_client_handle_t *me, tcp_client_conn_t *con
     handle_deferred_work(me, conn);
 }
 
-static void handle_protocol_closed(tcp_client_handle_t *me,
-                                   tcp_client_conn_t *conn,
+static void handle_protocol_closed(tcp_client_handle_t me,
+                                   tcp_client_conn_t conn,
                                    const tcp_fsm_sig_t *sig)
 {
     if (!conn) {
@@ -1393,7 +1393,7 @@ static void handle_protocol_closed(tcp_client_handle_t *me,
     handle_remote_closed_if_latched(me, conn);
 }
 
-static void handle_deferred_work(tcp_client_handle_t *me, tcp_client_conn_t *conn)
+static void handle_deferred_work(tcp_client_handle_t me, tcp_client_conn_t conn)
 {
     if (!me || !conn) {
         return;
@@ -1445,7 +1445,7 @@ static void handle_deferred_work(tcp_client_handle_t *me, tcp_client_conn_t *con
     handle_send_ready(me, conn);
 }
 
-static esp_err_t submit_socket_open(tcp_client_conn_t *conn, const char *host,
+static esp_err_t submit_socket_open(tcp_client_conn_t conn, const char *host,
                                     uint16_t port,
                                     core_socket_transport_t transport,
                                     uint8_t ssl_context_id)
@@ -1453,7 +1453,7 @@ static esp_err_t submit_socket_open(tcp_client_conn_t *conn, const char *host,
     ESP_RETURN_ON_FALSE(conn && conn->client && host, ESP_ERR_INVALID_ARG, TAG,
                         "invalid socket open args");
 
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     core_cmd_t cmd = {
         .type = CORE_CMD_SOCKET_OPEN,
         .done_cb = tcp_core_cmd_done_cb,
@@ -1489,13 +1489,13 @@ static esp_err_t submit_socket_open(tcp_client_conn_t *conn, const char *host,
     return ret;
 }
 
-static esp_err_t submit_socket_send(tcp_client_conn_t *conn,
+static esp_err_t submit_socket_send(tcp_client_conn_t conn,
                                     const tcp_send_item_t *item)
 {
     ESP_RETURN_ON_FALSE(conn && conn->client && item && item->data && item->len > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid socket send args");
 
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     core_cmd_t cmd = {
         .type = CORE_CMD_SOCKET_SEND,
         .done_cb = tcp_core_cmd_done_cb,
@@ -1528,12 +1528,12 @@ static esp_err_t submit_socket_send(tcp_client_conn_t *conn,
     return ret;
 }
 
-static esp_err_t submit_socket_recv(tcp_client_conn_t *conn)
+static esp_err_t submit_socket_recv(tcp_client_conn_t conn)
 {
     ESP_RETURN_ON_FALSE(conn && conn->client, ESP_ERR_INVALID_ARG, TAG,
                         "invalid socket recv args");
 
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     core_cmd_t cmd = {
         .type = CORE_CMD_SOCKET_RECV,
         .done_cb = tcp_core_cmd_done_cb,
@@ -1564,12 +1564,12 @@ static esp_err_t submit_socket_recv(tcp_client_conn_t *conn)
     return ret;
 }
 
-static esp_err_t submit_socket_close(tcp_client_conn_t *conn)
+static esp_err_t submit_socket_close(tcp_client_conn_t conn)
 {
     ESP_RETURN_ON_FALSE(conn && conn->client, ESP_ERR_INVALID_ARG, TAG,
                         "invalid socket close args");
 
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     core_cmd_t cmd = {
         .type = CORE_CMD_SOCKET_CLOSE,
         .done_cb = tcp_core_cmd_done_cb,
@@ -1600,14 +1600,14 @@ static esp_err_t submit_socket_close(tcp_client_conn_t *conn)
     return ret;
 }
 
-static esp_err_t post_tcp_event(tcp_client_conn_t *conn,
+static esp_err_t post_tcp_event(tcp_client_conn_t conn,
                                 lwlte_tcp_event_id_t event_id,
                                 const lwlte_tcp_event_data_t *payload)
 {
     return post_tcp_event_with_ref(conn, event_id, payload, false, true);
 }
 
-static esp_err_t post_tcp_event_with_ref(tcp_client_conn_t *conn,
+static esp_err_t post_tcp_event_with_ref(tcp_client_conn_t conn,
                                          lwlte_tcp_event_id_t event_id,
                                          const lwlte_tcp_event_data_t *payload,
                                          bool ref_acquired,
@@ -1618,7 +1618,7 @@ static esp_err_t post_tcp_event_with_ref(tcp_client_conn_t *conn,
 
     lwlte_tcp_event_data_t empty_payload = {0};
     if (!payload) {
-        empty_payload.conn = (lwlte_tcp_conn_t *)conn;
+        empty_payload.conn = (lwlte_tcp_conn_t)conn;
         empty_payload.user_ctx = conn->user_ctx;
         empty_payload.conn_state = map_conn_state(get_conn_state_value(conn));
         payload = &empty_payload;
@@ -1634,7 +1634,7 @@ static esp_err_t post_tcp_event_with_ref(tcp_client_conn_t *conn,
     lwlte_tcp_event_data_t event_payload = *payload;
     event_payload.owns_event = true;
 
-    tcp_client_handle_t *me = conn->client;
+    tcp_client_handle_t me = conn->client;
     esp_err_t ret;
     if (me->config.loop) {
         ret = esp_event_post_to(me->config.loop, LWLTE_TCP_EVENT, event_id,
@@ -1658,7 +1658,7 @@ static esp_err_t post_tcp_event_with_ref(tcp_client_conn_t *conn,
     return ret;
 }
 
-static void mark_terminal_event_pending(tcp_client_conn_t *conn,
+static void mark_terminal_event_pending(tcp_client_conn_t conn,
                                         lwlte_tcp_event_id_t event_id,
                                         esp_err_t error_code,
                                         int modem_error_code,
@@ -1679,7 +1679,7 @@ static void mark_terminal_event_pending(tcp_client_conn_t *conn,
     conn->terminal_reason = reason;
 }
 
-static esp_err_t post_pending_terminal_event(tcp_client_conn_t *conn)
+static esp_err_t post_pending_terminal_event(tcp_client_conn_t conn)
 {
     ESP_RETURN_ON_FALSE(conn && conn->lock, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -1693,7 +1693,7 @@ static esp_err_t post_pending_terminal_event(tcp_client_conn_t *conn)
 
     lwlte_tcp_event_id_t event_id = (lwlte_tcp_event_id_t)conn->terminal_event_id;
     lwlte_tcp_event_data_t payload = {
-        .conn = (lwlte_tcp_conn_t *)conn,
+        .conn = (lwlte_tcp_conn_t)conn,
         .user_ctx = conn->user_ctx,
         .conn_state = map_conn_state(conn->state),
         .error_code = conn->terminal_error_code,
@@ -1726,7 +1726,7 @@ static esp_err_t post_pending_terminal_event(tcp_client_conn_t *conn)
     return ret;
 }
 
-static void post_error_event(tcp_client_conn_t *conn, esp_err_t error_code,
+static void post_error_event(tcp_client_conn_t conn, esp_err_t error_code,
                              int modem_error_code, int reason)
 {
     if (!conn) {
@@ -1739,7 +1739,7 @@ static void post_error_event(tcp_client_conn_t *conn, esp_err_t error_code,
     (void)post_pending_terminal_event(conn);
 }
 
-static void clear_send_queue(tcp_client_conn_t *conn)
+static void clear_send_queue(tcp_client_conn_t conn)
 {
     if (!conn || !conn->send_queue || !conn->send_queue_lock) {
         return;
@@ -1790,7 +1790,7 @@ static void free_fsm_sig_payload(tcp_fsm_sig_t *sig)
     sig->result_size = 0;
 }
 
-static void drain_fsm_queue_payloads(tcp_client_handle_t *me, QueueHandle_t queue)
+static void drain_fsm_queue_payloads(tcp_client_handle_t me, QueueHandle_t queue)
 {
     (void)me;
     if (!queue) {
@@ -1803,7 +1803,7 @@ static void drain_fsm_queue_payloads(tcp_client_handle_t *me, QueueHandle_t queu
     }
 }
 
-static void cleanup_partial_client(tcp_client_handle_t *me)
+static void cleanup_partial_client(tcp_client_handle_t me)
 {
     if (!me) {
         return;
@@ -1850,7 +1850,7 @@ static void cleanup_partial_client(tcp_client_handle_t *me)
     free(me);
 }
 
-static void cleanup_conn(tcp_client_conn_t *conn)
+static void cleanup_conn(tcp_client_conn_t conn)
 {
     if (!conn) {
         return;

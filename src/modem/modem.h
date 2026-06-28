@@ -46,7 +46,7 @@ extern "C" {
  * @brief 调制解调器句柄
  * @details Modem handle
  */
-typedef struct modem_handle modem_handle_t;
+typedef struct modem_t *modem_handle_t;
 
 /**
  * @brief 调制解调器硬件配置
@@ -450,7 +450,7 @@ typedef struct {
  * @param[in] event 调制解调器事件
  * @param[in] user_ctx 用户上下文
  */
-typedef void (*modem_event_callback_t)(modem_handle_t *modem,
+typedef void (*modem_event_callback_t)(modem_handle_t modem,
                                        const modem_event_t *event,
                                        void *user_ctx);
 
@@ -466,7 +466,7 @@ typedef void (*modem_event_callback_t)(modem_handle_t *modem,
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t modem_destroy(modem_handle_t *me);
+esp_err_t modem_destroy(modem_handle_t me);
 
 /**
  * @brief 启动调制解调器
@@ -478,7 +478,7 @@ esp_err_t modem_destroy(modem_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 启动失败
  */
-esp_err_t modem_start(modem_handle_t *me);
+esp_err_t modem_start(modem_handle_t me);
 
 /**
  * @brief 停止并对模块断电
@@ -492,7 +492,7 @@ esp_err_t modem_start(modem_handle_t *me);
  *         - ESP_ERR_NOT_SUPPORTED: 子类未实现 stop
  *         - 其他 esp_err_t: 下层断电错误
  */
-esp_err_t modem_stop(modem_handle_t *me);
+esp_err_t modem_stop(modem_handle_t me);
 
 /**
  * @brief 复位调制解调器
@@ -504,7 +504,7 @@ esp_err_t modem_stop(modem_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 复位失败
  */
-esp_err_t modem_reset(modem_handle_t *me);
+esp_err_t modem_reset(modem_handle_t me);
 
 /**
  * @brief 注册事件回调
@@ -516,7 +516,7 @@ esp_err_t modem_reset(modem_handle_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t modem_register_event_callback(modem_handle_t *me,
+esp_err_t modem_register_event_callback(modem_handle_t me,
                                           modem_event_callback_t callback,
                                           void *user_ctx);
 
@@ -529,7 +529,7 @@ esp_err_t modem_register_event_callback(modem_handle_t *me,
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t modem_get_state(modem_handle_t *me, modem_state_t *state);
+esp_err_t modem_get_state(modem_handle_t me, modem_state_t *state);
 
 /**
  * @brief 获取调制解调器信息
@@ -542,7 +542,7 @@ esp_err_t modem_get_state(modem_handle_t *me, modem_state_t *state);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 查询失败
  */
-esp_err_t modem_get_info(modem_handle_t *me, modem_info_t *info);
+esp_err_t modem_get_info(modem_handle_t me, modem_info_t *info);
 
 /**
  * @brief 获取 SIM 卡状态
@@ -555,7 +555,7 @@ esp_err_t modem_get_info(modem_handle_t *me, modem_info_t *info);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 查询失败
  */
-esp_err_t modem_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
+esp_err_t modem_get_sim_status(modem_handle_t me, modem_sim_status_t *status);
 
 /**
  * @brief 获取信号质量
@@ -568,7 +568,7 @@ esp_err_t modem_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 查询失败
  */
-esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal);
+esp_err_t modem_get_signal(modem_handle_t me, modem_signal_t *signal);
 
 /**
  * @brief 获取网络注册状态
@@ -581,7 +581,7 @@ esp_err_t modem_get_signal(modem_handle_t *me, modem_signal_t *signal);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 查询失败
  */
-esp_err_t modem_get_registration(modem_handle_t *me, modem_reg_status_t *status);
+esp_err_t modem_get_registration(modem_handle_t me, modem_reg_status_t *status);
 
 /**
  * @brief 获取分组域附着状态
@@ -595,7 +595,7 @@ esp_err_t modem_get_registration(modem_handle_t *me, modem_reg_status_t *status)
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - ESP_FAIL: 查询失败
  */
-esp_err_t modem_get_packet_attach_status(modem_handle_t *me, bool *attached);
+esp_err_t modem_get_packet_attach_status(modem_handle_t me, bool *attached);
 
 /**
  * @brief 设置 APN
@@ -609,7 +609,7 @@ esp_err_t modem_get_packet_attach_status(modem_handle_t *me, bool *attached);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 设置失败
  */
-esp_err_t modem_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
+esp_err_t modem_set_apn(modem_handle_t me, uint8_t cid, const char *apn);
 
 /**
  * @brief 激活 PDP 上下文
@@ -622,7 +622,7 @@ esp_err_t modem_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 激活失败
  */
-esp_err_t modem_activate_pdp(modem_handle_t *me, uint8_t cid);
+esp_err_t modem_activate_pdp(modem_handle_t me, uint8_t cid);
 
 /**
  * @brief 去激活 PDP 上下文
@@ -635,7 +635,7 @@ esp_err_t modem_activate_pdp(modem_handle_t *me, uint8_t cid);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 去激活失败
  */
-esp_err_t modem_deactivate_pdp(modem_handle_t *me, uint8_t cid);
+esp_err_t modem_deactivate_pdp(modem_handle_t me, uint8_t cid);
 
 /**
  * @brief 获取 PDP 上下文
@@ -649,7 +649,7 @@ esp_err_t modem_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 查询失败
  */
-esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
+esp_err_t modem_get_pdp_context(modem_handle_t me, uint8_t cid,
                                  modem_pdp_context_t *pdp);
 
 /**
@@ -665,7 +665,7 @@ esp_err_t modem_get_pdp_context(modem_handle_t *me, uint8_t cid,
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - 其他 esp_err_t: 下层错误
  */
-esp_err_t modem_ssl_provision(modem_handle_t *me,
+esp_err_t modem_ssl_provision(modem_handle_t me,
                               const modem_ssl_context_config_t *config,
                               const modem_ssl_credentials_t *credentials);
 
@@ -682,7 +682,7 @@ esp_err_t modem_ssl_provision(modem_handle_t *me,
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - 其他 esp_err_t: 下层错误
  */
-esp_err_t modem_ssl_get_context_status(modem_handle_t *me,
+esp_err_t modem_ssl_get_context_status(modem_handle_t me,
                                        uint8_t context_id,
                                        modem_ssl_context_status_t *status);
 
@@ -699,7 +699,7 @@ esp_err_t modem_ssl_get_context_status(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_FAIL: 配置失败
  */
-esp_err_t modem_mqtt_configure(modem_handle_t *me,
+esp_err_t modem_mqtt_configure(modem_handle_t me,
                                const modem_mqtt_config_t *config);
 
 /**
@@ -714,7 +714,7 @@ esp_err_t modem_mqtt_configure(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_FAIL: 连接失败
  */
-esp_err_t modem_mqtt_tcp_connect(modem_handle_t *me);
+esp_err_t modem_mqtt_tcp_connect(modem_handle_t me);
 
 /**
  * @brief 连接 MQTT Broker
@@ -727,7 +727,7 @@ esp_err_t modem_mqtt_tcp_connect(modem_handle_t *me);
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - ESP_FAIL: 连接失败
  */
-esp_err_t modem_mqtt_connect(modem_handle_t *me);
+esp_err_t modem_mqtt_connect(modem_handle_t me);
 
 /**
  * @brief 断开 MQTT Broker 连接
@@ -740,7 +740,7 @@ esp_err_t modem_mqtt_connect(modem_handle_t *me);
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - ESP_FAIL: 断开失败
  */
-esp_err_t modem_mqtt_disconnect(modem_handle_t *me);
+esp_err_t modem_mqtt_disconnect(modem_handle_t me);
 
 /**
  * @brief 断开 MQTT TCP 通道
@@ -753,7 +753,7 @@ esp_err_t modem_mqtt_disconnect(modem_handle_t *me);
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - ESP_FAIL: 断开失败
  */
-esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me);
+esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t me);
 
 /**
  * @brief 订阅 MQTT 主题
@@ -768,7 +768,7 @@ esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t *me);
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_FAIL: 订阅失败
  */
-esp_err_t modem_mqtt_subscribe(modem_handle_t *me,
+esp_err_t modem_mqtt_subscribe(modem_handle_t me,
                                const modem_mqtt_topic_t *topic);
 
 /**
@@ -784,7 +784,7 @@ esp_err_t modem_mqtt_subscribe(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_FAIL: 取消订阅失败
  */
-esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
+esp_err_t modem_mqtt_unsubscribe(modem_handle_t me,
                                  const modem_mqtt_topic_t *topic);
 
 /**
@@ -800,7 +800,7 @@ esp_err_t modem_mqtt_unsubscribe(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_FAIL: 发布失败
  */
-esp_err_t modem_mqtt_publish(modem_handle_t *me,
+esp_err_t modem_mqtt_publish(modem_handle_t me,
                              const modem_mqtt_publish_t *publish);
 
 /**
@@ -816,7 +816,7 @@ esp_err_t modem_mqtt_publish(modem_handle_t *me,
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - ESP_FAIL: 查询失败
  */
-esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status);
+esp_err_t modem_mqtt_get_status(modem_handle_t me, modem_mqtt_status_t *status);
 
 /**
  * @brief 打开 Socket 连接
@@ -830,7 +830,7 @@ esp_err_t modem_mqtt_get_status(modem_handle_t *me, modem_mqtt_status_t *status)
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - 其他 esp_err_t: 下层错误
  */
-esp_err_t modem_socket_open(modem_handle_t *me,
+esp_err_t modem_socket_open(modem_handle_t me,
                             const modem_socket_open_t *open);
 
 /**
@@ -845,7 +845,7 @@ esp_err_t modem_socket_open(modem_handle_t *me,
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - 其他 esp_err_t: 下层错误
  */
-esp_err_t modem_socket_send(modem_handle_t *me,
+esp_err_t modem_socket_send(modem_handle_t me,
                             const modem_socket_send_t *send);
 
 /**
@@ -861,7 +861,7 @@ esp_err_t modem_socket_send(modem_handle_t *me,
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - 其他 esp_err_t: 下层错误
  */
-esp_err_t modem_socket_recv(modem_handle_t *me,
+esp_err_t modem_socket_recv(modem_handle_t me,
                             const modem_socket_recv_t *recv,
                             modem_socket_recv_result_t *result);
 
@@ -877,7 +877,7 @@ esp_err_t modem_socket_recv(modem_handle_t *me,
  *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
  *         - 其他 esp_err_t: 下层错误
  */
-esp_err_t modem_socket_close(modem_handle_t *me,
+esp_err_t modem_socket_close(modem_handle_t me,
                              const modem_socket_close_t *close);
 
 /**
@@ -897,7 +897,7 @@ esp_err_t modem_socket_close(modem_handle_t *me,
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - ESP_FAIL: Ping 失败
  */
-esp_err_t modem_ping(modem_handle_t *me,
+esp_err_t modem_ping(modem_handle_t me,
                      const modem_ping_request_t *request,
                      modem_ping_reply_t *replies,
                      size_t max_replies,

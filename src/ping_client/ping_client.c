@@ -51,14 +51,14 @@ static esp_err_t validate_request(const ping_client_request_t *request,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: 服务正在销毁
  */
-static esp_err_t begin_ping_call(ping_client_handle_t *me, core_handle_t **out_core);
+static esp_err_t begin_ping_call(ping_client_handle_t me, core_handle_t *out_core);
 
 /**
  * @brief 结束一次已接受的 Ping 调用
  * @details End one accepted Ping call
  * @param[in] me Ping 服务句柄
  */
-static void end_ping_call(ping_client_handle_t *me);
+static void end_ping_call(ping_client_handle_t me);
 
 /**
  * @brief 等待已接受的 Ping 调用结束
@@ -68,7 +68,7 @@ static void end_ping_call(ping_client_handle_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-static esp_err_t wait_active_calls_idle(ping_client_handle_t *me);
+static esp_err_t wait_active_calls_idle(ping_client_handle_t me);
 
 /**
  * @brief 计算 Core 命令超时
@@ -96,7 +96,7 @@ static esp_err_t map_core_result(core_cmd_result_t result, esp_err_t esp_result)
  * @param[in] result_data 结果数据
  * @param[in] user_ctx 用户上下文
  */
-static void ping_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
+static void ping_core_cmd_done_cb(core_handle_t core, core_cmd_type_t type,
                                   core_cmd_result_t result,
                                   const void *result_data, void *user_ctx);
 
@@ -111,13 +111,13 @@ static void ping_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
-ping_client_handle_t *ping_client_create(core_handle_t *core)
+ping_client_handle_t ping_client_create(core_handle_t core)
 {
     if (!core) {
         return NULL;
     }
 
-    ping_client_handle_t *me = calloc(1, sizeof(*me));
+    ping_client_handle_t me = calloc(1, sizeof(*me));
     if (!me) {
         return NULL;
     }
@@ -139,7 +139,7 @@ ping_client_handle_t *ping_client_create(core_handle_t *core)
     return me;
 }
 
-esp_err_t ping_client_destroy(ping_client_handle_t *me)
+esp_err_t ping_client_destroy(ping_client_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && me->active_done_sema,
                         ESP_ERR_INVALID_ARG, TAG,
@@ -168,7 +168,7 @@ esp_err_t ping_client_destroy(ping_client_handle_t *me)
     return ESP_OK;
 }
 
-esp_err_t ping_client_ping(ping_client_handle_t *me,
+esp_err_t ping_client_ping(ping_client_handle_t me,
                            const ping_client_request_t *request,
                            core_ping_reply_t *replies,
                            size_t max_replies,
@@ -179,7 +179,7 @@ esp_err_t ping_client_ping(ping_client_handle_t *me,
     ESP_RETURN_ON_ERROR(validate_request(request, replies, max_replies), TAG,
                         "invalid ping request");
 
-    core_handle_t *core = NULL;
+    core_handle_t core = NULL;
     ESP_RETURN_ON_ERROR(begin_ping_call(me, &core), TAG,
                         "begin ping call failed");
 
@@ -252,7 +252,7 @@ static esp_err_t validate_request(const ping_client_request_t *request,
     return ESP_OK;
 }
 
-static esp_err_t begin_ping_call(ping_client_handle_t *me, core_handle_t **out_core)
+static esp_err_t begin_ping_call(ping_client_handle_t me, core_handle_t *out_core)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && out_core, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
@@ -270,7 +270,7 @@ static esp_err_t begin_ping_call(ping_client_handle_t *me, core_handle_t **out_c
     return ESP_OK;
 }
 
-static void end_ping_call(ping_client_handle_t *me)
+static void end_ping_call(ping_client_handle_t me)
 {
     if (!me || !me->lock) {
         return;
@@ -291,7 +291,7 @@ static void end_ping_call(ping_client_handle_t *me)
     }
 }
 
-static esp_err_t wait_active_calls_idle(ping_client_handle_t *me)
+static esp_err_t wait_active_calls_idle(ping_client_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me && me->lock && me->active_done_sema,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -334,7 +334,7 @@ static esp_err_t map_core_result(core_cmd_result_t result, esp_err_t esp_result)
     }
 }
 
-static void ping_core_cmd_done_cb(core_handle_t *core, core_cmd_type_t type,
+static void ping_core_cmd_done_cb(core_handle_t core, core_cmd_type_t type,
                                   core_cmd_result_t result,
                                   const void *result_data, void *user_ctx)
 {

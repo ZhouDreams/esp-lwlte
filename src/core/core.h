@@ -36,7 +36,7 @@ extern "C" {
  * @brief LTE 核心服务句柄
  * @details LTE core service handle
  */
-typedef struct core_handle core_handle_t;
+typedef struct core_t *core_handle_t;
 
 /**
  * @brief LTE 核心服务事件配置
@@ -134,7 +134,7 @@ typedef struct {
  * @details Core protocol data callback (private, service-service internal)
  * @note core FSM 同步调用；callback 必须只做轻量操作（入队、memcpy），不得阻塞。
  */
-typedef void (*core_protocol_callback_t)(core_handle_t *me,
+typedef void (*core_protocol_callback_t)(core_handle_t me,
                                          const core_protocol_data_t *data,
                                          void *user_ctx);
 
@@ -142,7 +142,7 @@ typedef void (*core_protocol_callback_t)(core_handle_t *me,
  * @brief Core 协议通道关闭回调（私有）
  * @details Core protocol closed callback (private)
  */
-typedef void (*core_protocol_closed_callback_t)(core_handle_t *me,
+typedef void (*core_protocol_closed_callback_t)(core_handle_t me,
                                                 core_protocol_t protocol,
                                                 const core_protocol_data_t *data,
                                                 void *user_ctx);
@@ -162,7 +162,7 @@ typedef void (*core_protocol_closed_callback_t)(core_handle_t *me,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: Core 正在销毁
  */
-esp_err_t core_register_protocol_callback(core_handle_t *me,
+esp_err_t core_register_protocol_callback(core_handle_t me,
                                           core_protocol_t protocol,
                                           core_protocol_callback_t callback,
                                           void *user_ctx);
@@ -182,7 +182,7 @@ esp_err_t core_register_protocol_callback(core_handle_t *me,
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_ERR_INVALID_STATE: Core 正在销毁
  */
-esp_err_t core_register_protocol_closed_callback(core_handle_t *me,
+esp_err_t core_register_protocol_closed_callback(core_handle_t me,
                                                  core_protocol_t protocol,
                                                  core_protocol_closed_callback_t callback,
                                                  void *user_ctx);
@@ -321,7 +321,7 @@ typedef struct {
  * @brief Core 服务命令完成回调
  * @details Core service command done callback
  */
-typedef void (*core_cmd_done_callback_t)(core_handle_t *core,
+typedef void (*core_cmd_done_callback_t)(core_handle_t core,
                                          core_cmd_type_t type,
                                          core_cmd_result_t result,
                                          const void *result_data,
@@ -401,7 +401,7 @@ typedef struct {
  *         - 非 NULL: 创建并初始化成功，返回 LTE 核心服务句柄
  *         - NULL: 参数无效、内存不足或初始化失败
  */
-core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
+core_handle_t core_create(const core_config_t *config, modem_handle_t modem);
 
 /**
  * @brief 销毁 LTE 核心服务
@@ -413,7 +413,7 @@ core_handle_t *core_create(const core_config_t *config, modem_handle_t *modem);
  *         - ESP_ERR_INVALID_STATE: 当前状态不允许销毁
  *         - other: 下层资源清理错误码
  */
-esp_err_t core_destroy(core_handle_t *me);
+esp_err_t core_destroy(core_handle_t me);
 
 /**
  * @brief 启动 LTE 核心服务
@@ -427,7 +427,7 @@ esp_err_t core_destroy(core_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t core_start(core_handle_t *me);
+esp_err_t core_start(core_handle_t me);
 
 /**
  * @brief 停止 LTE 核心服务
@@ -440,7 +440,7 @@ esp_err_t core_start(core_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t core_stop(core_handle_t *me);
+esp_err_t core_stop(core_handle_t me);
 
 /**
  * @brief 获取 LTE 核心服务状态
@@ -451,7 +451,7 @@ esp_err_t core_stop(core_handle_t *me);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t core_get_state(core_handle_t *me, core_state_t *state);
+esp_err_t core_get_state(core_handle_t me, core_state_t *state);
 
 /**
  * @brief 获取 LTE 网络状态
@@ -462,7 +462,7 @@ esp_err_t core_get_state(core_handle_t *me, core_state_t *state);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
+esp_err_t core_get_net_state(core_handle_t me, core_net_state_t *state);
 
 /**
  * @brief 连接 LTE 网络
@@ -475,7 +475,7 @@ esp_err_t core_get_net_state(core_handle_t *me, core_net_state_t *state);
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - ESP_FAIL: 请求提交失败
  */
-esp_err_t core_connect(core_handle_t *me);
+esp_err_t core_connect(core_handle_t me);
 
 /**
  * @brief 提交 Core 服务命令
@@ -490,7 +490,7 @@ esp_err_t core_connect(core_handle_t *me);
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - ESP_ERR_TIMEOUT: FSM 队列已满
  */
-esp_err_t core_submit_cmd(core_handle_t *me, const core_cmd_t *cmd);
+esp_err_t core_submit_cmd(core_handle_t me, const core_cmd_t *cmd);
 
 /**********************
  *      MACROS

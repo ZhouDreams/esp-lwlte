@@ -97,7 +97,7 @@ typedef struct {
  * @details Air780EP modem instance
  */
 typedef struct {
-    modem_handle_t base;
+    struct modem_t base;
     modem_air780ep_config_t config;
     at_urc_handler_t cpin_handler;
     at_urc_handler_t creg_handler;
@@ -142,7 +142,7 @@ typedef struct {
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: URC 注销错误
  */
-static esp_err_t air780ep_destroy(modem_handle_t *me);
+static esp_err_t air780ep_destroy(modem_handle_t me);
 
 /**
  * @brief 启动 Air780EP 调制解调器
@@ -153,7 +153,7 @@ static esp_err_t air780ep_destroy(modem_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_FAIL: 启动失败
  */
-static esp_err_t air780ep_start(modem_handle_t *me);
+static esp_err_t air780ep_start(modem_handle_t me);
 
 /**
  * @brief 停止 Air780EP 调制解调器
@@ -164,7 +164,7 @@ static esp_err_t air780ep_start(modem_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: 停止失败
  */
-static esp_err_t air780ep_stop(modem_handle_t *me);
+static esp_err_t air780ep_stop(modem_handle_t me);
 
 /**
  * @brief 复位 Air780EP 调制解调器
@@ -175,7 +175,7 @@ static esp_err_t air780ep_stop(modem_handle_t *me);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - ESP_FAIL: 复位失败
  */
-static esp_err_t air780ep_reset(modem_handle_t *me);
+static esp_err_t air780ep_reset(modem_handle_t me);
 
 /**
  * @brief 获取 Air780EP 调制解调器信息
@@ -188,7 +188,7 @@ static esp_err_t air780ep_reset(modem_handle_t *me);
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_get_info(modem_handle_t *me, modem_info_t *info);
+static esp_err_t air780ep_get_info(modem_handle_t me, modem_info_t *info);
 
 /**
  * @brief 获取 Air780EP SIM 卡状态
@@ -201,7 +201,7 @@ static esp_err_t air780ep_get_info(modem_handle_t *me, modem_info_t *info);
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_get_sim_status(modem_handle_t *me, modem_sim_status_t *status);
+static esp_err_t air780ep_get_sim_status(modem_handle_t me, modem_sim_status_t *status);
 
 /**
  * @brief 获取 Air780EP 信号质量
@@ -214,7 +214,7 @@ static esp_err_t air780ep_get_sim_status(modem_handle_t *me, modem_sim_status_t 
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal);
+static esp_err_t air780ep_get_signal(modem_handle_t me, modem_signal_t *signal);
 
 /**
  * @brief 获取 Air780EP 网络注册状态
@@ -227,7 +227,7 @@ static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_get_registration(modem_handle_t *me, modem_reg_status_t *status);
+static esp_err_t air780ep_get_registration(modem_handle_t me, modem_reg_status_t *status);
 
 /**
  * @brief 获取 Air780EP 分组域附着状态
@@ -240,7 +240,7 @@ static esp_err_t air780ep_get_registration(modem_handle_t *me, modem_reg_status_
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_get_packet_attach_status(modem_handle_t *me, bool *attached);
+static esp_err_t air780ep_get_packet_attach_status(modem_handle_t me, bool *attached);
 
 /**
  * @brief 设置 Air780EP APN
@@ -253,7 +253,7 @@ static esp_err_t air780ep_get_packet_attach_status(modem_handle_t *me, bool *att
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_set_apn(modem_handle_t *me, uint8_t cid, const char *apn);
+static esp_err_t air780ep_set_apn(modem_handle_t me, uint8_t cid, const char *apn);
 
 /**
  * @brief 激活 Air780EP PDP 上下文
@@ -266,7 +266,7 @@ static esp_err_t air780ep_set_apn(modem_handle_t *me, uint8_t cid, const char *a
  *         - ESP_ERR_INVALID_STATE: 状态错误
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_activate_pdp(modem_handle_t *me, uint8_t cid);
+static esp_err_t air780ep_activate_pdp(modem_handle_t me, uint8_t cid);
 
 /**
  * @brief 去激活 Air780EP PDP 上下文
@@ -278,7 +278,7 @@ static esp_err_t air780ep_activate_pdp(modem_handle_t *me, uint8_t cid);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_deactivate_pdp(modem_handle_t *me, uint8_t cid);
+static esp_err_t air780ep_deactivate_pdp(modem_handle_t me, uint8_t cid);
 
 /**
  * @brief 获取 Air780EP PDP 上下文
@@ -290,7 +290,7 @@ static esp_err_t air780ep_deactivate_pdp(modem_handle_t *me, uint8_t cid);
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效
  */
-static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
+static esp_err_t air780ep_get_pdp_context(modem_handle_t me, uint8_t cid,
                                              modem_pdp_context_t *pdp);
 
 /**
@@ -300,7 +300,7 @@ static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
  * @param[in] open Socket 打开参数
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t air780ep_socket_open(modem_handle_t *me,
+static esp_err_t air780ep_socket_open(modem_handle_t me,
                                       const modem_socket_open_t *open);
 
 /**
@@ -310,7 +310,7 @@ static esp_err_t air780ep_socket_open(modem_handle_t *me,
  * @param[in] send Socket 发送参数
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t air780ep_socket_send(modem_handle_t *me,
+static esp_err_t air780ep_socket_send(modem_handle_t me,
                                       const modem_socket_send_t *send);
 
 /**
@@ -321,7 +321,7 @@ static esp_err_t air780ep_socket_send(modem_handle_t *me,
  * @param[out] result Socket 接收结果
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t air780ep_socket_recv(modem_handle_t *me,
+static esp_err_t air780ep_socket_recv(modem_handle_t me,
                                       const modem_socket_recv_t *recv,
                                       modem_socket_recv_result_t *result);
 
@@ -332,7 +332,7 @@ static esp_err_t air780ep_socket_recv(modem_handle_t *me,
  * @param[in] close Socket 关闭参数
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t air780ep_socket_close(modem_handle_t *me,
+static esp_err_t air780ep_socket_close(modem_handle_t me,
                                        const modem_socket_close_t *close);
 
 /**
@@ -441,7 +441,7 @@ static void clear_mqtt_state(modem_air780ep_t *self);
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_configure(modem_handle_t me,
                                           const modem_mqtt_config_t *config);
 /**
  * @brief 建立 Air780EP MQTT TCP 通道
@@ -454,7 +454,7 @@ static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me);
+static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t me);
 /**
  * @brief 连接 Air780EP MQTT 会话
  * @details Connect MQTT session via AT+MCONNECT
@@ -465,7 +465,7 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: 未配置、TCP 未连接或会话已连接
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_connect(modem_handle_t *me);
+static esp_err_t air780ep_mqtt_connect(modem_handle_t me);
 /**
  * @brief 断开 Air780EP MQTT 会话
  * @details Disconnect MQTT session via AT+MDISCONNECT
@@ -476,7 +476,7 @@ static esp_err_t air780ep_mqtt_connect(modem_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: 会话未连接
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_disconnect(modem_handle_t *me);
+static esp_err_t air780ep_mqtt_disconnect(modem_handle_t me);
 /**
  * @brief 断开 Air780EP MQTT TCP 通道
  * @details Disconnect MQTT TCP channel via AT+MIPCLOSE
@@ -487,7 +487,7 @@ static esp_err_t air780ep_mqtt_disconnect(modem_handle_t *me);
  *         - ESP_ERR_INVALID_STATE: TCP 未连接或会话仍连接
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t *me);
+static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t me);
 /**
  * @brief 订阅 Air780EP MQTT 主题
  * @details Subscribe MQTT topic via AT+MSUB
@@ -499,7 +499,7 @@ static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t *me);
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_subscribe(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_subscribe(modem_handle_t me,
                                            const modem_mqtt_topic_t *topic);
 /**
  * @brief 取消订阅 Air780EP MQTT 主题
@@ -512,7 +512,7 @@ static esp_err_t air780ep_mqtt_subscribe(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_unsubscribe(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_unsubscribe(modem_handle_t me,
                                             const modem_mqtt_topic_t *topic);
 /**
  * @brief 发布 Air780EP MQTT 消息
@@ -526,7 +526,7 @@ static esp_err_t air780ep_mqtt_unsubscribe(modem_handle_t *me,
  *         - ESP_ERR_NO_MEM: 内存不足
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_publish(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_publish(modem_handle_t me,
                                         const modem_mqtt_publish_t *publish);
 /**
  * @brief 查询 Air780EP MQTT 状态
@@ -539,7 +539,7 @@ static esp_err_t air780ep_mqtt_publish(modem_handle_t *me,
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_mqtt_get_status(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_get_status(modem_handle_t me,
                                            modem_mqtt_status_t *status);
 /**
  * @brief 写入并配置 Air780EP SSL context
@@ -549,7 +549,7 @@ static esp_err_t air780ep_mqtt_get_status(modem_handle_t *me,
  * @param[in] credentials SSL 证书材料
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
+static esp_err_t air780ep_ssl_provision(modem_handle_t me,
                                          const modem_ssl_context_config_t *config,
                                          const modem_ssl_credentials_t *credentials);
 /**
@@ -560,7 +560,7 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
  * @param[out] status SSL context 状态
  * @return ESP_OK 成功，其它为错误码
  */
-static esp_err_t air780ep_ssl_get_context_status(modem_handle_t *me,
+static esp_err_t air780ep_ssl_get_context_status(modem_handle_t me,
                                                  uint8_t context_id,
                                                  modem_ssl_context_status_t *status);
 /**
@@ -706,7 +706,7 @@ static modem_mqtt_status_t map_mqtt_status(int state);
  *         - ESP_ERR_INVALID_RESPONSE: 响应无效
  *         - 其他: AT 命令错误
  */
-static esp_err_t air780ep_ping(modem_handle_t *me,
+static esp_err_t air780ep_ping(modem_handle_t me,
                                const modem_ping_request_t *request,
                                modem_ping_reply_t *replies,
                                size_t max_replies,
@@ -765,7 +765,7 @@ static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request);
  * @param[in] me 调制解调器句柄
  * @return Air780EP 调制解调器实例
  */
-static modem_air780ep_t *to_air780ep(modem_handle_t *me);
+static modem_air780ep_t *to_air780ep(modem_handle_t me);
 
 /**
  * @brief 初始化命令上下文
@@ -1175,7 +1175,7 @@ static esp_err_t run_basic_init_cmds(modem_air780ep_t *self);
  *         - ESP_ERR_INVALID_ARG: 参数无效
  *         - 其他: 状态设置错误
  */
-static esp_err_t finish_modem_ready(modem_handle_t *me, modem_air780ep_t *self);
+static esp_err_t finish_modem_ready(modem_handle_t me, modem_air780ep_t *self);
 
 /**
  * @brief 硬件复位模块(通过 EN 引脚)
@@ -1385,7 +1385,7 @@ static const modem_ops_t s_air780ep_ops = {
  *   GLOBAL FUNCTIONS
  **********************/
 
-modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
+modem_handle_t modem_air780ep_create(at_engine_handle_t at,
                                const modem_air780ep_config_t *config)
 {
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1452,7 +1452,7 @@ modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
     /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      * 步骤 6：返回基类指针
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
-    /* 调用方只持有 modem_handle_t *，通过 modem_* 包装 API 间接使用；
+    /* 调用方只持有 modem_handle_t ，通过 modem_* 包装 API 间接使用；
      * Air780EP 子类细节完全隐藏 */
     return &self->base;
 }
@@ -1461,7 +1461,7 @@ modem_handle_t *modem_air780ep_create(at_engine_handle_t *at,
  *   STATIC FUNCTIONS
  **********************/
 
-static modem_air780ep_t *to_air780ep(modem_handle_t *me)
+static modem_air780ep_t *to_air780ep(modem_handle_t me)
 {
     return MODEM_CONTAINER_OF(me, modem_air780ep_t, base);
 }
@@ -2999,7 +2999,7 @@ static void air780ep_clear_ssl_state(modem_air780ep_t *self)
     }
 }
 
-static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
+static esp_err_t air780ep_ssl_provision(modem_handle_t me,
                                          const modem_ssl_context_config_t *config,
                                          const modem_ssl_credentials_t *credentials)
 {
@@ -3164,7 +3164,7 @@ static esp_err_t air780ep_ssl_provision(modem_handle_t *me,
     return ESP_OK;
 }
 
-static esp_err_t air780ep_ssl_get_context_status(modem_handle_t *me,
+static esp_err_t air780ep_ssl_get_context_status(modem_handle_t me,
                                                  uint8_t context_id,
                                                  modem_ssl_context_status_t *status)
 {
@@ -3308,7 +3308,7 @@ static esp_err_t run_basic_init_cmds(modem_air780ep_t *self)
     return ESP_OK;
 }
 
-static esp_err_t finish_modem_ready(modem_handle_t *me, modem_air780ep_t *self)
+static esp_err_t finish_modem_ready(modem_handle_t me, modem_air780ep_t *self)
 {
     ESP_RETURN_ON_FALSE(me && self, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3520,7 +3520,7 @@ static esp_err_t unregister_urcs(modem_air780ep_t *self)
     return ret;
 }
 
-static esp_err_t air780ep_destroy(modem_handle_t *me)
+static esp_err_t air780ep_destroy(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3541,7 +3541,7 @@ static esp_err_t air780ep_destroy(modem_handle_t *me)
     return ESP_OK;
 }
 
-static esp_err_t air780ep_start(modem_handle_t *me)
+static esp_err_t air780ep_start(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3629,7 +3629,7 @@ err:
     return ret;
 }
 
-static esp_err_t air780ep_reset(modem_handle_t *me)
+static esp_err_t air780ep_reset(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3686,7 +3686,7 @@ err:
     return ret;
 }
 
-static esp_err_t air780ep_stop(modem_handle_t *me)
+static esp_err_t air780ep_stop(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -3733,7 +3733,7 @@ static esp_err_t air780ep_stop(modem_handle_t *me)
     return ret;
 }
 
-static esp_err_t air780ep_get_info(modem_handle_t *me, modem_info_t *info)
+static esp_err_t air780ep_get_info(modem_handle_t me, modem_info_t *info)
 {
     ESP_RETURN_ON_FALSE(me && info, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3791,7 +3791,7 @@ static esp_err_t air780ep_get_info(modem_handle_t *me, modem_info_t *info)
     return ESP_OK;
 }
 
-static esp_err_t air780ep_get_sim_status(modem_handle_t *me, modem_sim_status_t *status)
+static esp_err_t air780ep_get_sim_status(modem_handle_t me, modem_sim_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3864,7 +3864,7 @@ static esp_err_t air780ep_get_sim_status(modem_handle_t *me, modem_sim_status_t 
     return ESP_FAIL;
 }
 
-static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
+static esp_err_t air780ep_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
     ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3906,7 +3906,7 @@ static esp_err_t air780ep_get_signal(modem_handle_t *me, modem_signal_t *signal)
     return ESP_OK;
 }
 
-static esp_err_t air780ep_get_registration(modem_handle_t *me, modem_reg_status_t *status)
+static esp_err_t air780ep_get_registration(modem_handle_t me, modem_reg_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -3992,7 +3992,7 @@ static esp_err_t air780ep_get_registration(modem_handle_t *me, modem_reg_status_
     return last_err;
 }
 
-static esp_err_t air780ep_get_packet_attach_status(modem_handle_t *me, bool *attached)
+static esp_err_t air780ep_get_packet_attach_status(modem_handle_t me, bool *attached)
 {
     ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -4000,7 +4000,7 @@ static esp_err_t air780ep_get_packet_attach_status(modem_handle_t *me, bool *att
     return query_cgatt(self, attached);
 }
 
-static esp_err_t air780ep_set_apn(modem_handle_t *me, uint8_t cid, const char *apn)
+static esp_err_t air780ep_set_apn(modem_handle_t me, uint8_t cid, const char *apn)
 {
     ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     ESP_RETURN_ON_FALSE(cid_valid(cid), ESP_ERR_INVALID_ARG, TAG,
@@ -4036,7 +4036,7 @@ static esp_err_t air780ep_set_apn(modem_handle_t *me, uint8_t cid, const char *a
     return ESP_OK;
 }
 
-static esp_err_t air780ep_activate_pdp(modem_handle_t *me, uint8_t cid)
+static esp_err_t air780ep_activate_pdp(modem_handle_t me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(cid_valid(cid), ESP_ERR_INVALID_ARG, TAG,
@@ -4138,7 +4138,7 @@ static esp_err_t air780ep_activate_pdp(modem_handle_t *me, uint8_t cid)
     return ESP_OK;
 }
 
-static esp_err_t air780ep_deactivate_pdp(modem_handle_t *me, uint8_t cid)
+static esp_err_t air780ep_deactivate_pdp(modem_handle_t me, uint8_t cid)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
     ESP_RETURN_ON_FALSE(cid_valid(cid), ESP_ERR_INVALID_ARG, TAG,
@@ -4184,7 +4184,7 @@ static esp_err_t air780ep_deactivate_pdp(modem_handle_t *me, uint8_t cid)
     return ESP_OK;
 }
 
-static esp_err_t air780ep_get_pdp_context(modem_handle_t *me, uint8_t cid,
+static esp_err_t air780ep_get_pdp_context(modem_handle_t me, uint8_t cid,
                                             modem_pdp_context_t *pdp)
 {
     ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -4280,7 +4280,7 @@ static esp_err_t air780ep_socket_prepare(modem_air780ep_t *self)
     return ESP_OK;
 }
 
-static esp_err_t air780ep_socket_open(modem_handle_t *me,
+static esp_err_t air780ep_socket_open(modem_handle_t me,
                                       const modem_socket_open_t *open)
 {
     ESP_RETURN_ON_FALSE(me && open && open->host && open->host[0] &&
@@ -4382,7 +4382,7 @@ static esp_err_t air780ep_socket_open(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_socket_send(modem_handle_t *me,
+static esp_err_t air780ep_socket_send(modem_handle_t me,
                                       const modem_socket_send_t *send)
 {
     ESP_RETURN_ON_FALSE(me && send && send->data && send->len > 0,
@@ -4435,7 +4435,7 @@ static esp_err_t air780ep_socket_send(modem_handle_t *me,
     return ESP_ERR_INVALID_RESPONSE;
 }
 
-static esp_err_t air780ep_socket_recv(modem_handle_t *me,
+static esp_err_t air780ep_socket_recv(modem_handle_t me,
                                       const modem_socket_recv_t *recv,
                                       modem_socket_recv_result_t *result)
 {
@@ -4481,7 +4481,7 @@ static esp_err_t air780ep_socket_recv(modem_handle_t *me,
     return ESP_OK;
 }
 
-static esp_err_t air780ep_socket_close(modem_handle_t *me,
+static esp_err_t air780ep_socket_close(modem_handle_t me,
                                        const modem_socket_close_t *close)
 {
     ESP_RETURN_ON_FALSE(me && close, ESP_ERR_INVALID_ARG, TAG,
@@ -4550,7 +4550,7 @@ static modem_mqtt_status_t map_mqtt_status(int state)
     }
 }
 
-static esp_err_t air780ep_mqtt_get_status(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_get_status(modem_handle_t me,
                                            modem_mqtt_status_t *status)
 {
     ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
@@ -4579,7 +4579,7 @@ static esp_err_t air780ep_mqtt_get_status(modem_handle_t *me,
     return ESP_OK;
 }
 
-static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_configure(modem_handle_t me,
                                           const modem_mqtt_config_t *config)
 {
     ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host &&
@@ -4673,7 +4673,7 @@ static esp_err_t air780ep_mqtt_configure(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me)
+static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4768,7 +4768,7 @@ static esp_err_t air780ep_mqtt_tcp_connect(modem_handle_t *me)
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_connect(modem_handle_t *me)
+static esp_err_t air780ep_mqtt_connect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4832,7 +4832,7 @@ static esp_err_t air780ep_mqtt_connect(modem_handle_t *me)
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_disconnect(modem_handle_t *me)
+static esp_err_t air780ep_mqtt_disconnect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4865,7 +4865,7 @@ static esp_err_t air780ep_mqtt_disconnect(modem_handle_t *me)
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t *me)
+static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t me)
 {
     ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
 
@@ -4901,7 +4901,7 @@ static esp_err_t air780ep_mqtt_tcp_disconnect(modem_handle_t *me)
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_subscribe(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_subscribe(modem_handle_t me,
                                           const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->qos <= 1,
@@ -4947,7 +4947,7 @@ static esp_err_t air780ep_mqtt_subscribe(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_unsubscribe(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_unsubscribe(modem_handle_t me,
                                             const modem_mqtt_topic_t *topic)
 {
     ESP_RETURN_ON_FALSE(me && topic && topic->topic,
@@ -4991,7 +4991,7 @@ static esp_err_t air780ep_mqtt_unsubscribe(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_mqtt_publish(modem_handle_t *me,
+static esp_err_t air780ep_mqtt_publish(modem_handle_t me,
                                         const modem_mqtt_publish_t *publish)
 {
     ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
@@ -5049,7 +5049,7 @@ static esp_err_t air780ep_mqtt_publish(modem_handle_t *me,
     return ret;
 }
 
-static esp_err_t air780ep_ping(modem_handle_t *me,
+static esp_err_t air780ep_ping(modem_handle_t me,
                                const modem_ping_request_t *request,
                                modem_ping_reply_t *replies,
                                size_t max_replies,
