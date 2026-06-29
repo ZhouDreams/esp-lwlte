@@ -412,6 +412,51 @@ typedef struct {
 } modem_socket_close_t;
 
 /**
+ * @brief HTTP 方法
+ * @details HTTP method
+ */
+typedef enum {
+    MODEM_HTTP_METHOD_GET = 0,      /**< GET 方法； GET method */
+    MODEM_HTTP_METHOD_POST,         /**< POST 方法； POST method */
+} modem_http_method_t;
+
+/**
+ * @brief HTTP 传输类型
+ * @details HTTP transport type
+ */
+typedef enum {
+    MODEM_HTTP_TRANSPORT_HTTP = 0,  /**< 明文 HTTP； Plain HTTP */
+    MODEM_HTTP_TRANSPORT_HTTPS,     /**< HTTPS (TLS)； HTTPS over TLS */
+} modem_http_transport_t;
+
+/**
+ * @brief HTTP 请求参数
+ * @details HTTP request parameters
+ */
+typedef struct {
+    modem_http_method_t method;         /**< HTTP 方法； HTTP method */
+    const char *url;                    /**< 完整 URL； Full URL */
+    modem_http_transport_t transport;   /**< 传输类型； Transport type */
+    uint8_t ssl_context_id;             /**< HTTPS SSL context ID； SSL context for HTTPS */
+    const char *content_type;           /**< POST content-type，可空； POST content-type, optional */
+    const uint8_t *body;                /**< POST 请求体； POST body */
+    size_t body_len;                    /**< POST 请求体长度； POST body length */
+    uint32_t timeout_ms;                /**< 总超时； Total timeout */
+    int *modem_error_code;              /**< 模块错误码输出，可空； Raw modem error code output, optional */
+} modem_http_request_t;
+
+/**
+ * @brief HTTP 响应结果
+ * @details HTTP response result
+ * @note body 成功时为堆分配，调用方拥有；失败时必须为 NULL。
+ */
+typedef struct {
+    int status_code;                    /**< HTTP 状态码； HTTP status code */
+    uint8_t *body;                      /**< 堆 body，成功时调用方拥有； Heap body, caller owns on success */
+    size_t body_len;                    /**< 响应体长度； Body length */
+} modem_http_response_t;
+
+/**
  * @brief 调制解调器事件 ID
  * @details Modem event ID
  */
@@ -902,6 +947,26 @@ esp_err_t modem_ping(modem_handle_t me,
                      modem_ping_reply_t *replies,
                      size_t max_replies,
                      modem_ping_summary_t *summary);
+
+/**
+ * @brief 执行 HTTP 请求
+ * @details Execute HTTP request
+ * @param[in] me 调制解调器句柄
+ * @param[in] request HTTP 请求参数
+ * @param[out] response HTTP 响应结果，成功时 body 为堆分配由调用方释放
+ * @return
+ *         - ESP_OK: 成功
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 状态错误
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_TIMEOUT: 请求超时
+ *         - ESP_ERR_INVALID_RESPONSE: 响应无效
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t modem_http_request(modem_handle_t me,
+                             const modem_http_request_t *request,
+                             modem_http_response_t *response);
 
 /**********************
  *      MACROS

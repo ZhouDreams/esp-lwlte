@@ -241,6 +241,14 @@ typedef struct {
 } core_socket_result_t;
 
 typedef struct {
+    esp_err_t error_code;                /**< ESP 错误码； ESP error code */
+    int status_code;                     /**< HTTP 状态码，成功时有效； HTTP status code */
+    uint8_t *body;                       /**< 堆 body，所有权转移给应用 release； Heap body, ownership transfers to app */
+    size_t body_len;                     /**< 响应体长度； Body length */
+    int modem_error_code;                /**< 模块原始错误码； Raw modem error code */
+} core_http_result_t;
+
+typedef struct {
     uint8_t context_id;                  /**< SSL context ID； SSL context ID */
     lwlte_ssl_auth_mode_t auth_mode;     /**< 认证模式； Authentication mode */
     uint8_t tls_version;                 /**< TLS 版本； TLS version */
@@ -287,6 +295,7 @@ typedef enum {
     CORE_CMD_SOCKET_SEND,                /**< 发送 socket 数据； Send socket data */
     CORE_CMD_SOCKET_RECV,                /**< 接收 socket 数据； Receive socket data */
     CORE_CMD_SOCKET_CLOSE,               /**< 关闭 socket； Close socket */
+    CORE_CMD_HTTP_REQUEST,               /**< 执行 HTTP 请求； Execute HTTP request */
 } core_cmd_type_t;
 
 /**
@@ -384,6 +393,15 @@ typedef struct {
         core_socket_send_t socket_send;  /**< Socket 发送参数； Socket send args */
         core_socket_recv_t socket_recv;  /**< Socket 接收参数； Socket receive args */
         core_socket_close_t socket_close; /**< Socket 关闭参数； Socket close args */
+        struct {
+            lwlte_http_method_t method;   /**< HTTP 方法； HTTP method */
+            const char *url;              /**< URL，clone 深拷贝； URL, deep-copied */
+            lwlte_http_transport_t transport; /**< 传输类型； Transport */
+            uint8_t ssl_context_id;       /**< SSL context ID； SSL context ID */
+            const char *content_type;     /**< content-type，clone 深拷贝； content-type, deep-copied */
+            const uint8_t *body;          /**< POST 请求体，clone 深拷贝； POST body, deep-copied */
+            size_t body_len;              /**< 请求体长度； Body length */
+        } http_request;                   /**< HTTP 请求参数； HTTP request args */
     } data;                              /**< 命令数据； Command data */
 } core_cmd_t;
 

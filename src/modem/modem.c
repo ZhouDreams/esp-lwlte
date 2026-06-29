@@ -767,6 +767,33 @@ esp_err_t modem_ping(modem_handle_t me,
     return me->ops->ping(me, request, replies, max_replies, summary);
 }
 
+esp_err_t modem_http_request(modem_handle_t me,
+                             const modem_http_request_t *request,
+                             modem_http_response_t *response)
+{
+    ESP_RETURN_ON_FALSE(me && request && response, ESP_ERR_INVALID_ARG, TAG,
+                        "NULL argument");
+    ESP_RETURN_ON_FALSE(request->url && request->url[0], ESP_ERR_INVALID_ARG,
+                        TAG, "invalid http request url");
+    ESP_RETURN_ON_FALSE(request->method == MODEM_HTTP_METHOD_GET ||
+                        request->method == MODEM_HTTP_METHOD_POST,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid http method");
+    ESP_RETURN_ON_FALSE(request->transport == MODEM_HTTP_TRANSPORT_HTTP ||
+                        request->transport == MODEM_HTTP_TRANSPORT_HTTPS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid http transport");
+    ESP_RETURN_ON_FALSE(request->method != MODEM_HTTP_METHOD_POST ||
+                        (request->body && request->body_len > 0),
+                        ESP_ERR_INVALID_ARG, TAG, "POST requires non-empty body");
+
+    memset(response, 0, sizeof(*response));
+    esp_err_t ret = check_ready(me, false);
+    ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
+    ESP_RETURN_ON_FALSE(me->ops && me->ops->http_request,
+                        ESP_ERR_NOT_SUPPORTED, TAG, "http_request not supported");
+
+    return me->ops->http_request(me, request, response);
+}
+
 /**********************
  *   STATIC FUNCTIONS
  **********************/

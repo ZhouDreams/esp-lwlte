@@ -1033,6 +1033,19 @@ static core_cmd_t *clone_core_cmd(const core_cmd_t *cmd)
     case CORE_CMD_MQTT_TCP_CONNECT:
     case CORE_CMD_MQTT_TCP_DISCONNECT:
         break;
+    case CORE_CMD_HTTP_REQUEST:
+        clone->data.http_request.url = clone_optional_string(cmd->data.http_request.url);
+        clone->data.http_request.content_type =
+            clone_optional_string(cmd->data.http_request.content_type);
+        clone->data.http_request.body =
+            clone_payload(cmd->data.http_request.body, cmd->data.http_request.body_len);
+        if (!clone->data.http_request.url ||
+            (cmd->data.http_request.content_type && !clone->data.http_request.content_type) ||
+            (cmd->data.http_request.body && !clone->data.http_request.body)) {
+            free_core_cmd(clone);
+            return NULL;
+        }
+        break;
     default:
         free_core_cmd(clone);
         return NULL;
@@ -1079,6 +1092,11 @@ static void free_core_cmd(core_cmd_t *cmd)
     case CORE_CMD_SOCKET_SEND:
         free((void *)cmd->data.socket_send.data);
         break;
+    case CORE_CMD_HTTP_REQUEST:
+        free((void *)cmd->data.http_request.url);
+        free((void *)cmd->data.http_request.content_type);
+        free((void *)cmd->data.http_request.body);
+        break;
     default:
         break;
     }
@@ -1118,7 +1136,7 @@ static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len)
 
 static bool core_cmd_type_valid(core_cmd_type_t type)
 {
-    return type >= CORE_CMD_SSL_PROVISION && type <= CORE_CMD_SOCKET_CLOSE;
+    return type >= CORE_CMD_SSL_PROVISION && type <= CORE_CMD_HTTP_REQUEST;
 }
 
 static bool core_cmd_valid(const core_cmd_t *cmd)
@@ -1209,6 +1227,16 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
         return cmd->data.socket_recv.max_len > 0;
     case CORE_CMD_SOCKET_CLOSE:
         return true;
+    case CORE_CMD_HTTP_REQUEST:
+        return cmd->data.http_request.url != NULL &&
+               cmd->data.http_request.url[0] != '\0' &&
+               (cmd->data.http_request.method == LWLTE_HTTP_METHOD_GET ||
+                cmd->data.http_request.method == LWLTE_HTTP_METHOD_POST) &&
+               (cmd->data.http_request.transport == LWLTE_HTTP_TRANSPORT_HTTP ||
+                cmd->data.http_request.transport == LWLTE_HTTP_TRANSPORT_HTTPS) &&
+               (cmd->data.http_request.method != LWLTE_HTTP_METHOD_POST ||
+                (cmd->data.http_request.body != NULL &&
+                 cmd->data.http_request.body_len > 0));
     default:
         return false;
     }

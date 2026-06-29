@@ -618,10 +618,15 @@ static void handle_service_cmd(core_handle_t me, core_cmd_t *cmd)
         const core_socket_result_t socket_result = {
             .error_code = invalid_state,
         };
+        const core_http_result_t http_result = {
+            .error_code = invalid_state,
+        };
         bool socket_cmd = cmd->type >= CORE_CMD_SOCKET_OPEN &&
                           cmd->type <= CORE_CMD_SOCKET_CLOSE;
+        bool http_cmd = cmd->type == CORE_CMD_HTTP_REQUEST;
         const void *result_data = socket_cmd ? (const void *)&socket_result :
-                                               (const void *)&invalid_state;
+                                  http_cmd ? (const void *)&http_result :
+                                             (const void *)&invalid_state;
         finish_service_cmd(me, cmd, CORE_CMD_RESULT_ERROR, result_data);
         return;
     }
@@ -803,6 +808,31 @@ static void handle_service_cmd(core_handle_t me, core_cmd_t *cmd)
         };
         ret = modem_socket_close(me->modem, &request);
         break;
+    }
+    case CORE_CMD_HTTP_REQUEST: {
+        core_http_result_t result = {0};
+        esp_err_t http_ret = ensure_net_online(me);
+        if (http_ret == ESP_OK) {
+            modem_http_request_t req = {
+                .method = (modem_http_method_t)cmd->data.http_request.method,
+                .url = cmd->data.http_request.url,
+                .transport = (modem_http_transport_t)cmd->data.http_request.transport,
+                .ssl_context_id = cmd->data.http_request.ssl_context_id,
+                .content_type = cmd->data.http_request.content_type,
+                .body = cmd->data.http_request.body,
+                .body_len = cmd->data.http_request.body_len,
+                .timeout_ms = cmd->timeout_ms,
+                .modem_error_code = &result.modem_error_code,
+            };
+            modem_http_response_t modem_resp = {0};
+            http_ret = modem_http_request(me->modem, &req, &modem_resp);
+            result.status_code = modem_resp.status_code;
+            result.body = modem_resp.body;
+            result.body_len = modem_resp.body_len;
+        }
+        result.error_code = http_ret;
+        finish_service_cmd(me, cmd, result_from_esp_err(http_ret), &result);
+        return;
     }
     default:
         ret = ESP_ERR_INVALID_ARG;

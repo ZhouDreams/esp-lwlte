@@ -353,6 +353,52 @@ typedef struct {
 } lwlte_ssl_context_status_t;
 
 /**
+ * @brief LTE HTTP 方法
+ * @details LTE HTTP method
+ */
+typedef enum {
+    LWLTE_HTTP_METHOD_GET = 0,   /**< GET 方法； GET method */
+    LWLTE_HTTP_METHOD_POST,      /**< POST 方法； POST method */
+} lwlte_http_method_t;
+
+/**
+ * @brief LTE HTTP 传输类型
+ * @details LTE HTTP transport type
+ */
+typedef enum {
+    LWLTE_HTTP_TRANSPORT_HTTP = 0,   /**< 明文 HTTP； Plain HTTP */
+    LWLTE_HTTP_TRANSPORT_HTTPS,      /**< HTTPS (TLS)； HTTPS over TLS */
+} lwlte_http_transport_t;
+
+/**
+ * @brief HTTP 请求参数
+ * @details HTTP request parameters
+ * @note 字符串和缓冲区为借用，在 lwlte_http_request() 返回前必须有效。
+ */
+typedef struct {
+    lwlte_http_method_t method;       /**< HTTP 方法； HTTP method */
+    const char *url;                  /**< 完整 URL，含 http(s)://； Full URL */
+    lwlte_http_transport_t transport; /**< 传输类型； Transport type */
+    uint8_t ssl_context_id;           /**< HTTPS SSL context ID； SSL context for HTTPS */
+    const char *content_type;         /**< POST content-type，可空； POST content-type, optional */
+    const uint8_t *body;              /**< POST 请求体； POST body */
+    size_t body_len;                  /**< POST 请求体长度； POST body length */
+    uint32_t timeout_ms;              /**< 总超时，0 用默认； Total timeout, 0=default */
+} lwlte_http_request_t;
+
+/**
+ * @brief HTTP 响应结果
+ * @details HTTP response result
+ * @note body 成功时为库分配堆 buffer，须由 lwlte_http_response_release() 释放。
+ */
+typedef struct {
+    int status_code;            /**< HTTP 状态码，如 200； HTTP status code */
+    uint8_t *body;              /**< 库分配的响应体； Library-allocated body */
+    size_t body_len;            /**< 响应体长度； Body length in bytes */
+    int modem_error_code;       /**< 模块原始错误码； Raw modem error code */
+} lwlte_http_response_t;
+
+/**
  * @brief MQTT 客户端配置
  * @details MQTT client configuration
  * @note host、port 和 client_id 为必填字段；任务字段为 0 时使用下层默认值，非 0 值必须大于 0。
@@ -897,6 +943,37 @@ esp_err_t lwlte_mqtt_unsubscribe(lwlte_handle_t me, const char *topic);
 esp_err_t lwlte_mqtt_publish(lwlte_handle_t me, const char *topic,
                              const uint8_t *payload, size_t payload_len,
                              uint8_t qos, bool retain);
+
+/**
+ * @brief 执行同步 HTTP 请求
+ * @details Perform synchronous HTTP request
+ * @note 阻塞调用，直到收到响应或超时；不应在事件回调中调用。
+ * @note HTTP 4xx/5xx 仍返回 ESP_OK，应用自行判断 status_code。
+ * @note 成功时 response->body 为库分配堆 buffer，须调 lwlte_http_response_release() 释放。
+ * @param[in] me LTE 用户门面句柄
+ * @param[in] request HTTP 请求参数
+ * @param[out] response HTTP 响应结果
+ * @return
+ *         - ESP_OK: 收到 HTTP 响应
+ *         - ESP_ERR_INVALID_ARG: 参数无效
+ *         - ESP_ERR_INVALID_STATE: 网络未 online 或门面正在销毁
+ *         - ESP_ERR_TIMEOUT: 请求超时
+ *         - ESP_ERR_INVALID_RESPONSE: 模块响应无效
+ *         - ESP_ERR_NO_MEM: 内存不足
+ *         - ESP_ERR_NOT_SUPPORTED: 模块不支持
+ *         - 其他 esp_err_t: 下层错误
+ */
+esp_err_t lwlte_http_request(lwlte_handle_t me,
+                             const lwlte_http_request_t *request,
+                             lwlte_http_response_t *response);
+
+/**
+ * @brief 释放 HTTP 响应资源
+ * @details Release HTTP response resources
+ * @note 处理 lwlte_http_request() 返回后应调用；失败时 body 为 NULL 也是安全 no-op。
+ * @param[in] response HTTP 响应结果指针，可为 NULL
+ */
+void lwlte_http_response_release(lwlte_http_response_t *response);
 
 /**********************
  *      MACROS

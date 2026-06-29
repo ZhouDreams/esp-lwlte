@@ -183,6 +183,14 @@ typedef esp_err_t (*modem_socket_close_fn)(modem_handle_t me,
                                            const modem_socket_close_t *close);
 
 /**
+ * @brief HTTP 请求操作函数
+ * @details HTTP request operation function
+ */
+typedef esp_err_t (*modem_http_request_fn)(modem_handle_t me,
+                                           const modem_http_request_t *request,
+                                           modem_http_response_t *response);
+
+/**
  * @brief 调制解调器虚函数表
  * @details Modem virtual function table
  */
@@ -229,6 +237,9 @@ typedef struct modem_ops {
 
     /* ── 诊断； Diagnostics ──────────────────────────────── */
     modem_ping_fn ping;                              /**< 执行 Ping 诊断； Execute ping diagnostic */
+
+    /* ── HTTP 客户端； HTTP client ───────────────────────── */
+    modem_http_request_fn http_request;              /**< 执行 HTTP 请求； Execute HTTP request */
 } modem_ops_t;
 
 /**

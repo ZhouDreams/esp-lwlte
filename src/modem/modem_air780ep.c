@@ -75,6 +75,12 @@
 #define AIR780EP_CIPPING_PREFIX         "+CIPPING:"
 #define AIR780EP_CIPPING_MAX_COUNT      100
 #define AIR780EP_CIPPING_CMD_OVERHEAD_MS 5000U
+#define AIR780EP_HTTP_SSL_CONTEXT_ID    153
+#define AIR780EP_HTTP_CMD_TIMEOUT_MS    9000
+#define AIR780EP_HTTP_ACTION_TIMEOUT_MS 120000
+#define AIR780EP_HTTPDATA_PROMPT_MS     10000
+#define AIR780EP_HTTPDATA_BODY_MAX      3356
+#define AIR780EP_HTTPREAD_BODY_MAX      3356
 
 _Static_assert(AIR780EP_MAX_RESPONSE_LINES >= AIR780EP_CIPPING_MAX_COUNT + 1,
                "Air780EP CIPPING response storage must hold replies plus final status");
@@ -711,6 +717,17 @@ static esp_err_t air780ep_ping(modem_handle_t me,
                                modem_ping_reply_t *replies,
                                size_t max_replies,
                                modem_ping_summary_t *summary);
+/**
+ * @brief 执行 Air780EP HTTP 请求
+ * @details Execute Air780EP HTTP request
+ * @param[in] me 调制解调器句柄
+ * @param[in] request HTTP 请求参数
+ * @param[out] response HTTP 响应结果
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t air780ep_http_request(modem_handle_t me,
+                                       const modem_http_request_t *request,
+                                       modem_http_response_t *response);
 /**
  * @brief 解析单行 +CIPPING 响应
  * @details Parse a single +CIPPING reply line into the reply struct
@@ -1375,6 +1392,7 @@ static const modem_ops_t s_air780ep_ops = {
     .mqtt_publish = air780ep_mqtt_publish,
     .mqtt_get_status = air780ep_mqtt_get_status,
     .ping = air780ep_ping,
+    .http_request = air780ep_http_request,
 };
 
 /**********************
@@ -5306,6 +5324,284 @@ static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request)
 
     return (uint32_t)request->count * (uint32_t)request->timeout_100ms * 100U +
            AIR780EP_CIPPING_CMD_OVERHEAD_MS;
+}
+
+static esp_err_t air780ep_http_request(modem_handle_t me,
+                                       const modem_http_request_t *request,
+                                       modem_http_response_t *response)
+{
+    modem_air780ep_t *self = to_air780ep(me);
+    esp_err_t ret = ESP_OK;
+    bool http_initialized = false;
+
+    if (request->modem_error_code) {
+        *request->modem_error_code = 0;
+    }
+
+    /* 1. AT+HTTPINIT */
+    air780ep_cmd_ctx_t ctx;
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+HTTPINIT", &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "AT+HTTPINIT send failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = ensure_at_ok(&ctx.response, "AT+HTTPINIT");
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "AT+HTTPINIT failed");
+        return ret;
+    }
+    http_initialized = true;
+
+    /* cleanup macro: AT+HTTPTERM on any failure path */
+#define HTTP_CLEANUP()                                          \
+    do {                                                        \
+        if (http_initialized) {                                \
+            air780ep_cmd_ctx_t term_ctx;                        \
+            init_cmd_ctx(&term_ctx);                            \
+            (void)send_cmd(self, "AT+HTTPTERM", &term_ctx,      \
+                           AIR780EP_HTTP_CMD_TIMEOUT_MS);       \
+            http_initialized = false;                           \
+        }                                                       \
+    } while (0)
+
+    /* 2. AT+HTTPSSL */
+    init_cmd_ctx(&ctx);
+    const char *ssl_cmd = (request->transport == MODEM_HTTP_TRANSPORT_HTTPS) ?
+                          "AT+HTTPSSL=1" : "AT+HTTPSSL=0";
+    ret = send_cmd(self, ssl_cmd, &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+HTTPSSL");
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "AT+HTTPSSL failed: %s", esp_err_to_name(ret));
+        HTTP_CLEANUP();
+        return ret;
+    }
+
+    /* 3. AT+HTTPPARA="CID",1 */
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+HTTPPARA=\"CID\",1", &ctx,
+                   AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+HTTPPARA CID");
+    }
+    if (ret != ESP_OK) {
+        HTTP_CLEANUP();
+        return ret;
+    }
+
+    /* 4. AT+HTTPPARA="URL",<url> */
+    init_cmd_ctx(&ctx);
+    int needed = snprintf(NULL, 0, "AT+HTTPPARA=\"URL\",\"%s\"", request->url);
+    if (needed < 0) {
+        HTTP_CLEANUP();
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *url_cmd = malloc((size_t)needed + 1U);
+    if (!url_cmd) {
+        HTTP_CLEANUP();
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(url_cmd, (size_t)needed + 1U, "AT+HTTPPARA=\"URL\",\"%s\"",
+             request->url);
+    ret = send_cmd(self, url_cmd, &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    free(url_cmd);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+HTTPPARA URL");
+    }
+    if (ret != ESP_OK) {
+        HTTP_CLEANUP();
+        return ret;
+    }
+
+    /* 5. AT+HTTPPARA="CONTENT",<content_type> (optional) */
+    if (request->content_type && request->content_type[0]) {
+        init_cmd_ctx(&ctx);
+        needed = snprintf(NULL, 0, "AT+HTTPPARA=\"CONTENT\",\"%s\"",
+                          request->content_type);
+        if (needed < 0) {
+            HTTP_CLEANUP();
+            return ESP_ERR_INVALID_ARG;
+        }
+        char *ct_cmd = malloc((size_t)needed + 1U);
+        if (!ct_cmd) {
+            HTTP_CLEANUP();
+            return ESP_ERR_NO_MEM;
+        }
+        snprintf(ct_cmd, (size_t)needed + 1U,
+                 "AT+HTTPPARA=\"CONTENT\",\"%s\"", request->content_type);
+        ret = send_cmd(self, ct_cmd, &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+        free(ct_cmd);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+HTTPPARA CONTENT");
+        }
+        if (ret != ESP_OK) {
+            HTTP_CLEANUP();
+            return ret;
+        }
+    }
+
+    /* 6. POST: AT+HTTPDATA=<len>,<time> + body via prompt */
+    if (request->method == MODEM_HTTP_METHOD_POST && request->body &&
+        request->body_len > 0) {
+        if (request->body_len > AIR780EP_HTTPDATA_BODY_MAX) {
+            HTTP_CLEANUP();
+            return ESP_ERR_INVALID_SIZE;
+        }
+        char data_cmd[48];
+        int written = snprintf(data_cmd, sizeof(data_cmd),
+                               "AT+HTTPDATA=%u,%u",
+                               (unsigned int)request->body_len,
+                               (unsigned int)AIR780EP_HTTPDATA_PROMPT_MS);
+        if (written < 0 || (size_t)written >= sizeof(data_cmd)) {
+            HTTP_CLEANUP();
+            return ESP_ERR_INVALID_ARG;
+        }
+        const at_cmd_options_t data_options = {
+            .timeout_ms = AIR780EP_HTTPDATA_PROMPT_MS,
+            .flags = 0,
+        };
+        init_cmd_ctx(&ctx);
+        ret = at_engine_send_cmd_with_payload(self->base.at, data_cmd,
+                                              request->body, request->body_len,
+                                              "DOWNLOAD", &ctx.response,
+                                              &data_options);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+HTTPDATA");
+        }
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "AT+HTTPDATA failed: %s", esp_err_to_name(ret));
+            HTTP_CLEANUP();
+            return ret;
+        }
+    }
+
+    /* 7. AT+HTTPACTION=<method> — wait for +HTTPACTION URC as success line */
+    const char *action_cmd = (request->method == MODEM_HTTP_METHOD_POST) ?
+                             "AT+HTTPACTION=1" : "AT+HTTPACTION=0";
+    const at_cmd_success_match_t action_match = {
+        .type = AT_CMD_SUCCESS_MATCH_PREFIX,
+        .value = "+HTTPACTION:",
+    };
+    uint32_t action_timeout = request->timeout_ms > 0 ?
+                              request->timeout_ms : AIR780EP_HTTP_ACTION_TIMEOUT_MS;
+    const at_cmd_options_t action_options = {
+        .timeout_ms = action_timeout,
+        .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+        .success_matches = &action_match,
+        .success_match_count = 1,
+    };
+    init_cmd_ctx(&ctx);
+    ret = send_cmd_with_options(self, action_cmd, &ctx, &action_options);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "AT+HTTPACTION failed: %s", esp_err_to_name(ret));
+        if (request->modem_error_code) {
+            *request->modem_error_code = ctx.response.error_code;
+        }
+        HTTP_CLEANUP();
+        return (ret == ESP_ERR_TIMEOUT) ? ESP_ERR_TIMEOUT
+                                        : ESP_ERR_INVALID_RESPONSE;
+    }
+
+    /* Parse +HTTPACTION: <method>,<status>,<len> */
+    const char *action_line = find_line_with_prefix(&ctx.response, "+HTTPACTION:");
+    if (!action_line) {
+        ESP_LOGW(TAG, "missing +HTTPACTION line");
+        HTTP_CLEANUP();
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    int method_val = 0, status_val = 0, data_len = 0;
+    int parsed = sscanf(action_line, "+HTTPACTION: %d,%d,%d",
+                        &method_val, &status_val, &data_len);
+    if (parsed < 2) {
+        ESP_LOGW(TAG, "parse +HTTPACTION failed: %s", action_line);
+        HTTP_CLEANUP();
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    /* Module-side errors: 600..606 */
+    if (status_val >= 600 && status_val <= 606) {
+        ESP_LOGW(TAG, "HTTPACTION module error %d", status_val);
+        if (request->modem_error_code) {
+            *request->modem_error_code = status_val;
+        }
+        HTTP_CLEANUP();
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    response->status_code = status_val;
+
+    /* 8. AT+HTTPREAD (if body expected) */
+    if (data_len > 0) {
+        size_t read_len = (size_t)data_len;
+        if (read_len > AIR780EP_HTTPREAD_BODY_MAX) {
+            read_len = AIR780EP_HTTPREAD_BODY_MAX;
+        }
+        char read_cmd[40];
+        int r_written = snprintf(read_cmd, sizeof(read_cmd),
+                                 "AT+HTTPREAD=0,%u", (unsigned int)read_len);
+        if (r_written < 0 || (size_t)r_written >= sizeof(read_cmd)) {
+            HTTP_CLEANUP();
+            return ESP_ERR_INVALID_ARG;
+        }
+        init_cmd_ctx(&ctx);
+        ret = send_cmd(self, read_cmd, &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+HTTPREAD");
+        }
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "AT+HTTPREAD failed: %s", esp_err_to_name(ret));
+            HTTP_CLEANUP();
+            return ret;
+        }
+        /* Find +HTTPREAD:<len> then concatenate data lines */
+        const char *read_hdr = find_line_with_prefix(&ctx.response, "+HTTPREAD:");
+        if (!read_hdr) {
+            HTTP_CLEANUP();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        int hdr_len = 0;
+        if (sscanf(read_hdr, "+HTTPREAD: %d", &hdr_len) != 1 || hdr_len <= 0) {
+            HTTP_CLEANUP();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        uint8_t *body_buf = malloc((size_t)hdr_len);
+        if (!body_buf) {
+            HTTP_CLEANUP();
+            return ESP_ERR_NO_MEM;
+        }
+        size_t copied = 0;
+        for (int i = 0; i < ctx.response.line_count && (int)copied < hdr_len; i++) {
+            const char *line = ctx.response.lines[i];
+            if (!line) {
+                continue;
+            }
+            if (strncmp(line, "+HTTPREAD:", 10) == 0) {
+                continue;
+            }
+            size_t line_len = strlen(line);
+            size_t remain = (size_t)hdr_len - copied;
+            /* Restore \r\n between data lines split by AT engine line parser */
+            if (copied > 0 && remain >= 2) {
+                body_buf[copied++] = '\r';
+                body_buf[copied++] = '\n';
+            }
+            size_t to_copy = line_len < remain ? line_len : remain;
+            memcpy(body_buf + copied, line, to_copy);
+            copied += to_copy;
+        }
+        response->body = body_buf;
+        response->body_len = copied;
+    }
+
+#undef HTTP_CLEANUP
+
+    /* 9. AT+HTTPTERM (finally cleanup) */
+    init_cmd_ctx(&ctx);
+    (void)send_cmd(self, "AT+HTTPTERM", &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+
+    return ESP_OK;
 }
 
 static esp_err_t post_mqtt_data_event(modem_air780ep_t *self, char *topic,

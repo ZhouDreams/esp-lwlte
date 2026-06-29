@@ -61,6 +61,10 @@
 #define ML307R_URC_MQTTURC               "+MQTTURC:"
 #define ML307R_MIPURC_RTCP_PREFIX        "+MIPURC: \"rtcp\""
 #define ML307R_MIPURC_DISCONN_PREFIX     "+MIPURC: \"disconn\""
+#define ML307R_HTTP_CMD_TIMEOUT_MS      9000
+#define ML307R_HTTP_REQUEST_TIMEOUT_MS  120000
+#define ML307R_HTTP_CONTENT_PROMPT_MS   10000
+#define ML307R_HTTP_BODY_MAX            4096
 
 _Static_assert(ML307R_MAX_RESPONSE_LINES >= ML307R_MPING_MAX_COUNT + 1,
                "ML307R MPING response storage must hold replies plus final status");
@@ -592,6 +596,17 @@ static esp_err_t ml307r_ping(modem_handle_t me,
                              modem_ping_reply_t *replies,
                              size_t max_replies,
                              modem_ping_summary_t *summary);
+/**
+ * @brief 执行 ML307R HTTP 请求
+ * @details Execute ML307R HTTP request
+ * @param[in] me 调制解调器句柄
+ * @param[in] request HTTP 请求参数
+ * @param[out] response HTTP 响应结果
+ * @return ESP_OK 成功，其它为错误码
+ */
+static esp_err_t ml307r_http_request(modem_handle_t me,
+                                     const modem_http_request_t *request,
+                                     modem_http_response_t *response);
 /**
  * @brief 转换为 ML307R 实例
  * @details Convert to ML307R instance
@@ -1483,6 +1498,7 @@ static const modem_ops_t s_ml307r_ops = {
     .mqtt_publish = ml307r_mqtt_publish,
     .mqtt_get_status = ml307r_mqtt_get_status,
     .ping = ml307r_ping,
+    .http_request = ml307r_http_request,
 };
 
 /**********************
@@ -5181,6 +5197,279 @@ static esp_err_t ml307r_ping(modem_handle_t me,
 
     free(cmd);
     free(host);
+    return ESP_OK;
+}
+
+static esp_err_t ml307r_http_request(modem_handle_t me,
+                                     const modem_http_request_t *request,
+                                     modem_http_response_t *response)
+{
+    modem_ml307r_t *self = to_ml307r(me);
+    esp_err_t ret = ESP_OK;
+    int http_id = -1;
+
+    if (request->modem_error_code) {
+        *request->modem_error_code = 0;
+    }
+
+    /* 1. AT+MHTTPCREATE -> +MHTTPCREATE: <id> */
+    ml307r_cmd_ctx_t ctx;
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+MHTTPCREATE", &ctx,
+                   ML307R_HTTP_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+MHTTPCREATE");
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    const char *create_line = find_line_with_prefix(&ctx.response,
+                                                    "+MHTTPCREATE:");
+    if (!create_line ||
+        sscanf(create_line, "+MHTTPCREATE: %d", &http_id) != 1 ||
+        http_id < 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    /* cleanup macro: AT+MHTTPDEL on any failure path */
+#define HTTP_CLEANUP_ML()                                            \
+    do {                                                             \
+        if (http_id >= 0) {                                          \
+            char _del_cmd[32];                                       \
+            snprintf(_del_cmd, sizeof(_del_cmd),                     \
+                     "AT+MHTTPDEL=%d", http_id);                     \
+            ml307r_cmd_ctx_t _dc;                                    \
+            init_cmd_ctx(&_dc);                                      \
+            (void)send_cmd(self, _del_cmd, &_dc,                     \
+                           ML307R_HTTP_CMD_TIMEOUT_MS);              \
+            http_id = -1;                                            \
+        }                                                            \
+    } while (0)
+
+    /* 2. AT+MHTTPCFG=<id>,"<url>",<method>,<ssl_enable> */
+    {
+        int ssl_enable = (request->transport == MODEM_HTTP_TRANSPORT_HTTPS) ? 1 : 0;
+        int needed_cfg = snprintf(NULL, 0, "AT+MHTTPCFG=%d,\"%s\",%d,%d",
+                                  http_id, request->url,
+                                  (int)request->method, ssl_enable);
+        if (needed_cfg < 0) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_ARG;
+        }
+        char *cfg_cmd = malloc((size_t)needed_cfg + 1U);
+        if (!cfg_cmd) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_NO_MEM;
+        }
+        snprintf(cfg_cmd, (size_t)needed_cfg + 1U,
+                 "AT+MHTTPCFG=%d,\"%s\",%d,%d", http_id, request->url,
+                 (int)request->method, ssl_enable);
+        init_cmd_ctx(&ctx);
+        ret = send_cmd(self, cfg_cmd, &ctx,
+                       ML307R_HTTP_CMD_TIMEOUT_MS);
+        free(cfg_cmd);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+MHTTPCFG");
+        }
+        if (ret != ESP_OK) {
+            HTTP_CLEANUP_ML();
+            return ret;
+        }
+    }
+
+    /* 3. content_type header (optional) */
+    if (request->content_type && request->content_type[0]) {
+        int needed_hdr = snprintf(NULL, 0,
+                                  "AT+MHTTPHEADER=%d,\"Content-Type:%s\"",
+                                  http_id, request->content_type);
+        if (needed_hdr < 0) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_ARG;
+        }
+        char *hdr_cmd = malloc((size_t)needed_hdr + 1U);
+        if (!hdr_cmd) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_NO_MEM;
+        }
+        snprintf(hdr_cmd, (size_t)needed_hdr + 1U,
+                 "AT+MHTTPHEADER=%d,\"Content-Type:%s\"",
+                 http_id, request->content_type);
+        init_cmd_ctx(&ctx);
+        ret = send_cmd(self, hdr_cmd, &ctx,
+                       ML307R_HTTP_CMD_TIMEOUT_MS);
+        free(hdr_cmd);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+MHTTPHEADER");
+        }
+        if (ret != ESP_OK) {
+            HTTP_CLEANUP_ML();
+            return ret;
+        }
+    }
+
+    /* 4. POST body via AT+MHTTPCONTENT=<id>,<len> + prompt */
+    if (request->method == MODEM_HTTP_METHOD_POST && request->body &&
+        request->body_len > 0) {
+        if (request->body_len > ML307R_HTTP_BODY_MAX) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_SIZE;
+        }
+        char content_cmd[40];
+        int written = snprintf(content_cmd, sizeof(content_cmd),
+                               "AT+MHTTPCONTENT=%d,%u", http_id,
+                               (unsigned int)request->body_len);
+        if (written < 0 || (size_t)written >= sizeof(content_cmd)) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_ARG;
+        }
+        const at_cmd_options_t content_options = {
+            .timeout_ms = ML307R_HTTP_CONTENT_PROMPT_MS,
+            .flags = 0,
+        };
+        init_cmd_ctx(&ctx);
+        ret = at_engine_send_cmd_with_payload(self->base.at, content_cmd,
+                                              request->body, request->body_len,
+                                              ">", &ctx.response,
+                                              &content_options);
+        if (ret == ESP_OK) {
+            ret = ensure_at_ok(&ctx.response, "AT+MHTTPCONTENT");
+        }
+        if (ret != ESP_OK) {
+            HTTP_CLEANUP_ML();
+            return ret;
+        }
+    }
+
+    /* 5. AT+MHTTPREQUEST=<id> — wait for +MHTTPURC: "rsp",<id> */
+    {
+        char req_cmd[32];
+        int written = snprintf(req_cmd, sizeof(req_cmd),
+                               "AT+MHTTPREQUEST=%d", http_id);
+        if (written < 0 || (size_t)written >= sizeof(req_cmd)) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_ARG;
+        }
+        char rsp_prefix[48];
+        snprintf(rsp_prefix, sizeof(rsp_prefix),
+                 "+MHTTPURC: \"rsp\",%d", http_id);
+        const at_cmd_success_match_t rsp_match = {
+            .type = AT_CMD_SUCCESS_MATCH_PREFIX,
+            .value = rsp_prefix,
+        };
+        uint32_t req_timeout = request->timeout_ms > 0 ?
+                               request->timeout_ms :
+                               ML307R_HTTP_REQUEST_TIMEOUT_MS;
+        const at_cmd_options_t req_options = {
+            .timeout_ms = req_timeout,
+            .flags = AT_CMD_FLAG_NO_STANDARD_OK_FINAL | AT_CMD_FLAG_SKIP_INTERMEDIATE_OK,
+            .success_matches = &rsp_match,
+            .success_match_count = 1,
+        };
+        init_cmd_ctx(&ctx);
+        ret = send_cmd_with_options(self, req_cmd, &ctx, &req_options);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "AT+MHTTPREQUEST failed: %s", esp_err_to_name(ret));
+            if (request->modem_error_code) {
+                *request->modem_error_code = ctx.response.error_code;
+            }
+            HTTP_CLEANUP_ML();
+            return (ret == ESP_ERR_TIMEOUT) ? ESP_ERR_TIMEOUT
+                                            : ESP_ERR_INVALID_RESPONSE;
+        }
+        /* Check for error URC */
+        if (find_line_with_prefix(&ctx.response, "+MHTTPURC: \"err\"")) {
+            ESP_LOGW(TAG, "MHTTPURC err received");
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        /* Parse +MHTTPURC: "rsp",<id>,<status>,<len> */
+        const char *rsp_line = find_line_with_prefix(&ctx.response, rsp_prefix);
+        if (!rsp_line) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        int rsp_id = 0, status_val = 0, data_len = 0;
+        int parsed = sscanf(rsp_line, "+MHTTPURC: \"rsp\",%d,%d,%d",
+                            &rsp_id, &status_val, &data_len);
+        if (parsed < 3) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        response->status_code = status_val;
+    }
+
+    /* 6. AT+MHTTPREAD=<id>[,<len>] — read response body */
+    if (response->status_code >= 200 && response->status_code < 300) {
+        size_t total_copied = 0;
+        size_t buf_cap = 4096;
+        uint8_t *body_buf = malloc(buf_cap);
+        if (!body_buf) {
+            HTTP_CLEANUP_ML();
+            return ESP_ERR_NO_MEM;
+        }
+        while (true) {
+            char read_cmd[32];
+            snprintf(read_cmd, sizeof(read_cmd), "AT+MHTTPREAD=%d,%u",
+                     http_id, (unsigned int)1024);
+            init_cmd_ctx(&ctx);
+            ret = send_cmd(self, read_cmd, &ctx,
+                           ML307R_HTTP_CMD_TIMEOUT_MS);
+            if (ret != ESP_OK) {
+                free(body_buf);
+                HTTP_CLEANUP_ML();
+                return ret;
+            }
+            const char *read_hdr = find_line_with_prefix(&ctx.response,
+                                                         "+MHTTPREAD:");
+            if (!read_hdr) {
+                /* No more data */
+                break;
+            }
+            int read_len = 0;
+            if (sscanf(read_hdr, "+MHTTPREAD: %d", &read_len) != 1 ||
+                read_len <= 0) {
+                break;
+            }
+            /* Concatenate data lines after the header */
+            for (int i = 0; i < ctx.response.line_count; i++) {
+                const char *line = ctx.response.lines[i];
+                if (!line || strncmp(line, "+MHTTPREAD:", 11) == 0) {
+                    continue;
+                }
+                size_t line_len = strlen(line);
+                if (total_copied + line_len > buf_cap) {
+                    size_t new_cap = buf_cap * 2;
+                    while (total_copied + line_len > new_cap) {
+                        new_cap *= 2;
+                    }
+                    uint8_t *new_buf = realloc(body_buf, new_cap);
+                    if (!new_buf) {
+                        free(body_buf);
+                        HTTP_CLEANUP_ML();
+                        return ESP_ERR_NO_MEM;
+                    }
+                    body_buf = new_buf;
+                    buf_cap = new_cap;
+                }
+                memcpy(body_buf + total_copied, line, line_len);
+                total_copied += line_len;
+            }
+        }
+        response->body = body_buf;
+        response->body_len = total_copied;
+    }
+
+#undef HTTP_CLEANUP_ML
+
+    /* 7. AT+MHTTPDEL (finally cleanup) */
+    {
+        char del_cmd[32];
+        snprintf(del_cmd, sizeof(del_cmd), "AT+MHTTPDEL=%d", http_id);
+        init_cmd_ctx(&ctx);
+        (void)send_cmd(self, del_cmd, &ctx,
+                       ML307R_HTTP_CMD_TIMEOUT_MS);
+    }
+
     return ESP_OK;
 }
 

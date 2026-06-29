@@ -32,6 +32,16 @@ typedef struct {
     esp_err_t error_code;
 } lwlte_sync_cmd_ctx_t;
 
+typedef struct {
+    SemaphoreHandle_t done;
+    core_cmd_result_t result;
+    esp_err_t error_code;
+    int status_code;
+    uint8_t *body;
+    size_t body_len;
+    int modem_error_code;
+} lwlte_http_cmd_ctx_t;
+
 /**********************
  *  STATIC PROTOTYPES
  **********************/
@@ -78,6 +88,21 @@ static lwlte_tcp_conn_state_t map_tcp_conn_state(tcp_conn_state_t state);
  * @param[in] user_ctx 用户上下文
  */
 static void facade_core_cmd_done_cb(core_handle_t core,
+                                    core_cmd_type_t type,
+                                    core_cmd_result_t result,
+                                    const void *result_data,
+                                    void *user_ctx);
+
+/**
+ * @brief 处理同步 HTTP 命令完成回调
+ * @details Handle synchronous HTTP command done callback
+ * @param[in] core Core 句柄
+ * @param[in] type Core 命令类型
+ * @param[in] result Core 命令结果
+ * @param[in] result_data 结果数据
+ * @param[in] user_ctx 用户上下文
+ */
+static void facade_http_cmd_done_cb(core_handle_t core,
                                     core_cmd_type_t type,
                                     core_cmd_result_t result,
                                     const void *result_data,
@@ -201,6 +226,16 @@ void lwlte_tcp_event_data_release(lwlte_tcp_event_data_t *data)
         tcp_client_conn_release_event((tcp_client_conn_t)data->conn);
         data->owns_event = false;
     }
+}
+
+void lwlte_http_response_release(lwlte_http_response_t *response)
+{
+    if (!response) {
+        return;
+    }
+    free(response->body);
+    response->body = NULL;
+    response->body_len = 0;
 }
 
 esp_err_t lwlte_create_empty(lwlte_handle_t *out_lte)
@@ -551,6 +586,77 @@ esp_err_t lwlte_ssl_get_context_status(lwlte_handle_t me,
         status->client_key_present = core_status.client_key_present;
         status->check_valid = core_status.check_valid;
         status->auth_mode = core_status.auth_mode;
+    }
+
+    vSemaphoreDelete(ctx.done);
+    end_api_call(me);
+    return ret;
+}
+
+esp_err_t lwlte_http_request(lwlte_handle_t me,
+                             const lwlte_http_request_t *request,
+                             lwlte_http_response_t *response)
+{
+    ESP_RETURN_ON_FALSE(request && response, ESP_ERR_INVALID_ARG, TAG,
+                        "NULL argument");
+    ESP_RETURN_ON_FALSE(request->url && request->url[0], ESP_ERR_INVALID_ARG,
+                        TAG, "HTTP url is required");
+    ESP_RETURN_ON_FALSE(request->method == LWLTE_HTTP_METHOD_GET ||
+                        request->method == LWLTE_HTTP_METHOD_POST,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid HTTP method");
+    ESP_RETURN_ON_FALSE(request->transport == LWLTE_HTTP_TRANSPORT_HTTP ||
+                        request->transport == LWLTE_HTTP_TRANSPORT_HTTPS,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid HTTP transport");
+    ESP_RETURN_ON_FALSE(request->method != LWLTE_HTTP_METHOD_POST ||
+                        (request->body && request->body_len > 0),
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "POST requires non-empty body");
+
+    /* Zero-init response so release() is safe on any return path */
+    response->status_code = 0;
+    response->body = NULL;
+    response->body_len = 0;
+    response->modem_error_code = 0;
+
+    core_handle_t core = NULL;
+    esp_err_t ret = begin_api_call(me, true, &core);
+    ESP_RETURN_ON_ERROR(ret, TAG, "facade not usable");
+
+    lwlte_http_cmd_ctx_t ctx = {
+        .done = xSemaphoreCreateBinary(),
+        .result = CORE_CMD_RESULT_ERROR,
+        .error_code = ESP_FAIL,
+    };
+    if (!ctx.done) {
+        end_api_call(me);
+        return ESP_ERR_NO_MEM;
+    }
+
+    uint32_t timeout_ms = request->timeout_ms > 0 ? request->timeout_ms : 120000;
+    core_cmd_t cmd = {
+        .type = CORE_CMD_HTTP_REQUEST,
+        .done_cb = facade_http_cmd_done_cb,
+        .user_ctx = &ctx,
+        .timeout_ms = timeout_ms,
+        .data.http_request = {
+            .method = request->method,
+            .url = request->url,
+            .transport = request->transport,
+            .ssl_context_id = request->ssl_context_id,
+            .content_type = request->content_type,
+            .body = request->body,
+            .body_len = request->body_len,
+        },
+    };
+
+    ret = core_submit_cmd(core, &cmd);
+    if (ret == ESP_OK) {
+        xSemaphoreTake(ctx.done, portMAX_DELAY);
+        ret = ctx.error_code;
+        response->status_code = ctx.status_code;
+        response->body = ctx.body;
+        response->body_len = ctx.body_len;
+        response->modem_error_code = ctx.modem_error_code;
     }
 
     vSemaphoreDelete(ctx.done);
@@ -1054,6 +1160,44 @@ static void facade_core_cmd_done_cb(core_handle_t core,
         ctx->error_code = *(const esp_err_t *)result_data;
     } else {
         ctx->error_code = ESP_FAIL;
+    }
+    if (ctx->done) {
+        xSemaphoreGive(ctx->done);
+    }
+}
+
+static void facade_http_cmd_done_cb(core_handle_t core,
+                                    core_cmd_type_t type,
+                                    core_cmd_result_t result,
+                                    const void *result_data,
+                                    void *user_ctx)
+{
+    (void)core;
+    (void)type;
+    lwlte_http_cmd_ctx_t *ctx = (lwlte_http_cmd_ctx_t *)user_ctx;
+    if (!ctx) {
+        return;
+    }
+    ctx->result = result;
+    if (result == CORE_CMD_RESULT_OK && result_data) {
+        const core_http_result_t *hr = (const core_http_result_t *)result_data;
+        ctx->error_code = hr->error_code;
+        ctx->status_code = hr->status_code;
+        ctx->body = hr->body;
+        ctx->body_len = hr->body_len;
+        ctx->modem_error_code = hr->modem_error_code;
+    } else {
+        ctx->error_code = ESP_FAIL;
+        ctx->status_code = 0;
+        ctx->body = NULL;
+        ctx->body_len = 0;
+        ctx->modem_error_code = 0;
+        if (result_data) {
+            const core_http_result_t *hr = (const core_http_result_t *)result_data;
+            ctx->error_code = hr->error_code;
+            ctx->modem_error_code = hr->modem_error_code;
+            free(hr->body);
+        }
     }
     if (ctx->done) {
         xSemaphoreGive(ctx->done);
