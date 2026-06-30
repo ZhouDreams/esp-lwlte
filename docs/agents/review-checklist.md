@@ -6,6 +6,7 @@
 - 旧项目 `reference/esp-lwlte-old/docs/agents/code-review/` 的实战经验
 - AT Engine 内存爆掉事件（`response_pool = max_response_lines * rx_line_buf_size` 在 ESP32-C3 上撑爆 heap）的教训
 - 嵌入式 review 的两条主线：**内存泄漏** 与 **死锁**
+- 通用嵌入式 review checklist（`embedded-code-review` skill）的技术盲点补充：ISR/DMA/cache 一致性、实时性风险、圈复杂度等
 
 ---
 
@@ -20,6 +21,7 @@ Review 不是"让 AI 直接改 bug"，而是一条**先理解、再列单、再�
 1. 读 `AGENTS.md` 与 `docs/agents/` 下的架构、目录、类设计文档。
 2. 搞清楚分层契约：**门面层（Facade）→ Core Service → Modem 适配层 → AT Engine**，以及 `tcp_client` 等内部 service 的边界。
 3. 搞清楚每层数据的生命周期：response line、event payload、protocol data 是 borrowed 还是 owned。
+4. 建立**硬件上下文**：MCU 型号与资源上限（ESP32-C3 的 heap / 可用 task stack）、UART/外设资源、编译配置（Kconfig 默认值）。建立"软件逻辑 ↔ 硬件约束"双向映射——某段代码用了多少 RAM、在哪个任务栈上运行、是否运行在 ISR 上下文。
 
 > 不理解调用链就找 bug，等于在猜。
 
@@ -46,11 +48,12 @@ Review 不是"让 AI 直接改 bug"，而是一条**先理解、再列单、再�
 
 1. 打开对应源码，读上下文**至少前后 30 行**。
 2. 追踪调用链、条件分支、已有防护逻辑，确认问题是否真实存在。
-3. 按三类输出验证结论，写入 `docs/agents/code-review/verify-<对应报告名>.md`：
+3. **双重校验**：逻辑推理 + 工具交叉验证——用 `rg` 实际搜索调用点、查编译器/`idf.py` 警告、必要时跑 host test。不靠单一推理路径就下结论。
+4. 按三类输出验证结论，写入 `docs/agents/code-review/verify-<对应报告名>.md`：
    - ✅ **确认的问题**：简述确认理由。
    - ❌ **误报**：说明为什么不是真问题（参见"三、误报防范"）。
    - ⚠️ **部分正确**：真正的问题是什么，修复方案应如何调整。
-4. 验证完成前，不得开始修复。
+5. 验证完成前，不得开始修复。
 
 ### 阶段 4：修复（按严重度，验证一项修一项）
 
@@ -94,13 +97,22 @@ Review 不是"让 AI 直接改 bug"，而是一条**先理解、再列单、再�
 - **失败路径的内存泄漏**：`fsm_post_sig` / queue send / event post 失败后，已分配的 `sig` / payload 是否被释放。对照同模块其他路径（如 blocking vs async）看是否一致释放。
 - **ownership 与 borrowed/owned**：调用方是否可能在下一次命令后仍持有旧指针？
 - **半初始化失败的反序销毁**：init 链路中途失败，已初始化的子系统是否按反序清理。
+- **DMA / cache 一致性**：若 RX/TX buffer 走 DMA（如 UART DMA 收发），CPU 访问前后是否做了 cache invalidate/writeback；DMA buffer 是否落在兼容内存区域、对齐是否满足要求。
 
-### C. 并发、竞态与死锁（嵌入式主线之二）
+### C. 并发、竞态、死锁与实时性（嵌入式主线之二）
 
+**并发与同步：**
 - **死锁**：锁/信号量的获取顺序、跨状态机迁移时持锁、回调查调持锁。
 - **竞态**：共享状态（如 core context）的读写保护、URC 任务与主任务的访问顺序。
 - **重入安全**：callback 是否可能在持锁状态下被递归触发。
+- **中断上下文误用**：ISR / 事件回调（如 UART 事件）中是否调用了可能阻塞或休眠的 API（带等待时间的 take mutex、malloc、重量级日志、`vTaskDelay`）；ISR 中只应做 post-to-queue 等非阻塞动作。
 - **被忽略的返回值**：`fsm_post_sig` 失败仅记日志就 `return OK`，会欺骗调用方并泄漏资源。
+
+**实时性：**
+- **优先级反转**：低优先级任务持锁阻塞高优先级任务，是否需要优先级继承互斥量（mutex）而非二值信号量。
+- **关键路径不可预测执行时间**：关键路径上是否有无界循环、无超时的阻塞调用。
+- **忙等 busy-wait**：是否有 `while(wait_hw)` 类忙等而无超时 / 退出条件。
+- **ISR / 高优先级回调长度**：是否足够短，重活是否 defer 到普通任务。
 
 ### D. 失败路径完整性
 
@@ -124,11 +136,13 @@ Review 不是"让 AI 直接改 bug"，而是一条**先理解、再列单、再�
 ### G. 类型与边界
 
 - 类型不一致导致的静默截断（`uint32_t` → `uint16_t`、`int` vs `uint32_t` 的 size 字段）。
+- **整数溢出**：乘法/加法（如 `len * elem_size`、`offset + n`）是否可能溢出；长度字段是否先验证再用（uint 下溢见维度 B）。
 - 死代码、不可达分支、重复赋值。
 - 魔数应提为命名常量（尤其长度偏移这类与协议耦合的值）。
 
 ### H. 代码质量与一致性（低严重度但低成本）
 
+- **圈复杂度**：单个函数圈复杂度建议 ≤ 10–15，过高应拆分。
 - 命名一致性、误导性函数名（如 `_act` 后缀实际处理全部类型）。
 - 与 [coding-style.md](coding-style.md) 的一致性：双语注释格式、section 组织（DEFINES vs MACROS）、include 风格。
 - 传递性头文件依赖（宏用了 `LOGE` 但头文件未 include，靠间接依赖才编译过）。
@@ -140,7 +154,6 @@ Review 不是"让 AI 直接改 bug"，而是一条**先理解、再列单、再�
 
 验证阶段驳回的典型误报，提示 reviewer 守住技术严谨：
 
-- **unsigned 回绕运算被误判为 bug**：`elapsed = now - start` 在 uint 模运算下对回绕是正确的，是特性不是缺陷。
 - **把设计意图当缺陷**：如 fire-and-forget 语义的"首条响应即完成"被误读为漏洞。先确认接口语义文档，再下结论。
 - **报告里编造调用点**：声称某宏在某行使用，实际该行用的是另一个宏。验证时必须实际搜索调用点。
 - **"用户可能移除 include"等不现实场景**不应作为设计考量。
