@@ -86,10 +86,27 @@ esp_err_t    at_engine_send_cmd_with_options(at_engine_handle_t me, const char *
                                              at_response_t *response,
                                              const at_cmd_options_t *options);
 
+/* 发送带 payload prompt 的 AT 命令：等待 prompt（如 ">"）后写入原始 payload，
+ * 再继续按 options 等待最终响应（如 MQTT/HTTP/SSL 证书下载类命令） */
+esp_err_t    at_engine_send_cmd_with_payload(at_engine_handle_t me, const char *cmd,
+                                             const uint8_t *payload, size_t payload_len,
+                                             const char *payload_prompt,
+                                             at_response_t *response,
+                                             const at_cmd_options_t *options);
+
 /* URC 回调注册 / 注销 */
 esp_err_t    at_engine_register_urc(at_engine_handle_t me, const char *prefix,
                                      at_urc_handler_t *handler);
 esp_err_t    at_engine_unregister_urc(at_engine_handle_t me, const char *prefix);
+
+/* 命令路径独占段（层间私有 API，用于非 AT 临界段保留命令路径）：
+ *   begin/end_exclusive 必须配对；不得从同一 AT Engine 的 URC 回调中调用。
+ *   flush_rx 内部自取独占段；当前有命令执行时返回 ESP_ERR_INVALID_STATE。
+ *   flush_rx_exclusive 须在已持独占段时调用。 */
+esp_err_t    at_engine_begin_exclusive(at_engine_handle_t me);
+esp_err_t    at_engine_flush_rx_exclusive(at_engine_handle_t me);
+void         at_engine_end_exclusive(at_engine_handle_t me);
+esp_err_t    at_engine_flush_rx(at_engine_handle_t me);
 ```
 
 **内部结构**（定义在 `.c` 或 `_priv.h`）：
