@@ -923,19 +923,42 @@ static esp_err_t send_cmd_internal(at_engine_handle_t me, const char *cmd,
      *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
     remaining_ticks = remaining_timeout_ticks(start_ticks, total_timeout_ticks);
     if (xSemaphoreTake(me->cmd_done_sema, remaining_ticks) != pdTRUE) {
-        /* 超时路径：标记超时、清除上下文、递增 rx_epoch 丢弃残留数据 */
+        /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+         * 超时路径：区分"命令确实未完成"与"RX 在窗口内迟到的真实完成"
+         *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+        /* 本调用方仍持有 cmd_mutex，故不会有其他命令改写 cmd_ctx：
+         * cmd_ctx==ctx 表示命令仍活动；cmd_ctx!=ctx（实际为 NULL）表示
+         * RX 已在调用方取锁之前 finish_cmd_locked 完成命令并 give sema。
+         * 后者在单核 + RX 高优先级下现实存在，必须采用 RX 写入的真实结果，
+         * 否则成功命令会被误报为 TIMEOUT。 */
+        esp_err_t late_io_error = ESP_OK;
+        bool      rx_completed = false;
+
         xSemaphoreTake(me->lock, portMAX_DELAY);
-        response->status = AT_RESP_TIMEOUT;
-        response->error_code = 0;
         if (me->cmd_ctx == ctx) {
+            /* 命令确实未完成：置 TIMEOUT、清上下文、flush 残留、回 IDLE */
+            response->status = AT_RESP_TIMEOUT;
+            response->error_code = 0;
             me->cmd_ctx = NULL;
+            flush_rx_input_locked(me);
+            me->state = AT_STATE_IDLE;
+        } else {
+            /* RX 已迟到完成：response->status 已由 RX 写入真实值，命令已回
+             * IDLE，无需 flush（后续字节应进入 URC 模式）。仿正常完成路径取
+             * io_error；RX 的 sema give 需在下方抽干，避免污染下一条命令 */
+            rx_completed = true;
+            late_io_error = ctx->io_error;
         }
-        flush_rx_input_locked(me);
-        me->state = AT_STATE_IDLE;
         xSemaphoreGive(me->lock);
+
         clear_done_signal(me);
         xSemaphoreGive(me->cmd_mutex);
         end_send_call(me);
+
+        /* 迟到但真实完成：返回值与正常完成路径一致；AT 业务结果见 response->status */
+        if (rx_completed) {
+            return late_io_error == ESP_OK ? ESP_OK : late_io_error;
+        }
         return ESP_ERR_TIMEOUT;
     }
 
