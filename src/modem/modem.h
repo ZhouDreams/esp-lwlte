@@ -92,7 +92,7 @@ typedef struct {
  */
 typedef enum {
     MODEM_STATE_CREATED = 0,        /**< 已创建； Created */
-    MODEM_STATE_INITIALIZING,       /**< 初始化中； Initializing */
+    MODEM_STATE_INITIALIZING,       /**< 初始化中（瞬态）； Initializing (transient) */
     MODEM_STATE_READY,              /**< 就绪； Ready */
     MODEM_STATE_REGISTERING,        /**< 注册中； Registering */
     MODEM_STATE_REGISTERED,         /**< 已注册； Registered */
@@ -507,6 +507,10 @@ typedef void (*modem_event_callback_t)(modem_handle_t modem,
  * @brief 销毁调制解调器
  * @details Destroy modem
  * @param[in] me 调制解调器句柄
+ * @note 允许从 CREATED/OFF/READY/REGISTERING/REGISTERED/PDP_ACTIVE/ERROR 销毁；
+ *       不允许 INITIALIZING/DESTROYING。子类 start() 必须在所有退出路径上离开
+ *       INITIALIZING（成功→READY，失败→ERROR），否则本函数返回 ESP_ERR_INVALID_STATE
+ *       导致对象无法销毁（资源泄漏）。
  * @return
  *         - ESP_OK: 成功
  *         - ESP_ERR_INVALID_ARG: 参数无效

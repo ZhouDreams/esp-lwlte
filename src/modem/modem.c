@@ -328,11 +328,11 @@ esp_err_t modem_destroy(modem_handle_t me)
             ESP_LOGW(TAG, "destroy modem failed: %s", esp_err_to_name(destroy_ret));
             xSemaphoreTake(me->lock, portMAX_DELAY);
             me->destroying = false;
-            me->state = (state >= MODEM_STATE_CREATED && state <= MODEM_STATE_ERROR) ?
-                        state : MODEM_STATE_ERROR;
+            /* event_task 已被停止（无法重启），对象进入不可用降级态：
+             * 强制置 ERROR 使 check_ready 拒绝后续命令、仅允许重试 destroy。 */
+            me->state = MODEM_STATE_ERROR;
             me->event_task_stop_requested = false;
             xSemaphoreGive(me->lock);
-            /* Event task is already stopped; retry can still run subclass destroy/base deinit. */
             return destroy_ret;
         }
     }
@@ -348,7 +348,7 @@ esp_err_t modem_destroy(modem_handle_t me)
 
 esp_err_t modem_start(modem_handle_t me)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, true);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -375,7 +375,7 @@ esp_err_t modem_stop(modem_handle_t me)
 
 esp_err_t modem_reset(modem_handle_t me)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -441,7 +441,7 @@ esp_err_t modem_get_state(modem_handle_t me, modem_state_t *state)
 
 esp_err_t modem_get_info(modem_handle_t me, modem_info_t *info)
 {
-    ESP_RETURN_ON_FALSE(me && info, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && info, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -453,7 +453,7 @@ esp_err_t modem_get_info(modem_handle_t me, modem_info_t *info)
 
 esp_err_t modem_get_sim_status(modem_handle_t me, modem_sim_status_t *status)
 {
-    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -465,7 +465,7 @@ esp_err_t modem_get_sim_status(modem_handle_t me, modem_sim_status_t *status)
 
 esp_err_t modem_get_signal(modem_handle_t me, modem_signal_t *signal)
 {
-    ESP_RETURN_ON_FALSE(me && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && signal, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -477,7 +477,7 @@ esp_err_t modem_get_signal(modem_handle_t me, modem_signal_t *signal)
 
 esp_err_t modem_get_registration(modem_handle_t me, modem_reg_status_t *status)
 {
-    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -489,7 +489,7 @@ esp_err_t modem_get_registration(modem_handle_t me, modem_reg_status_t *status)
 
 esp_err_t modem_get_packet_attach_status(modem_handle_t me, bool *attached)
 {
-    ESP_RETURN_ON_FALSE(me && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && attached, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -502,7 +502,7 @@ esp_err_t modem_get_packet_attach_status(modem_handle_t me, bool *attached)
 
 esp_err_t modem_set_apn(modem_handle_t me, uint8_t cid, const char *apn)
 {
-    ESP_RETURN_ON_FALSE(me && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && apn, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -514,7 +514,7 @@ esp_err_t modem_set_apn(modem_handle_t me, uint8_t cid, const char *apn)
 
 esp_err_t modem_activate_pdp(modem_handle_t me, uint8_t cid)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -526,7 +526,7 @@ esp_err_t modem_activate_pdp(modem_handle_t me, uint8_t cid)
 
 esp_err_t modem_deactivate_pdp(modem_handle_t me, uint8_t cid)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -539,7 +539,7 @@ esp_err_t modem_deactivate_pdp(modem_handle_t me, uint8_t cid)
 esp_err_t modem_get_pdp_context(modem_handle_t me, uint8_t cid,
                                  modem_pdp_context_t *pdp)
 {
-    ESP_RETURN_ON_FALSE(me && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && pdp, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -553,7 +553,7 @@ esp_err_t modem_ssl_provision(modem_handle_t me,
                               const modem_ssl_context_config_t *config,
                               const modem_ssl_credentials_t *credentials)
 {
-    ESP_RETURN_ON_FALSE(me && config && ssl_credentials_valid(config->auth_mode, credentials),
+    ESP_RETURN_ON_FALSE(me && me->lock && config && ssl_credentials_valid(config->auth_mode, credentials),
                         ESP_ERR_INVALID_ARG, TAG, "invalid SSL provision args");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -566,7 +566,7 @@ esp_err_t modem_ssl_get_context_status(modem_handle_t me,
                                        uint8_t context_id,
                                        modem_ssl_context_status_t *status)
 {
-    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     memset(status, 0, sizeof(*status));
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -578,7 +578,7 @@ esp_err_t modem_ssl_get_context_status(modem_handle_t me,
 esp_err_t modem_mqtt_configure(modem_handle_t me,
                                const modem_mqtt_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(me && config && config->client_id && config->host && config->port > 0 &&
+    ESP_RETURN_ON_FALSE(me && me->lock && config && config->client_id && config->host && config->port > 0 &&
                         (config->transport == MODEM_MQTT_TRANSPORT_PLAIN_TCP ||
                          config->transport == MODEM_MQTT_TRANSPORT_TLS),
                         ESP_ERR_INVALID_ARG, TAG, "invalid MQTT config");
@@ -591,7 +591,7 @@ esp_err_t modem_mqtt_configure(modem_handle_t me,
 
 esp_err_t modem_mqtt_tcp_connect(modem_handle_t me)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_tcp_connect,
@@ -601,7 +601,7 @@ esp_err_t modem_mqtt_tcp_connect(modem_handle_t me)
 
 esp_err_t modem_mqtt_connect(modem_handle_t me)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_connect,
@@ -611,7 +611,7 @@ esp_err_t modem_mqtt_connect(modem_handle_t me)
 
 esp_err_t modem_mqtt_disconnect(modem_handle_t me)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
@@ -623,7 +623,7 @@ esp_err_t modem_mqtt_disconnect(modem_handle_t me)
 
 esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t me)
 {
-    ESP_RETURN_ON_FALSE(me, ESP_ERR_INVALID_ARG, TAG, "me is NULL");
+    ESP_RETURN_ON_FALSE(me && me->lock, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_tcp_disconnect,
@@ -634,7 +634,7 @@ esp_err_t modem_mqtt_tcp_disconnect(modem_handle_t me)
 esp_err_t modem_mqtt_subscribe(modem_handle_t me,
                                const modem_mqtt_topic_t *topic)
 {
-    ESP_RETURN_ON_FALSE(me && topic && topic->topic && topic->qos <= 2,
+    ESP_RETURN_ON_FALSE(me && me->lock && topic && topic->topic && topic->qos <= 2,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
@@ -648,7 +648,7 @@ esp_err_t modem_mqtt_subscribe(modem_handle_t me,
 esp_err_t modem_mqtt_unsubscribe(modem_handle_t me,
                                  const modem_mqtt_topic_t *topic)
 {
-    ESP_RETURN_ON_FALSE(me && topic && topic->topic,
+    ESP_RETURN_ON_FALSE(me && me->lock && topic && topic->topic,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     esp_err_t ret = check_ready(me, false);
@@ -663,7 +663,7 @@ esp_err_t modem_mqtt_unsubscribe(modem_handle_t me,
 esp_err_t modem_mqtt_publish(modem_handle_t me,
                              const modem_mqtt_publish_t *publish)
 {
-    ESP_RETURN_ON_FALSE(me && publish && publish->topic && publish->payload &&
+    ESP_RETURN_ON_FALSE(me && me->lock && publish && publish->topic && publish->payload &&
                         publish->payload_len > 0 && publish->qos <= 2,
                         ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
@@ -677,7 +677,7 @@ esp_err_t modem_mqtt_publish(modem_handle_t me,
 
 esp_err_t modem_mqtt_get_status(modem_handle_t me, modem_mqtt_status_t *status)
 {
-    ESP_RETURN_ON_FALSE(me && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && me->lock && status, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
     esp_err_t ret = check_ready(me, false);
     ESP_RETURN_ON_ERROR(ret, TAG, "modem not ready");
     ESP_RETURN_ON_FALSE(me->ops && me->ops->mqtt_get_status,
@@ -688,7 +688,7 @@ esp_err_t modem_mqtt_get_status(modem_handle_t me, modem_mqtt_status_t *status)
 esp_err_t modem_socket_open(modem_handle_t me,
                             const modem_socket_open_t *open)
 {
-    ESP_RETURN_ON_FALSE(me && open && open->proto == MODEM_SOCKET_PROTO_TCP &&
+    ESP_RETURN_ON_FALSE(me && me->lock && open && open->proto == MODEM_SOCKET_PROTO_TCP &&
                         open->host && open->host[0] && open->port > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid socket open args");
 
@@ -703,7 +703,7 @@ esp_err_t modem_socket_open(modem_handle_t me,
 esp_err_t modem_socket_send(modem_handle_t me,
                             const modem_socket_send_t *send)
 {
-    ESP_RETURN_ON_FALSE(me && send && send->data && send->len > 0,
+    ESP_RETURN_ON_FALSE(me && me->lock && send && send->data && send->len > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid socket send args");
 
     esp_err_t ret = check_ready(me, false);
@@ -718,7 +718,7 @@ esp_err_t modem_socket_recv(modem_handle_t me,
                             const modem_socket_recv_t *recv,
                             modem_socket_recv_result_t *result)
 {
-    ESP_RETURN_ON_FALSE(me && recv && result && recv->max_len > 0,
+    ESP_RETURN_ON_FALSE(me && me->lock && recv && result && recv->max_len > 0,
                         ESP_ERR_INVALID_ARG, TAG, "invalid socket recv args");
 
     memset(result, 0, sizeof(*result));
@@ -733,7 +733,7 @@ esp_err_t modem_socket_recv(modem_handle_t me,
 esp_err_t modem_socket_close(modem_handle_t me,
                              const modem_socket_close_t *close)
 {
-    ESP_RETURN_ON_FALSE(me && close, ESP_ERR_INVALID_ARG, TAG,
+    ESP_RETURN_ON_FALSE(me && me->lock && close, ESP_ERR_INVALID_ARG, TAG,
                         "invalid socket close args");
 
     esp_err_t ret = check_ready(me, false);
@@ -750,7 +750,7 @@ esp_err_t modem_ping(modem_handle_t me,
                      size_t max_replies,
                      modem_ping_summary_t *summary)
 {
-    ESP_RETURN_ON_FALSE(me && request && request->host && request->host[0] &&
+    ESP_RETURN_ON_FALSE(me && me->lock && request && request->host && request->host[0] &&
                         replies && request->count >= 1 && request->count <= 100 &&
                         request->data_len <= 1024 &&
                         request->timeout_100ms >= 1 &&
@@ -771,7 +771,7 @@ esp_err_t modem_http_request(modem_handle_t me,
                              const modem_http_request_t *request,
                              modem_http_response_t *response)
 {
-    ESP_RETURN_ON_FALSE(me && request && response, ESP_ERR_INVALID_ARG, TAG,
+    ESP_RETURN_ON_FALSE(me && me->lock && request && response, ESP_ERR_INVALID_ARG, TAG,
                         "NULL argument");
     ESP_RETURN_ON_FALSE(request->url && request->url[0], ESP_ERR_INVALID_ARG,
                         TAG, "invalid http request url");

@@ -6,7 +6,7 @@
 | # | Module | Path | Status | Report |
 |---|--------|------|--------|--------|
 | 1 | AT Engine | src/at_engine/at_engine.c, at_engine.h | ✅ Done | report-01-at_engine.md |
-| 2 | Modem Base / Wrapper | src/modem/modem.c, modem.h, modem_priv.h | ⬜ Pending | — |
+| 2 | Modem Base / Wrapper | src/modem/modem.c, modem.h, modem_priv.h | ✅ Done | report-02-modem_base.md |
 | 3 | Modem Air780EP Impl | src/modem/modem_air780ep.c, modem_air780ep.h | ⬜ Pending | — |
 | 4 | Modem ML307R Impl | src/modem/modem_ml307r.c, modem_ml307r.h | ⬜ Pending | — |
 | 5 | Core main + FSM | src/core/core.c, core_fsm.c | ⬜ Pending | — |
