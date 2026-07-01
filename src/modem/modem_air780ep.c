@@ -5534,10 +5534,15 @@ static esp_err_t air780ep_http_request(modem_handle_t me,
 
     /* 8. AT+HTTPREAD (if body expected) */
     if (data_len > 0) {
-        size_t read_len = (size_t)data_len;
-        if (read_len > AIR780EP_HTTPREAD_BODY_MAX) {
-            read_len = AIR780EP_HTTPREAD_BODY_MAX;
+        /* Air780EP HTTPREAD body 缓冲上限 ≈ AIR780EP_HTTPREAD_BODY_MAX；
+         * 超出时模块无法完整返回，显式失败而非静默截断（与 POST 路径一致）。 */
+        if (data_len > AIR780EP_HTTPREAD_BODY_MAX) {
+            ESP_LOGW(TAG, "HTTP body %d exceeds read buffer %d",
+                     data_len, AIR780EP_HTTPREAD_BODY_MAX);
+            HTTP_CLEANUP();
+            return ESP_ERR_INVALID_RESPONSE;
         }
+        size_t read_len = (size_t)data_len;
         char read_cmd[40];
         int r_written = snprintf(read_cmd, sizeof(read_cmd),
                                  "AT+HTTPREAD=0,%u", (unsigned int)read_len);
