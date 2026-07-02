@@ -350,11 +350,13 @@ void net_mgr_cancel_reconnect(core_handle_t me)
 
 void net_mgr_set_reconnect_enabled(core_handle_t me, bool enabled)
 {
-    if (!me) {
+    if (!me || !me->lock) {
         return;
     }
 
+    xSemaphoreTake(me->lock, portMAX_DELAY);
     me->net_mgr.reconnect_enabled = enabled;
+    xSemaphoreGive(me->lock);
 }
 
 esp_err_t net_mgr_get_state(core_handle_t me, core_net_state_t *state)
@@ -393,7 +395,7 @@ esp_err_t net_mgr_start_activation(core_handle_t me)
     ESP_RETURN_ON_FALSE(me && me->modem, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     net_mgr_cancel_reconnect(me);
-    me->net_mgr.reconnect_enabled = true;
+    net_mgr_set_reconnect_enabled(me, true);
     me->net_mgr.retry_count = 0;
 
     const uint32_t activation_start_ms = now_ms();
@@ -419,7 +421,7 @@ esp_err_t net_mgr_deactivate(core_handle_t me)
     ESP_RETURN_ON_FALSE(me && me->modem, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
 
     net_mgr_cancel_reconnect(me);
-    me->net_mgr.reconnect_enabled = false;
+    net_mgr_set_reconnect_enabled(me, false);
 
     core_net_state_t old_state = CORE_NET_STATE_OFFLINE;
     net_mgr_get_state(me, &old_state);
