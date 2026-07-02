@@ -10,7 +10,7 @@
 | 3 | Modem Air780EP Impl | src/modem/modem_air780ep.c, modem_air780ep.h | ✅ Done | report-03-modem_air780ep.md |
 | 4 | Modem ML307R Impl | src/modem/modem_ml307r.c, modem_ml307r.h | ✅ Done | report-04-modem_ml307r.md |
 | 5 | Core main + FSM | src/core/core.c, core_fsm.c | ✅ Done | report-05-core-fsm.md |
-| 6 | Core Net/PDP mgr | src/core/net_mgr.c, pdp_mgr.c | ⬜ Pending | — |
+| 6 | Core Net/PDP mgr | src/core/net_mgr.c, pdp_mgr.c | ✅ Done | report-06-net-pdp-mgr.md |
 | 7 | MQTT Client Service | src/mqtt_client/mqtt_client.c | ⬜ Pending | — |
 | 8 | TCP Client Service | src/tcp_client/tcp_client.c | ⬜ Pending | — |
 | 9 | Ping Service | src/ping_client/ping_client.c | ⬜ Pending | — |
