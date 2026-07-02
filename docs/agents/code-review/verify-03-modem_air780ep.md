@@ -79,3 +79,19 @@
   - `air780ep_cmd_ctx_t` 每帧 ~436B 栈占用，依赖 Core FSM task 栈足够（建议 `core.fsm.task_stack` 默认值体现该需求）。
   - HTTP body 重组跳过 `+HTTPREAD:` 前缀行的理论边界（概率极低，未修）。
   - 本次审查聚焦高风险路径，未逐行穷举全部 6000+ 行（查询型 ops 解析已抽样确认 bounds 安全）。
+
+---
+
+## 回归 Review（2026-07-02，针对 `4a0ae18` 新增代码）
+
+本次 review 闭环后，作者提交 `4a0ae18 fix(modem): resolve HTTP request failures on ML307R and Air780EP` 给 Air780EP 新增了 `air780ep_http_ensure_bearer`（SAPBR GPRS 承载激活，`:5337-5407`），并在 `air780ep_http_request` 开头调用（`:5421-5425`）。该模块被改动，触发回归 review。
+
+**回归审查结论**：新增代码 clean，无需修复。
+
+- `air780ep_http_ensure_bearer`（`:5337`）：纯栈 `air780ep_cmd_ctx_t`，无堆分配/无泄漏。
+- 流程幂等且自校验：设 CONTYPE/APN → `SAPBR=2,1` 查询，status==1 直接返回；未连接则 `SAPBR=1,1` 打开，**容忍"已激活"CME 错误**（`:5379-5381` 仅 DEBUG 日志）后**再用 `SAPBR=2,1` 验证 status==1**（`:5389-5404`），未盲信打开命令。超时用 `AIR780EP_SAPBR_OPEN_TIMEOUT_MS`(60s)。
+- `+SAPBR: %d,%d` 双字段解析，无越界。
+
+**低优先注记（非 bug，实机已验证）**：`:5354 AT+SAPBR=3,1,"APN",""` 设空 APN，HTTP 承载用网络默认/继承 APN，而非 Core 配置的 APN。用户网络（`ip.3322.net` 实测 200）可用；其他运营商若需显式 APN 可能需调整。归入残留观察项。
+
+模块 #3 维持 ✅ Done（回归无新问题）。
