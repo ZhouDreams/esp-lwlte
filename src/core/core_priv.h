@@ -164,6 +164,7 @@ bool core_stop_pending(core_handle_t me);
 esp_err_t core_post_event(core_handle_t me, lwlte_event_id_t event_id,
                           const lwlte_event_data_t *data);
 void core_free_cmd(core_cmd_t *cmd);
+void release_modem_protocol_payload(modem_event_t *event);
 
 /**********************
  *      MACROS

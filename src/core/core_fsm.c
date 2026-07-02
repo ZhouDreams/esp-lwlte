@@ -88,7 +88,6 @@ static core_cmd_result_t result_from_esp_err(esp_err_t err);
 static void finish_service_cmd(core_handle_t me, core_cmd_t *cmd,
                                core_cmd_result_t result,
                                const void *result_data);
-static void release_modem_protocol_payload(modem_event_t *event);
 static void release_fsm_signal_payload(core_handle_t me, core_fsm_sig_t *sig);
 static void drain_fsm_queue_payloads(core_handle_t me, QueueHandle_t queue);
 
@@ -410,6 +409,10 @@ static void handle_start(core_handle_t me)
 
     if (core_stop_pending(me)) {
         handle_stop(me);
+        return;
+    }
+
+    if (core_is_destroying(me)) {
         return;
     }
 
@@ -972,20 +975,6 @@ static void finish_service_cmd(core_handle_t me, core_cmd_t *cmd,
         cmd->done_cb(me, cmd->type, result, result_data, cmd->user_ctx);
     }
     core_free_cmd(cmd);
-}
-
-static void release_modem_protocol_payload(modem_event_t *event)
-{
-    if (!event || event->id != MODEM_EVENT_PROTOCOL_DATA) {
-        return;
-    }
-
-    free((void *)event->data.protocol_data.topic);
-    free((void *)event->data.protocol_data.payload);
-    event->data.protocol_data.topic = NULL;
-    event->data.protocol_data.payload = NULL;
-    event->data.protocol_data.topic_len = 0;
-    event->data.protocol_data.payload_len = 0;
 }
 
 static void release_fsm_signal_payload(core_handle_t me, core_fsm_sig_t *sig)

@@ -156,7 +156,6 @@ static uint8_t *clone_payload(const uint8_t *payload, size_t payload_len);
 static bool core_cmd_type_valid(core_cmd_type_t type);
 static bool core_cmd_valid(const core_cmd_t *cmd);
 static esp_err_t clone_modem_protocol_payload(modem_event_t *event);
-static void release_modem_protocol_payload(modem_event_t *event);
 
 /**********************
  *  STATIC VARIABLES
@@ -418,7 +417,8 @@ esp_err_t core_get_state(core_handle_t me, core_state_t *state)
 
 esp_err_t core_get_net_state(core_handle_t me, core_net_state_t *state)
 {
-    ESP_RETURN_ON_FALSE(me && state, ESP_ERR_INVALID_ARG, TAG, "NULL argument");
+    ESP_RETURN_ON_FALSE(me && state && me->lock, ESP_ERR_INVALID_ARG, TAG,
+                        "NULL argument");
 
     return net_mgr_get_state(me, state);
 }
@@ -1144,7 +1144,8 @@ static bool core_cmd_valid(const core_cmd_t *cmd)
     if (!cmd || !core_cmd_type_valid(cmd->type)) {
         return false;
     }
-    if (cmd->type == CORE_CMD_SOCKET_RECV && !cmd->done_cb) {
+    if ((cmd->type == CORE_CMD_SOCKET_RECV ||
+         cmd->type == CORE_CMD_HTTP_REQUEST) && !cmd->done_cb) {
         return false;
     }
 
@@ -1262,7 +1263,7 @@ static esp_err_t clone_modem_protocol_payload(modem_event_t *event)
     return ESP_OK;
 }
 
-static void release_modem_protocol_payload(modem_event_t *event)
+void release_modem_protocol_payload(modem_event_t *event)
 {
     if (!event || event->id != MODEM_EVENT_PROTOCOL_DATA) {
         return;
