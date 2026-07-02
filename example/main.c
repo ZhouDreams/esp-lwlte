@@ -18,7 +18,7 @@
  *********************/
 #define TAG                 "example"
 
-#define EXAMPLE_SELECTED    EXAMPLE_ML307R_BASIC_CONNECT
+#define EXAMPLE_SELECTED    EXAMPLE_AIR780EP_BASIC_CONNECT
 
 /**********************
  *  STATIC PROTOTYPES

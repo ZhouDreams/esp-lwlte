@@ -46,6 +46,9 @@
 #define EXAMPLE_PING_HOST                    "8.8.8.8"
 #define EXAMPLE_PING_COUNT                   4
 
+#define EXAMPLE_HTTP_URL                     "http://ip.3322.net/"
+#define EXAMPLE_HTTP_BODY_PREVIEW            256
+
 /**********************
  *      TYPEDEFS
  **********************/
@@ -71,6 +74,13 @@ static void lwlte_event_cb(void *arg, esp_event_base_t base,
  * @param[in] lte LTE 用户门面句柄
  */
 static void do_ping(lwlte_handle_t lte);
+
+/**
+ * @brief 执行一次 HTTP GET 请求
+ * @details Run one HTTP GET request
+ * @param[in] lte LTE 用户门面句柄
+ */
+static void do_http(lwlte_handle_t lte);
 
 /**
  * @brief 进入常驻等待
@@ -165,6 +175,7 @@ void example_ml307r_basic_connect_run(void)
 
     ESP_LOGI(TAG, "ML307R network is online");
     do_ping(lte);
+    do_http(lte);
     idle_forever();
 }
 
@@ -235,6 +246,38 @@ static void do_ping(lwlte_handle_t lte)
              (unsigned int)summary.lost, (unsigned long)summary.min_time_ms,
              (unsigned long)summary.max_time_ms,
              (unsigned long)summary.avg_time_ms);
+}
+
+static void do_http(lwlte_handle_t lte)
+{
+    const lwlte_http_request_t req = {
+        .method = LWLTE_HTTP_METHOD_GET,
+        .url = EXAMPLE_HTTP_URL,
+        .transport = LWLTE_HTTP_TRANSPORT_HTTP,
+        .ssl_context_id = 0,
+        .content_type = NULL,
+        .body = NULL,
+        .body_len = 0,
+        .timeout_ms = 0,
+    };
+    lwlte_http_response_t resp = {0};
+
+    ESP_LOGI(TAG, "http GET %s", EXAMPLE_HTTP_URL);
+    esp_err_t ret = lwlte_http_request(lte, &req, &resp);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "http request failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ESP_LOGI(TAG, "http status=%d body_len=%u", resp.status_code,
+             (unsigned int)resp.body_len);
+    if (resp.body && resp.body_len > 0) {
+        size_t preview = resp.body_len < EXAMPLE_HTTP_BODY_PREVIEW
+                       ? resp.body_len : EXAMPLE_HTTP_BODY_PREVIEW;
+        ESP_LOGI(TAG, "http body: %.*s", (int)preview, (char *)resp.body);
+    }
+
+    lwlte_http_response_release(&resp);
 }
 
 static void idle_forever(void)

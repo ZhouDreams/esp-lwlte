@@ -81,6 +81,7 @@
 #define AIR780EP_HTTPDATA_PROMPT_MS     10000
 #define AIR780EP_HTTPDATA_BODY_MAX      3356
 #define AIR780EP_HTTPREAD_BODY_MAX      3356
+#define AIR780EP_SAPBR_OPEN_TIMEOUT_MS  60000
 
 _Static_assert(AIR780EP_MAX_RESPONSE_LINES >= AIR780EP_CIPPING_MAX_COUNT + 1,
                "Air780EP CIPPING response storage must hold replies plus final status");
@@ -5326,6 +5327,85 @@ static uint32_t ping_cmd_timeout_ms(const modem_ping_request_t *request)
            AIR780EP_CIPPING_CMD_OVERHEAD_MS;
 }
 
+/**
+ * @brief 确保 SAPBR GPRS 承载已激活（HTTP 栈必需）。
+ * @details SAPBR 承载与 CSTT/CIICR TCPIP 路径独立；即使 PDP 上下文已通过
+ *          CIICR 激活，HTTP 栈仍需 SAPBR 打开自己的应用承载，否则
+ *          HTTPACTION 返回 601（网络错误）。
+ *          流程：设置 CONTYPE/APN 参数 → 查询状态 → 未连接则打开 → 验证。
+ */
+static esp_err_t air780ep_http_ensure_bearer(modem_air780ep_t *self)
+{
+    ESP_RETURN_ON_FALSE(self, ESP_ERR_INVALID_ARG, TAG, "self is NULL");
+
+    air780ep_cmd_ctx_t ctx;
+    esp_err_t ret;
+
+    /* 1. 配置承载参数（幂等） */
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", &ctx,
+                   AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SAPBR CONTYPE");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "SAPBR CONTYPE failed");
+
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+SAPBR=3,1,\"APN\",\"\"", &ctx,
+                   AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SAPBR APN");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "SAPBR APN failed");
+
+    /* 2. 查询承载状态，已连接则跳过打开 */
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+SAPBR=2,1", &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SAPBR query");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "SAPBR status query failed");
+
+    const char *line = find_line_with_prefix(&ctx.response, "+SAPBR:");
+    int cid_val = 0, status_val = 0;
+    if (line && sscanf(line, "+SAPBR: %d,%d", &cid_val, &status_val) >= 2 &&
+        status_val == 1) {
+        return ESP_OK;
+    }
+
+    /* 3. 承载未连接 — 打开（容忍"已激活"CME 错误） */
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+SAPBR=1,1", &ctx, AIR780EP_SAPBR_OPEN_TIMEOUT_MS);
+    if (ret == ESP_OK && ctx.response.status == AT_RESP_CME_ERROR) {
+        ESP_LOGD(TAG, "SAPBR=1,1 CME %d (already open?)",
+                 ctx.response.error_code);
+    } else if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "send AT+SAPBR=1,1 failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    /* 4. 验证承载已连接 */
+    init_cmd_ctx(&ctx);
+    ret = send_cmd(self, "AT+SAPBR=2,1", &ctx, AIR780EP_HTTP_CMD_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ret = ensure_at_ok(&ctx.response, "AT+SAPBR verify");
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "SAPBR verify query failed");
+
+    line = find_line_with_prefix(&ctx.response, "+SAPBR:");
+    if (!line || sscanf(line, "+SAPBR: %d,%d", &cid_val, &status_val) < 2) {
+        ESP_LOGE(TAG, "SAPBR status parse failed: %s",
+                 line ? line : "(null)");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (status_val != 1) {
+        ESP_LOGE(TAG, "SAPBR bearer not connected (status=%d)", status_val);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t air780ep_http_request(modem_handle_t me,
                                        const modem_http_request_t *request,
                                        modem_http_response_t *response)
@@ -5336,6 +5416,13 @@ static esp_err_t air780ep_http_request(modem_handle_t me,
 
     if (request->modem_error_code) {
         *request->modem_error_code = 0;
+    }
+
+    /* 0. 确保 SAPBR 承载已激活（HTTP 栈必需，与 CSTT/CIICR 路径独立） */
+    ret = air780ep_http_ensure_bearer(self);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SAPBR bearer setup failed: %s", esp_err_to_name(ret));
+        return ret;
     }
 
     /* 1. AT+HTTPINIT */
