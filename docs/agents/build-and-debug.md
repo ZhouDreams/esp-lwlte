@@ -1,5 +1,25 @@
 # 构建与调试环境
 
+## 测试硬件
+
+**测试板为单块 ESP32-C3，同时物理连接两个 LTE 模组（Air780EP 与 ML307R），各模组占用不同 GPIO。** 这是固定的硬件事实，理解它才能正确烧录与解读串口日志。
+
+### 模组接线
+
+| 角色 | UART | TX | RX | EN | GPIO 配置来源 |
+|------|------|----|----|----|--------------|
+| 控制台（USB-CDC） | UART0 | 20 | 21 | — | 固件默认，即对外的 `/dev/cu.usbserial-*` |
+| Air780EP | UART1 | 0 | 1 | 2 | `example/air780ep_basic_connect.c` |
+| ML307R | UART1 | 3 | 10 | 4 | `example/ml307r_basic_connect.c` |
+
+两个模组都挂在 UART1 上。UART1 是单一控制器，同一时刻只能映射到一组 GPIO，因此**同一份固件只激活一个模组**——由 `example/main.c` 的 `EXAMPLE_SELECTED` 与各 example 顶部的 `EXAMPLE_LTE_UART_NUM/_TX_PIN/_RX_PIN/_EN_PIN` 共同决定。未被选中的模组仍物理在线、上电，但不被寻址、保持空闲。
+
+### AI 常见误区（务必避免）
+
+- **单 USB 串口 ≠ 单模组**：`ls /dev/cu.usb*` 只会看到**一个**控制台端口，但板上实际有**两个**模组。绝不能因为"只看到一个串口"就断言"只接了一个模组 / 没有 ML307R"。
+- **切换模组靠固件，不是换板**：在 Air780EP 与 ML307R 之间切换测试 = 改 `EXAMPLE_SELECTED`（各 example 的 GPIO 已各自配好）→ `idf.py build` → 重新 `flash` 到**同一块板、同一控制台端口**。
+- **解读串口日志**：日志中的 AT 命令、`Model:` 行反映的是**当前固件寻址的模组**，不是板上唯一模组。看到 `Model: Air780EP` 只说明本次固件选了 Air780EP，不代表 ML307R 不在板上。
+
 ## 工具优先级
 
 本项目已接入 **Espressif MCP server**（`espressif-docs`），能通过 MCP 完成的操作**必须优先使用 MCP**：
