@@ -570,8 +570,6 @@ static esp_err_t submit_core_cmd(mqtt_client_handle_t me, core_cmd_type_t type,
         me->pending_cmd.active = true;
         me->pending_cmd.type = type;
         me->pending_cmd.operation = operation;
-        me->pending_cmd.timeout_ms = MQTT_CLIENT_CMD_TIMEOUT_MS;
-        me->pending_cmd.started_ms = 0;
         xSemaphoreGive(me->lock);
     }
 
@@ -844,7 +842,9 @@ static void handle_runtime_operation(mqtt_client_handle_t me, mqtt_fsm_sig_t *si
         mqtt_fsm_sig_t requeue = *sig;
         sig->data = NULL;
         sig->data_size = 0;
-        (void)send_fsm_sig(me, &requeue);
+        if (send_fsm_sig(me, &requeue) != ESP_OK) {
+            free_mqtt_fsm_sig_payload(&requeue);
+        }
         return;
     }
     if (!state_is(me, MQTT_CLIENT_STATE_CONNECTED)) {

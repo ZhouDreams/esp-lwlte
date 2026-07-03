@@ -67,8 +67,6 @@ typedef struct {
     bool active;
     core_cmd_type_t type;
     mqtt_client_operation_t operation;
-    uint32_t started_ms;
-    uint32_t timeout_ms;
 } mqtt_pending_cmd_t;
 
 typedef struct mqtt_protocol_data_owned {
@@ -82,7 +80,7 @@ typedef struct {
     mqtt_fsm_sig_type_t type;
     core_cmd_type_t core_cmd_type;
     core_cmd_result_t core_result;
-    int error_code;
+    int error_code; /**< CORE_CMD_DONE 时为错误码；SUBSCRIBE 时复用为 qos 值 */
     void *data;
     size_t data_size;
 } mqtt_fsm_sig_t;
@@ -100,7 +98,6 @@ struct mqtt_client_t {
     mqtt_stop_step_t stop_step;
     mqtt_pending_cmd_t pending_cmd;
     bool destroying;
-    bool started;
     bool net_online;
     bool stop_requested;
     bool transport_open;
