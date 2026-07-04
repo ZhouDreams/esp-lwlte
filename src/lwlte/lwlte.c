@@ -1261,13 +1261,10 @@ static void end_api_call(lwlte_handle_t me)
     if (me->active_api_calls > 0) {
         me->active_api_calls--;
     }
-    bool api_idle = me->active_api_calls == 0;
-    SemaphoreHandle_t done_sema = me->api_done_sema;
-    xSemaphoreGive(me->lock);
-
-    if (api_idle && done_sema) {
-        xSemaphoreGive(done_sema);
+    if (me->active_api_calls == 0 && me->api_done_sema) {
+        xSemaphoreGive(me->api_done_sema);
     }
+    xSemaphoreGive(me->lock);
 }
 
 static bool non_negative_int(int value)

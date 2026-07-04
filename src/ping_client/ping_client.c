@@ -276,19 +276,14 @@ static void end_ping_call(ping_client_handle_t me)
         return;
     }
 
-    SemaphoreHandle_t active_done_sema = NULL;
     xSemaphoreTake(me->lock, portMAX_DELAY);
     if (me->active_calls > 0) {
         me->active_calls--;
         if (me->active_calls == 0) {
-            active_done_sema = me->active_done_sema;
+            xSemaphoreGive(me->active_done_sema);
         }
     }
     xSemaphoreGive(me->lock);
-
-    if (active_done_sema) {
-        xSemaphoreGive(active_done_sema);
-    }
 }
 
 static esp_err_t wait_active_calls_idle(ping_client_handle_t me)
