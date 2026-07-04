@@ -12,10 +12,10 @@
 | 5 | Core main + FSM | src/core/core.c, core_fsm.c | ✅ Done | report-05-core-fsm.md |
 | 6 | Core Net/PDP mgr | src/core/net_mgr.c, pdp_mgr.c | ✅ Done | report-06-net-pdp-mgr.md |
 | 7 | MQTT Client Service | src/mqtt_client/mqtt_client.c | ✅ Done | report-07-mqtt-client.md |
-| 8 | TCP Client Service | src/tcp_client/tcp_client.c | ⬜ Pending | — |
-| 9 | Ping Service | src/ping_client/ping_client.c | ⬜ Pending | — |
-| 10 | LWLTE Facade (general) | src/lwlte/lwlte.c | ⬜ Pending | — |
-| 11 | LWLTE Facade factories | src/lwlte/lwlte_air780ep.c, lwlte_ml307r.c | ⬜ Pending | — |
+| 8 | TCP Client Service | src/tcp_client/tcp_client.c | ✅ Done | report-08-tcp-client.md |
+| 9 | Ping Service | src/ping_client/ping_client.c | ✅ Done | report-09-ping-client.md |
+| 10 | LWLTE Facade (general) | src/lwlte/lwlte.c | ✅ Done | report-10-lwlte-facade.md |
+| 11 | LWLTE Facade factories | src/lwlte/lwlte_air780ep.c, lwlte_ml307r.c | ✅ Done | report-11-lwlte-factories.md |
 
 ## 排序依据
 
